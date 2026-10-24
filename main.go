@@ -1,0 +1,198 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"os/user"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+)
+
+type options struct {
+	domain, realm, relay, hello, spn           string
+	auth, keytab, principal, ccache, krbConfig string
+	from, fullName, tlsMode                    string
+	port                                       int
+	timeout                                    time.Duration
+	readHeaders, ignoreDots, verbose           bool
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	cmd := newCommand()
+	cmd.SetArgs(normalizeArgs(os.Args[1:]))
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "ztmail:", err)
+		os.Exit(1)
+	}
+}
+
+func normalizeArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--" {
+			out = append(out, args[len(out):]...)
+			return out
+		}
+		if arg == "-oi" {
+			arg = "-i"
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func newCommand() *cobra.Command {
+	o := options{}
+	cmd := &cobra.Command{
+		Use:           "ztmail [flags] [recipient ...]",
+		Short:         "Send an RFC 5322 message from stdin using SMTP and Kerberos GSSAPI",
+		Long:          "A sendmail-style submission client. Defaults: mailgw.<host-domain>:25,\nAD realm <HOST-DOMAIN>, SMTP service principal smtp/<relay>, required STARTTLS.\nThis is not a queueing MTA; failed submissions must be handled by the caller.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Args:          cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, recipients []string) error {
+			if err := validateOptions(o); err != nil {
+				return err
+			}
+			return run(cmd.Context(), o, recipients, cmd.InOrStdin(), cmd.ErrOrStderr())
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
+	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
+	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
+	f.IntVar(&o.port, "port", 25, "SMTP port; use 465 with --tls implicit")
+	f.StringVar(&o.hello, "hostname", "", "EHLO hostname (default: discovered host FQDN)")
+	f.StringVar(&o.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
+	f.StringVar(&o.auth, "auth", "auto", "Credential backend: auto, keytab, ccache, sspi")
+	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
+	f.StringVar(&o.principal, "principal", "", "Keytab principal, e.g. mailer@EXAMPLE.COM; inferred if unique")
+	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
+	f.StringVar(&o.krbConfig, "krb5-config", "", "krb5.conf (otherwise KRB5_CONFIG, /etc/krb5.conf, or DNS defaults)")
+	f.StringVarP(&o.from, "from", "f", "", "Envelope sender; <> for null sender (default: current user@domain)")
+	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
+	f.BoolVarP(&o.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
+	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
+	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status to stderr, without tokens or message content")
+	f.StringVar(&o.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
+	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "Overall SMTP connection/exchange timeout")
+	return cmd
+}
+
+func validateOptions(o options) error {
+	if o.port < 1 || o.port > 65535 {
+		return errors.New("--port must be between 1 and 65535")
+	}
+	if o.timeout <= 0 {
+		return errors.New("--timeout must be positive")
+	}
+	switch o.tlsMode {
+	case "required", "implicit", "off":
+	default:
+		return errors.New("--tls must be required, implicit, or off")
+	}
+	switch o.auth {
+	case "auto", "keytab", "ccache", "sspi":
+	default:
+		return errors.New("--auth must be auto, keytab, ccache, or sspi")
+	}
+	if o.keytab != "" && o.ccache != "" {
+		return errors.New("--keytab and --ccache are mutually exclusive")
+	}
+	if o.principal != "" && o.keytab == "" {
+		return errors.New("--principal requires --keytab")
+	}
+	if o.auth == "keytab" && o.keytab == "" {
+		return errors.New("--auth keytab requires --keytab")
+	}
+	if o.keytab != "" && o.auth != "auto" && o.auth != "keytab" {
+		return errors.New("--keytab conflicts with the selected --auth backend")
+	}
+	if o.ccache != "" && o.auth != "auto" && o.auth != "ccache" {
+		return errors.New("--ccache conflicts with the selected --auth backend")
+	}
+	return nil
+}
+
+func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+	host, domain, err := discoverHost(ctx, o.domain)
+	if err != nil {
+		return err
+	}
+	o.domain = domain
+	if o.realm == "" {
+		o.realm = strings.ToUpper(domain)
+	}
+	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
+		return errors.New("invalid Kerberos realm")
+	}
+	if o.relay == "" {
+		o.relay = "mailgw." + domain
+	}
+	o.relay, err = dnsName(o.relay)
+	if err != nil {
+		return fmt.Errorf("invalid --relay: %w", err)
+	}
+	if o.hello == "" {
+		o.hello = host
+	}
+	if o.hello, err = dnsName(o.hello); err != nil {
+		return fmt.Errorf("invalid --hostname: %w", err)
+	}
+	if o.spn == "" {
+		o.spn = "smtp/" + o.relay
+	}
+	if strings.ContainsAny(o.spn, "\r\n\x00") {
+		return errors.New("invalid service principal")
+	}
+	if o.from == "" {
+		u, e := user.Current()
+		if e != nil {
+			return fmt.Errorf("determine envelope sender; specify -f: %w", e)
+		}
+		name := u.Username
+		if i := strings.LastIndexAny(name, `\/`); i >= 0 {
+			name = name[i+1:]
+		}
+		o.from = name
+	}
+	o.from, err = envelopeAddress(o.from, domain, true)
+	if err != nil {
+		return fmt.Errorf("envelope sender: %w", err)
+	}
+	message, recipients, err := prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
+	if err != nil {
+		return err
+	}
+	security, err := newSecurityContext(o)
+	if err != nil {
+		return fmt.Errorf("Kerberos credentials: %w", err)
+	}
+	defer func() {
+		if closeErr := security.Close(); closeErr != nil {
+			if err != nil {
+				err = errors.Join(err, closeErr)
+			} else {
+				fmt.Fprintf(log, "Warning: message accepted, but credential cleanup failed: %v\n", closeErr)
+			}
+		}
+	}()
+	if o.verbose {
+		fmt.Fprintf(log, "Submitting to %s:%d; realm=%s; SPN=%s; TLS=%s\n", o.relay, o.port, o.realm, o.spn, o.tlsMode)
+	}
+	if err := deliver(ctx, o, recipients, message, security, log); err != nil {
+		return err
+	}
+	if o.verbose {
+		fmt.Fprintln(log, "Message accepted by relay")
+	}
+	return nil
+}
