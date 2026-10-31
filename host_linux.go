@@ -5,10 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"time"
 )
-
-const discoveryTimeout = 5 * time.Second
 
 func platformHostname() (string, error) { return os.Hostname() }
 

@@ -1,23 +1,30 @@
 module ztmail
 
-go 1.24.0
+go 1.26.0
 
-replace gopkg.in/jcmturner/gokrb5.v7 => github.com/otuschhoff/gokrb5 v0.0.0-20260921141851-c241a6f162f8
+toolchain go1.26.9
 
 require (
-	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e
+	github.com/go-ldap/ldap/v3 v3.4.13-0.20260212000640-570560be831a
+	github.com/otuschhoff/adbind/ad v0.0.0-20261031222330-cb6973368047
+	github.com/otuschhoff/gokrb5/v8 v8.5.3
 	github.com/spf13/cobra v1.10.2
-	gopkg.in/jcmturner/gokrb5.v7 v7.0.0
 )
 
 require (
+	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
+	github.com/github/smimesign v0.2.0 // indirect
+	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
+	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
 	github.com/jcmturner/gofork v1.7.6 // indirect
+	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
+	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/crypto v0.17.0 // indirect
-	gopkg.in/jcmturner/aescts.v1 v1.0.1 // indirect
-	gopkg.in/jcmturner/dnsutils.v1 v1.0.1 // indirect
-	gopkg.in/jcmturner/goidentity.v3 v3.0.0 // indirect
-	gopkg.in/jcmturner/rpc.v1 v1.1.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )

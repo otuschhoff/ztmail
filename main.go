@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"os/user"
 	"strings"
 	"time"
 
@@ -15,12 +14,14 @@ import (
 )
 
 type options struct {
-	domain, realm, relay, hello, spn           string
-	auth, keytab, principal, ccache, krbConfig string
-	from, fullName, tlsMode                    string
-	port                                       int
-	timeout                                    time.Duration
-	readHeaders, ignoreDots, verbose           bool
+	domain, realm, relay, hello, spn string
+	auth, keytab, principal, ccache  string
+	dnsProbeZone, ldapCA             string
+	dnsServers                       []string
+	from, fullName, tlsMode          string
+	port                             int
+	timeout                          time.Duration
+	readHeaders, ignoreDots, verbose bool
 }
 
 func main() {
@@ -74,16 +75,18 @@ func newCommand() *cobra.Command {
 	f.StringVar(&o.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
 	f.StringVar(&o.auth, "auth", "auto", "Credential backend: auto, keytab, ccache, sspi")
 	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
-	f.StringVar(&o.principal, "principal", "", "Keytab principal, e.g. mailer@EXAMPLE.COM; inferred if unique")
+	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try keytab principals or use the cache/SSPI identity")
 	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
-	f.StringVar(&o.krbConfig, "krb5-config", "", "krb5.conf (otherwise KRB5_CONFIG, /etc/krb5.conf, or DNS defaults)")
-	f.StringVarP(&o.from, "from", "f", "", "Envelope sender; <> for null sender (default: current user@domain)")
+	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
+	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone used by adclient to qualify recursive AD DNS servers")
+	f.StringVar(&o.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
+	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: principal's canonical AD mail); <> keeps null envelope and original headers")
 	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
 	f.BoolVarP(&o.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
 	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
 	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status to stderr, without tokens or message content")
 	f.StringVar(&o.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
-	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "Overall SMTP connection/exchange timeout")
+	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "Overall AD discovery/authentication and SMTP submission timeout (excludes stdin)")
 	return cmd
 }
 
@@ -106,9 +109,6 @@ func validateOptions(o options) error {
 	}
 	if o.keytab != "" && o.ccache != "" {
 		return errors.New("--keytab and --ccache are mutually exclusive")
-	}
-	if o.principal != "" && o.keytab == "" {
-		return errors.New("--principal requires --keytab")
 	}
 	if o.auth == "keytab" && o.keytab == "" {
 		return errors.New("--auth keytab requires --keytab")
@@ -153,31 +153,27 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if strings.ContainsAny(o.spn, "\r\n\x00") {
 		return errors.New("invalid service principal")
 	}
-	if o.from == "" {
-		u, e := user.Current()
-		if e != nil {
-			return fmt.Errorf("determine envelope sender; specify -f: %w", e)
+	if o.from != "" {
+		sender, err := envelopeAddress(o.from, domain, true)
+		if err != nil {
+			return fmt.Errorf("envelope sender: %w", err)
 		}
-		name := u.Username
-		if i := strings.LastIndexAny(name, `\/`); i >= 0 {
-			name = name[i+1:]
+		if o.from != "<>" {
+			o.from = sender
 		}
-		o.from = name
-	}
-	o.from, err = envelopeAddress(o.from, domain, true)
-	if err != nil {
-		return fmt.Errorf("envelope sender: %w", err)
 	}
 	message, recipients, err := prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
 	if err != nil {
 		return err
 	}
-	security, err := newSecurityContext(o)
+	ctx, cancel := context.WithTimeout(ctx, o.timeout)
+	defer cancel()
+	session, err := openAD(ctx, o)
 	if err != nil {
-		return fmt.Errorf("Kerberos credentials: %w", err)
+		return fmt.Errorf("AD identity selection: %w", err)
 	}
 	defer func() {
-		if closeErr := security.Close(); closeErr != nil {
+		if closeErr := session.Close(); closeErr != nil {
 			if err != nil {
 				err = errors.Join(err, closeErr)
 			} else {
@@ -185,10 +181,18 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			}
 		}
 	}()
-	if o.verbose {
-		fmt.Fprintf(log, "Submitting to %s:%d; realm=%s; SPN=%s; TLS=%s\n", o.relay, o.port, o.realm, o.spn, o.tlsMode)
+	for _, failure := range session.failures {
+		fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
 	}
-	if err := deliver(ctx, o, recipients, message, security, log); err != nil {
+	message, o.from, err = applySender(message, o.from, session.mail, domain)
+	if err != nil {
+		return err
+	}
+	if o.verbose {
+		fmt.Fprintf(log, "Submitting to %s:%d; principal=%s; source=%s; SPN=%s; TLS=%s\n",
+			o.relay, o.port, session.identity.Principal, session.identity.Source, o.spn, o.tlsMode)
+	}
+	if err := deliver(ctx, o, recipients, message, session, log); err != nil {
 		return err
 	}
 	if o.verbose {

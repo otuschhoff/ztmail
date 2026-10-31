@@ -112,3 +112,59 @@ func TestEnvelopeAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestApplySender(t *testing.T) {
+	body := "MIME-Version: 1.0\r\nFrom: Original\r\n\t<original@example.com>\r\nSender: old@example.com\r\nTo: recipient@example.com\r\nSubject: Unchanged\r\n\r\n\x00binary\nbody\r\n"
+	for _, tt := range []struct {
+		name, explicit, canonical, envelope string
+		null, fail                          bool
+	}{
+		{"canonical", "", "primary@example.com", "primary@example.com", false, false},
+		{"override", "override@example.com", "primary@example.com", "override@example.com", false, false},
+		{"override-without-mail", "override@example.com", "", "override@example.com", false, false},
+		{"local-override", "override", "primary@example.com", "override@example.com", false, false},
+		{"null", "<>", "", "", true, false},
+		{"no-mail", "", "", "", false, true},
+		{"invalid", "bad\n@example.com", "", "", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result, envelope, err := applySender([]byte(body), tt.explicit, tt.canonical, "example.com")
+			if (err != nil) != tt.fail {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.fail {
+				return
+			}
+			if envelope != tt.envelope {
+				t.Fatalf("envelope=%q; want %q", envelope, tt.envelope)
+			}
+			if tt.null {
+				if string(result) != body {
+					t.Fatal("null sender must preserve original headers/body")
+				}
+				return
+			}
+			expected := "From: <" + tt.envelope + ">\r\nMIME-Version: 1.0\r\nSender: <" + tt.envelope + ">\r\nTo: recipient@example.com\r\nSubject: Unchanged\r\n\r\n\x00binary\nbody\r\n"
+			if string(result) != expected {
+				t.Fatalf("message=%q; want %q", result, expected)
+			}
+		})
+	}
+}
+
+func TestRewriteSenderWithoutFrom(t *testing.T) {
+	message := "Subject: test\n\nbody\n"
+	got, err := rewriteSender([]byte(message), "primary@example.com")
+	if err != nil || string(got) != "From: <primary@example.com>\n"+message {
+		t.Fatalf("message=%q err=%v", got, err)
+	}
+}
+
+func TestRewriteSenderRemovesDuplicateFoldedFields(t *testing.T) {
+	message := "From: one@example.com\nFrom: two@example.com\nSender: three@example.com\n folded\nSender: four@example.com\n\nbody\n"
+	got, err := rewriteSender([]byte(message), "primary@example.com")
+	want := "From: <primary@example.com>\nSender: <primary@example.com>\n\nbody\n"
+	if err != nil || string(got) != want {
+		t.Fatalf("message=%q err=%v", got, err)
+	}
+}

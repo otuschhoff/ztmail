@@ -154,3 +154,66 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 	}
 	return clean.Bytes(), envelope, nil
 }
+
+func applySender(message []byte, explicit, canonical, domain string) ([]byte, string, error) {
+	if explicit == "<>" {
+		return message, "", nil
+	}
+	sender := explicit
+	if sender == "" {
+		sender = canonical
+	}
+	if sender == "" {
+		return nil, "", errors.New("authenticated AD identity has no canonical sender; specify -f")
+	}
+	envelope, err := envelopeAddress(sender, domain, false)
+	if err != nil {
+		return nil, "", fmt.Errorf("selected sender: %w", err)
+	}
+	rewritten, err := rewriteSender(message, envelope)
+	return rewritten, envelope, err
+}
+
+func rewriteSender(message []byte, sender string) ([]byte, error) {
+	address, err := mail.ParseAddress(sender)
+	if err != nil || address.Name != "" || address.Address != sender || strings.ContainsAny(sender, "\r\n\x00") {
+		return nil, errors.New("sender rewrite requires a single bare mailbox")
+	}
+	newline := "\n"
+	if first := bytes.IndexByte(message, '\n'); first > 0 && message[first-1] == '\r' {
+		newline = "\r\n"
+	}
+	var out bytes.Buffer
+	out.WriteString("From: " + address.String() + newline)
+	skip, senderWritten := false, false
+	for offset := 0; offset < len(message); {
+		end := bytes.IndexByte(message[offset:], '\n')
+		if end < 0 {
+			break
+		}
+		end += offset + 1
+		line := message[offset:end]
+		offset = end
+		text := strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r")
+		if text == "" {
+			out.Write(line)
+			out.Write(message[offset:])
+			return out.Bytes(), nil
+		}
+		if text[0] != ' ' && text[0] != '\t' {
+			name, _, found := strings.Cut(text, ":")
+			if !found {
+				return nil, errors.New("malformed header during sender rewrite")
+			}
+			skip = strings.EqualFold(name, "from") || strings.EqualFold(name, "sender")
+			if strings.EqualFold(name, "sender") && !senderWritten {
+				out.WriteString("Sender: " + address.String() + newline)
+				senderWritten = true
+			}
+		}
+		if !skip {
+			out.Write(line)
+		}
+	}
+	return nil, errors.New("message has no header/body separator for sender rewrite")
+}

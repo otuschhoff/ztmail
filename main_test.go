@@ -31,7 +31,7 @@ func TestCommandFlagValidation(t *testing.T) {
 		{"--auth", "keytab"},
 		{"--auth", "sspi", "--keytab", "a"},
 		{"--auth", "keytab", "--keytab", "a", "--ccache", "b"},
-		{"--principal", "user@REALM"},
+		{"--krb5-config", "/tmp/krb5.conf"},
 		{"--unsupported"},
 	}
 	for _, args := range tests {

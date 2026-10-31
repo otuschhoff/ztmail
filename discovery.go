@@ -56,15 +56,8 @@ func discoverHost(ctx context.Context, override string) (string, string, error) 
 	if domain := hostDomain(host); domain != "" {
 		return host, domain, nil
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
-	defer cancel()
-	canonical, lookupErr := net.DefaultResolver.LookupCNAME(lookupCtx, host)
-	if lookupErr == nil {
-		if canonical, err = dnsName(canonical); err == nil {
-			if domain := hostDomain(canonical); domain != "" {
-				return canonical, domain, nil
-			}
-		}
+	if err := ctx.Err(); err != nil {
+		return "", "", err
 	}
 	domain, suffixErr := platformDomain()
 	if suffixErr == nil && domain != "" {
@@ -75,5 +68,5 @@ func discoverHost(ctx context.Context, override string) (string, string, error) 
 		suffixErr = err
 	}
 	return "", "", fmt.Errorf("cannot discover host DNS domain; specify --domain: %w",
-		errors.Join(errors.New("no fully qualified host name or usable DNS suffix"), lookupErr, suffixErr))
+		errors.Join(errors.New("no fully qualified host name or usable DNS suffix"), suffixErr))
 }

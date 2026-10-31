@@ -7,17 +7,23 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/smtp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type securityContext interface {
 	Start() ([]byte, error)
 	Step([]byte) ([]byte, bool, error)
-	Unwrap([]byte) ([]byte, error)
-	Wrap([]byte) ([]byte, error)
+	Negotiate([]byte) ([]byte, error)
 	Close() error
+}
+
+type submissionBackend interface {
+	Resolve(context.Context, string) ([]netip.Addr, error)
+	NewSecurityContext(context.Context, string, *tls.ConnectionState) (securityContext, error)
 }
 
 type gssAuth struct {
@@ -57,17 +63,9 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 		}
 		return token, nil
 	case 1:
-		offer, err := a.security.Unwrap(challenge)
+		response, err := a.security.Negotiate(challenge)
 		if err != nil {
-			return nil, fmt.Errorf("verify SASL security-layer offer: %w", err)
-		}
-		if len(offer) != 4 || offer[0]&1 == 0 {
-			return nil, errors.New("relay does not offer the SASL no-security-layer option; use TLS with a compatible relay")
-		}
-		// RFC 4752: select no SASL layer; TLS provides transport confidentiality and integrity.
-		response, err := a.security.Wrap([]byte{1, 0, 0, 0})
-		if err != nil {
-			return nil, fmt.Errorf("sign SASL security-layer selection: %w", err)
+			return nil, fmt.Errorf("AD GSSAPI SASL negotiation: %w", err)
 		}
 		a.stage = 2
 		return response, nil
@@ -76,11 +74,10 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 	}
 }
 
-func deliver(ctx context.Context, o options, recipients []string, message []byte, security securityContext, log io.Writer) error {
+func deliver(ctx context.Context, o options, recipients []string, message []byte, backend submissionBackend, log io.Writer) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	addr := net.JoinHostPort(o.relay, strconv.Itoa(o.port))
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	conn, err := dialRelay(ctx, o, backend)
 	if err != nil {
 		return fmt.Errorf("connect to relay: %w", err)
 	}
@@ -117,6 +114,23 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			return fmt.Errorf("SMTP STARTTLS: %w", err)
 		}
 	}
+	var state *tls.ConnectionState
+	if tlsState, ok := c.TLSConnectionState(); ok {
+		state = &tlsState
+	}
+	security, err := backend.NewSecurityContext(ctx, o.spn, state)
+	if err != nil {
+		return fmt.Errorf("AD SMTP security context: %w", err)
+	}
+	defer func() {
+		if closeErr := security.Close(); closeErr != nil {
+			if err != nil {
+				err = errors.Join(err, closeErr)
+			} else {
+				fmt.Fprintf(log, "Warning: message accepted, but security context cleanup failed: %v\n", closeErr)
+			}
+		}
+	}()
 	if err := c.Auth(&gssAuth{security: security}); err != nil {
 		return fmt.Errorf("SMTP AUTH GSSAPI: %w", err)
 	}
@@ -143,6 +157,37 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		fmt.Fprintf(log, "Warning: message accepted, but SMTP QUIT failed: %v\n", err)
 	}
 	return nil
+}
+
+func dialRelay(ctx context.Context, o options, backend submissionBackend) (net.Conn, error) {
+	addresses, err := backend.Resolve(ctx, o.relay)
+	if err != nil {
+		return nil, fmt.Errorf("AD DNS relay lookup: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("AD DNS relay lookup returned no addresses")
+	}
+	var failures []error
+	for i, address := range addresses {
+		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
+			return nil, errors.New("AD DNS relay lookup returned an invalid unicast IP")
+		}
+		work := ctx
+		cancel := func() {}
+		if deadline, ok := ctx.Deadline(); ok {
+			work, cancel = context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(addresses)-i))
+		}
+		conn, err := (&net.Dialer{}).DialContext(work, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(o.port)))
+		cancel()
+		if err == nil {
+			return conn, nil
+		}
+		failures = append(failures, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, errors.Join(failures...)
 }
 
 var _ smtp.Auth = (*gssAuth)(nil)

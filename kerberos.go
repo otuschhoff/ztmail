@@ -1,314 +1,307 @@
 package main
 
 import (
-	"encoding/binary"
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
-	"gopkg.in/jcmturner/gokrb5.v7/client"
-	"gopkg.in/jcmturner/gokrb5.v7/config"
-	"gopkg.in/jcmturner/gokrb5.v7/credentials"
-	"gopkg.in/jcmturner/gokrb5.v7/crypto"
-	"gopkg.in/jcmturner/gokrb5.v7/gssapi"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/flags"
-	"gopkg.in/jcmturner/gokrb5.v7/iana/keyusage"
-	"gopkg.in/jcmturner/gokrb5.v7/keytab"
-	"gopkg.in/jcmturner/gokrb5.v7/messages"
-	"gopkg.in/jcmturner/gokrb5.v7/spnego"
-	"gopkg.in/jcmturner/gokrb5.v7/types"
+	"github.com/go-ldap/ldap/v3"
+	"github.com/otuschhoff/adbind/ad/adclient"
+	"github.com/otuschhoff/adbind/ad/addns"
+	"github.com/otuschhoff/adbind/ad/directory"
+	"github.com/otuschhoff/adbind/ad/kerberos"
+	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
+	"github.com/otuschhoff/gokrb5/v8/iana/flags"
 )
 
-func newSecurityContext(o options) (securityContext, error) {
-	backend := o.auth
-	if backend == "auto" {
-		switch {
-		case o.keytab != "":
-			backend = "keytab"
-		case o.ccache != "":
-			backend = "ccache"
-		case runtime.GOOS == "windows":
-			backend = "sspi"
-		default:
-			backend = "ccache"
-		}
+type adSession struct {
+	client   *adclient.Client
+	lease    *kerberos.Lease
+	identity kerberos.Identity
+	mail     string
+	failures []error
+}
+
+var errADCleanup = errors.New("AD credential cleanup failed")
+
+func credentialOptions(o options) (kerberos.Options, error) {
+	credentials := kerberos.Options{Realm: o.realm, Principal: o.principal}
+	switch {
+	case o.auth != "auto":
+		credentials.Source = kerberos.Source(o.auth)
+	case o.keytab != "":
+		credentials.Source = kerberos.SourceKeytab
+	case o.ccache != "":
+		credentials.Source = kerberos.SourceCCache
+	case runtime.GOOS == "windows":
+		credentials.Source = kerberos.SourceSSPI
+	default:
+		credentials.Source = kerberos.SourceCCache
 	}
-	if backend == "sspi" {
-		if o.krbConfig != "" {
-			return nil, errors.New("--krb5-config does not apply to SSPI; Windows manages KDC configuration")
-		}
-		return newSSPIContext(o.spn)
+	var err error
+	if credentials.Source == kerberos.SourceKeytab {
+		credentials.Keytab, err = filepath.Abs(o.keytab)
 	}
-	cfg, err := kerberosConfig(o)
-	if err != nil {
-		return nil, err
-	}
-	var cl *client.Client
-	if backend == "keytab" {
-		kt, err := keytab.Load(o.keytab)
-		if err != nil {
-			return nil, fmt.Errorf("load keytab: %w", err)
-		}
-		name, err := keytabPrincipal(kt, o.principal, o.realm)
-		if err != nil {
-			return nil, err
-		}
-		cl = client.NewClientWithKeytab(name, o.realm, kt, cfg, client.DisablePAFXFAST(true))
-		if err := cl.Login(); err != nil {
-			cl.Destroy()
-			return nil, fmt.Errorf("keytab login: %w", err)
-		}
-	} else {
+	if credentials.Source == kerberos.SourceCCache {
 		path := o.ccache
 		if path == "" {
 			path = os.Getenv("KRB5CCNAME")
 		}
-		if path == "" {
-			if runtime.GOOS == "windows" {
-				return nil, errors.New("--auth ccache on Windows requires --ccache or KRB5CCNAME")
-			}
+		if path == "" && runtime.GOOS != "windows" {
 			path = fmt.Sprintf("/tmp/krb5cc_%d", os.Getuid())
 		}
-		path, err = cachePath(path)
-		if err != nil {
-			return nil, err
+		if path == "" {
+			return credentials, errors.New("--auth ccache requires --ccache or KRB5CCNAME")
 		}
-		cache, err := credentials.LoadCCache(path)
-		if err != nil {
-			return nil, fmt.Errorf("load credential cache %q (run kinit or specify --keytab): %w", path, err)
-		}
-		cl, err = client.NewClientFromCCache(cache, cfg, client.DisablePAFXFAST(true))
-		if err != nil {
-			if cl != nil {
-				cl.Destroy()
-			}
-			return nil, fmt.Errorf("initialize credential cache: %w", err)
-		}
+		credentials.CCache, err = cachePath(path)
 	}
-	return &kerberosContext{client: cl, target: o.spn}, nil
+	if err != nil {
+		return credentials, err
+	}
+	if credentials.Principal != "" && !strings.Contains(credentials.Principal, "@") {
+		credentials.Principal += "@" + o.realm
+	}
+	return credentials, nil
 }
 
 func cachePath(path string) (string, error) {
 	if strings.HasPrefix(path, "FILE:") {
 		path = strings.TrimPrefix(path, "FILE:")
 	} else if i := strings.IndexByte(path, ':'); i >= 0 && !(i == 1 && len(path) > 2 && (path[2] == '\\' || path[2] == '/')) {
-		return "", errors.New("only FILE credential caches are supported; use kinit with KRB5CCNAME=FILE:/path or --keytab")
+		return "", errors.New("only read-only FILE credential caches are supported; specify --ccache or --keytab")
 	}
 	if path == "" {
 		return "", errors.New("empty credential cache path")
 	}
-	return path, nil
+	return filepath.Abs(path)
 }
 
-func kerberosConfig(o options) (*config.Config, error) {
-	path := o.krbConfig
-	explicit := path != ""
-	if path == "" {
-		path = os.Getenv("KRB5_CONFIG")
-		explicit = path != ""
-	}
-	if path == "" {
-		path = "/etc/krb5.conf"
-	}
-	cfg, err := loadKerberosConfig(path, !explicit)
+func adOptions(o options) (adclient.ADOptions, error) {
+	credentials, err := credentialOptions(o)
 	if err != nil {
-		return nil, err
+		return adclient.ADOptions{}, err
 	}
-	cfg.LibDefaults.DefaultRealm = o.realm
-	cfg.LibDefaults.RDNS = false
-	if cfg.DomainRealm == nil {
-		cfg.DomainRealm = make(config.DomainRealm)
-	}
-	cfg.DomainRealm[o.domain] = o.realm
-	cfg.DomainRealm["."+o.domain] = o.realm
-	return cfg, nil
-}
-
-func loadKerberosConfig(path string, optional bool) (*config.Config, error) {
-	data, err := os.ReadFile(path)
-	if optional && errors.Is(err, os.ErrNotExist) {
-		cfg := config.NewConfig()
-		cfg.LibDefaults.DNSLookupKDC = true
-		return cfg, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read Kerberos config %q: %w", path, err)
-	}
-	cfg, err := config.NewConfigFromString(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("parse Kerberos config %q: %w", path, err)
-	}
-	return cfg, nil
-}
-
-func keytabPrincipal(kt *keytab.Keytab, requested, realm string) (string, error) {
-	if requested != "" {
-		name := requested
-		if i := strings.LastIndexByte(name, '@'); i >= 0 {
-			if name[i+1:] != realm {
-				return "", errors.New("--principal realm does not match --realm/discovered realm")
+	dns := addns.Options{Domain: o.domain, RecursionProbeZone: o.dnsProbeZone}
+	for _, server := range o.dnsServers {
+		endpoint, err := netip.ParseAddrPort(server)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(server)
+			if addressErr != nil {
+				return adclient.ADOptions{}, fmt.Errorf("--dns-server must be a numeric IP or IP:port: %q", server)
 			}
-			name = name[:i]
+			endpoint = netip.AddrPortFrom(address, 53)
 		}
-		if name == "" {
-			return "", errors.New("empty keytab principal name")
+		if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().IsUnspecified() || endpoint.Addr().IsMulticast() {
+			return adclient.ADOptions{}, fmt.Errorf("invalid --dns-server %q", server)
 		}
-		for _, e := range kt.Entries {
-			if e.Principal.Realm == realm && strings.Join(e.Principal.Components, "/") == name {
-				return name, nil
+		dns.Bootstrap = append(dns.Bootstrap, endpoint)
+	}
+	if len(dns.Bootstrap) != 0 {
+		dns.BootstrapMethods = []addns.BootstrapMethod{addns.BootstrapExplicit}
+	}
+	trust, err := adclient.NewTrust(adclient.TrustPolicy{Protection: "tls", CAFile: o.ldapCA})
+	if err != nil {
+		return adclient.ADOptions{}, fmt.Errorf("LDAP TLS trust: %w", err)
+	}
+	return adclient.ADOptions{DNS: dns, Credentials: credentials, Trust: trust, Protection: "tls"}, nil
+}
+
+func openAD(ctx context.Context, o options) (*adSession, error) {
+	settings, err := adOptions(o)
+	if err != nil {
+		return nil, err
+	}
+	candidates := []string{settings.Credentials.Principal}
+	if settings.Credentials.Source == kerberos.SourceKeytab && settings.Credentials.Principal == "" {
+		entries, err := keytab.Inspect(settings.Credentials.Keytab)
+		if err != nil {
+			return nil, fmt.Errorf("inspect keytab: %w", err)
+		}
+		candidates, err = principalCandidates(entries, o.realm)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return selectADSession(ctx, candidates, func(ctx context.Context, principal string) (*adSession, error) {
+		attempt := settings
+		attempt.Credentials.Principal = principal
+		return openADAttempt(ctx, o, attempt)
+	})
+}
+
+func principalCandidates(entries []keytab.EntryMetadata, realm string) ([]string, error) {
+	seen := make(map[string]bool)
+	var candidates []string
+	for _, entry := range entries {
+		if !strings.EqualFold(entry.Realm, realm) {
+			continue
+		}
+		principal := strings.Join(entry.Components, "/") + "@" + strings.ToUpper(entry.Realm)
+		if !seen[principal] {
+			candidates = append(candidates, principal)
+			seen[principal] = true
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("keytab has no principals in %s; specify --realm", realm)
+	}
+	return candidates, nil
+}
+
+func selectADSession(ctx context.Context, candidates []string, try func(context.Context, string) (*adSession, error)) (*adSession, error) {
+	var failures []error
+	for _, principal := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(append(failures, err)...)
+		}
+		session, err := try(ctx, principal)
+		if err == nil {
+			session.failures = failures
+			return session, nil
+		}
+		failures = append(failures, fmt.Errorf("principal %q: %w", principal, err))
+		if errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) || errors.Is(err, errADCleanup) {
+			break
+		}
+	}
+	return nil, errors.Join(append([]error{errors.New("no usable AD credential identity; all principal attempts failed")}, failures...)...)
+}
+
+func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) (_ *adSession, err error) {
+	client, err := adclient.NewAD(settings)
+	if err != nil {
+		return nil, err
+	}
+	session := &adSession{client: client}
+	defer func() {
+		if err != nil {
+			if closeErr := session.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
 			}
 		}
-		return "", fmt.Errorf("principal %s@%s is not present in keytab", name, realm)
+	}()
+	session.lease, err = client.Credentials().Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire AD credentials: %w", err)
 	}
-	names := make(map[string]bool)
-	for _, e := range kt.Entries {
-		if e.Principal.Realm == realm {
-			names[strings.Join(e.Principal.Components, "/")] = true
+	session.identity, err = session.lease.Identity()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := session.lease.ServiceTicket(ctx, o.spn); err != nil {
+		return nil, fmt.Errorf("get SMTP service ticket: %w", err)
+	}
+	if o.from == "" {
+		session.mail, err = canonicalMail(ctx, client, session.identity)
+		if err != nil {
+			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w", session.identity.Principal, err)
 		}
 	}
-	if len(names) != 1 {
-		return "", fmt.Errorf("keytab has %d distinct principals in %s; specify --principal and/or --realm", len(names), realm)
-	}
-	for name := range names {
-		return name, nil
-	}
-	return "", errors.New("keytab contains no principal")
+	return session, nil
 }
 
-type kerberosContext struct {
-	client                        *client.Client
-	target                        string
-	key, subkey                   types.EncryptionKey
-	authTime                      time.Time
-	authUsec                      int
-	sendSequence, receiveSequence uint64
-	established                   bool
+type adSearcher interface {
+	Search(context.Context, *ldap.SearchRequest) ([]adclient.Entry, error)
 }
 
-func (c *kerberosContext) Start() ([]byte, error) {
-	ticket, key, err := c.client.GetServiceTicket(c.target)
+func canonicalMail(ctx context.Context, client adSearcher, identity kerberos.Identity) (string, error) {
+	root, err := directory.RootDSE(ctx, client)
 	if err != nil {
-		return nil, fmt.Errorf("get service ticket for %s: %w", c.target, err)
+		return "", err
 	}
-	c.key = key
-	token, err := spnego.NewKRB5TokenAPREQ(c.client, ticket, key,
-		[]int{gssapi.ContextFlagMutual, gssapi.ContextFlagInteg, gssapi.ContextFlagReplay, gssapi.ContextFlagSequence},
-		[]int{flags.APOptionMutualRequired})
+	base, err := directory.SingleValue(root, "defaultNamingContext")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	// The library does not retain its generated authenticator; recover it to verify AP-REP.
-	if err := token.APReq.DecryptAuthenticator(key); err != nil {
-		return nil, err
+	if _, err := ldap.ParseDN(base); err != nil {
+		return "", fmt.Errorf("invalid AD naming context: %w", err)
 	}
-	auth := token.APReq.Authenticator
-	c.authTime, c.authUsec = auth.CTime, auth.Cusec
-	c.sendSequence = uint64(auth.SeqNumber)
-	return token.Marshal()
+	filter, err := identityFilter(identity)
+	if err != nil {
+		return "", err
+	}
+	request := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 0, false,
+		filter, []string{"mail", "proxyAddresses"}, nil)
+	entries, err := client.Search(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 0 {
+		return "", directory.ErrNotFound
+	}
+	if len(entries) != 1 {
+		return "", directory.ErrAmbiguous
+	}
+	return directory.CanonicalMail(&entries[0])
 }
 
-func (c *kerberosContext) Step(input []byte) ([]byte, bool, error) {
-	if c.established {
-		return nil, false, errors.New("Kerberos context already established")
+func identityFilter(identity kerberos.Identity) (string, error) {
+	name, realm, found := strings.Cut(identity.Principal, "@")
+	if !found || name == "" || realm == "" || strings.Contains(realm, "@") || !strings.EqualFold(realm, identity.Realm) || strings.ContainsAny(identity.Principal, "\r\n\x00") {
+		return "", errors.New("invalid authenticated AD identity")
 	}
-	var token spnego.KRB5Token
-	if err := token.Unmarshal(input); err != nil {
-		return nil, false, err
+	alternatives := "(userPrincipalName=" + ldap.EscapeFilter(identity.Principal) + ")"
+	if strings.Contains(name, "/") {
+		alternatives += "(servicePrincipalName=" + ldap.EscapeFilter(name) + ")"
+	} else {
+		alternatives += "(sAMAccountName=" + ldap.EscapeFilter(name) + ")"
 	}
-	if token.IsKRBError() {
-		return nil, false, token.KRBError
-	}
-	if !token.IsAPRep() {
-		return nil, false, errors.New("expected Kerberos AP-REP")
-	}
-	plain, err := crypto.DecryptEncPart(token.APRep.EncPart, c.key, keyusage.AP_REP_ENCPART)
-	if err != nil {
-		return nil, false, err
-	}
-	var reply messages.EncAPRepPart
-	if err := reply.Unmarshal(plain); err != nil {
-		return nil, false, err
-	}
-	if !reply.CTime.Equal(c.authTime) || reply.Cusec != c.authUsec {
-		return nil, false, errors.New("AP-REP timestamp does not match the initiator authenticator")
-	}
-	c.subkey = reply.Subkey
-	c.receiveSequence = uint64(reply.SequenceNumber)
-	c.established = true
-	return []byte{}, true, nil
+	return "(&(objectClass=user)(|" + alternatives + "))", nil
 }
 
-func (c *kerberosContext) Unwrap(input []byte) ([]byte, error) {
-	if !c.established {
-		return nil, errors.New("Kerberos context not established")
-	}
-	normalized, err := unrotateWrap(input)
+func (s *adSession) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	dns, err := s.client.DNS()
 	if err != nil {
 		return nil, err
 	}
-	var token gssapi.WrapToken
-	if err := token.Unmarshal(normalized, true); err != nil {
-		return nil, err
-	}
-	if token.Flags & ^byte(5) != 0 {
-		return nil, errors.New("expected an RFC 4121 integrity-only wrap token (AES Kerberos keys required)")
-	}
-	key := c.key
-	if token.Flags&4 != 0 {
-		if len(c.subkey.KeyValue) == 0 {
-			return nil, errors.New("server selected a missing acceptor subkey")
-		}
-		key = c.subkey
-	}
-	if _, err := token.Verify(key, keyusage.GSSAPI_ACCEPTOR_SEAL); err != nil {
-		return nil, fmt.Errorf("invalid server wrap checksum: %w", err)
-	}
-	if token.SndSeqNum != c.receiveSequence {
-		return nil, errors.New("server wrap token has an unexpected sequence number")
-	}
-	c.receiveSequence++
-	return token.Payload, nil
+	result, err := dns.LookupHost(ctx, host)
+	return result.Addresses, err
 }
 
-func (c *kerberosContext) Wrap(payload []byte) ([]byte, error) {
-	if !c.established {
-		return nil, errors.New("Kerberos context not established")
-	}
-	key, flag := c.key, byte(0)
-	if len(c.subkey.KeyValue) != 0 {
-		key, flag = c.subkey, 4
-	}
-	token, err := gssapi.NewInitiatorWrapToken(payload, key)
+func (s *adSession) NewSecurityContext(ctx context.Context, spn string, state *tls.ConnectionState) (securityContext, error) {
+	security, err := s.lease.NewSecurityContextWithTLS(ctx, spn, state)
 	if err != nil {
 		return nil, err
 	}
-	token.Flags, token.SndSeqNum, token.CheckSum = flag, c.sendSequence, nil
-	if err := token.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL); err != nil {
-		return nil, err
-	}
-	c.sendSequence++
-	return token.Marshal()
+	return &adSecurityContext{context: security, target: spn}, nil
 }
 
-func unrotateWrap(input []byte) ([]byte, error) {
-	if len(input) <= gssapi.HdrLen {
-		return nil, errors.New("GSSAPI wrap token is too short")
+func (s *adSession) Close() error {
+	if s.lease != nil {
+		s.lease.Release()
 	}
-	out := append([]byte(nil), input...)
-	body := out[gssapi.HdrLen:]
-	rotation := int(binary.BigEndian.Uint16(out[6:8])) % len(body)
-	if rotation != 0 {
-		copy(body, append(append([]byte(nil), body[rotation:]...), body[:rotation]...))
-	}
-	binary.BigEndian.PutUint16(out[6:8], 0)
-	return out, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.client.Close(ctx)
 }
 
-func (c *kerberosContext) Close() error {
-	c.client.Destroy()
-	c.key, c.subkey = types.EncryptionKey{}, types.EncryptionKey{}
-	return nil
+type adSecurityContext struct {
+	context kerberos.SecurityContext
+	target  string
 }
+
+func (c *adSecurityContext) Start() ([]byte, error) {
+	token, more, err := c.context.InitSecContextWithOptions(c.target, nil, []int{flags.APOptionMutualRequired})
+	if err == nil && !more {
+		return nil, errors.New("AD context completed before mutual authentication")
+	}
+	return token, err
+}
+
+func (c *adSecurityContext) Step(input []byte) ([]byte, bool, error) {
+	token, more, err := c.context.InitSecContext(c.target, input)
+	return token, !more, err
+}
+
+func (c *adSecurityContext) Negotiate(input []byte) ([]byte, error) {
+	return c.context.NegotiateSaslAuth(input, "")
+}
+
+func (c *adSecurityContext) Close() error { return c.context.DeleteSecContext() }

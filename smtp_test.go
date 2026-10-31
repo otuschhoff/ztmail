@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/smtp"
 	"net/textproto"
 	"reflect"
@@ -22,6 +24,7 @@ type fakeSecurity struct {
 	offer   []byte
 	wrapped []byte
 	fail    bool
+	closed  int
 }
 
 func (f *fakeSecurity) Start() ([]byte, error) { return []byte("request"), nil }
@@ -31,17 +34,57 @@ func (f *fakeSecurity) Step(input []byte) ([]byte, bool, error) {
 	}
 	return []byte{}, true, nil
 }
-func (f *fakeSecurity) Unwrap([]byte) ([]byte, error) {
+func (f *fakeSecurity) Negotiate([]byte) ([]byte, error) {
 	if f.fail {
 		return nil, errors.New("bad signature")
 	}
-	return f.offer, nil
-}
-func (f *fakeSecurity) Wrap(payload []byte) ([]byte, error) {
-	f.wrapped = append([]byte(nil), payload...)
+	if len(f.offer) != 4 || f.offer[0]&1 == 0 {
+		return nil, errors.New("no supported SASL security layer")
+	}
+	f.wrapped = []byte{1, 0, 0, 0}
 	return []byte("signed-selection"), nil
 }
-func (f *fakeSecurity) Close() error { return nil }
+func (f *fakeSecurity) Close() error { f.closed++; return nil }
+
+type fakeBackend struct {
+	security   *fakeSecurity
+	address    netip.Addr
+	contexts   int
+	state      *tls.ConnectionState
+	resolveErr error
+	addresses  []netip.Addr
+}
+
+func (f *fakeBackend) Resolve(context.Context, string) ([]netip.Addr, error) {
+	if f.resolveErr != nil {
+		return nil, f.resolveErr
+	}
+	if f.addresses != nil {
+		return f.addresses, nil
+	}
+	return []netip.Addr{f.address}, nil
+}
+
+func TestRelayDNSFailuresDoNotCreateContext(t *testing.T) {
+	for _, backend := range []*fakeBackend{
+		{resolveErr: errors.New("AD DNS unavailable")},
+		{addresses: []netip.Addr{}},
+		{addresses: []netip.Addr{netip.Addr{}}},
+		{addresses: []netip.Addr{netip.MustParseAddr("0.0.0.0")}},
+	} {
+		o := options{relay: "relay.corp.example", port: 25, timeout: time.Second}
+		err := deliver(context.Background(), o, []string{"user@example.com"}, nil, backend, io.Discard)
+		if err == nil || backend.contexts != 0 {
+			t.Fatalf("err=%v contexts=%d", err, backend.contexts)
+		}
+	}
+}
+
+func (f *fakeBackend) NewSecurityContext(_ context.Context, _ string, state *tls.ConnectionState) (securityContext, error) {
+	f.contexts++
+	f.state = state
+	return f.security, nil
+}
 
 func TestGSSAPIAuth(t *testing.T) {
 	f := &fakeSecurity{offer: []byte{7, 0, 16, 0}}
@@ -211,12 +254,16 @@ func TestSMTPSubmission(t *testing.T) {
 				o.tlsMode = "required"
 			}
 			f := &fakeSecurity{offer: []byte{1, 0, 0, 0}}
+			backend := &fakeBackend{security: f, address: netip.MustParseAddr(host)}
 			var log bytes.Buffer
-			err = deliver(context.Background(), o, []string{"one@example.com", "two@example.com"}, []byte("Subject: test\n\nline\n.dot\n"), f, &log)
+			err = deliver(context.Background(), o, []string{"one@example.com", "two@example.com"}, []byte("Subject: test\n\nline\n.dot\n"), backend, &log)
 			result := <-results
 			if mode == "starttls-required" {
 				if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
 					t.Fatalf("expected STARTTLS failure, got %v", err)
+				}
+				if backend.contexts != 0 {
+					t.Fatal("security context created before required TLS")
 				}
 				for _, command := range result.commands {
 					if strings.HasPrefix(command, "AUTH ") {
@@ -236,6 +283,9 @@ func TestSMTPSubmission(t *testing.T) {
 			}
 			if err != nil || result.err != nil {
 				t.Fatalf("client=%v server=%v", err, result.err)
+			}
+			if f.closed != 1 || backend.contexts != 1 || backend.state != nil {
+				t.Fatalf("context lifecycle: closed=%d contexts=%d TLS=%v", f.closed, backend.contexts, backend.state)
 			}
 			if result.message != "Subject: test\n\nline\n.dot\n" {
 				t.Fatalf("message corrupted: %q", result.message)

@@ -6,7 +6,8 @@ It does not use passwords, NTLM, HTTP Negotiate, or anonymous SMTP fallback.
 
 ## Build
 
-Requires Go 1.24 or later. On Linux, `make build` produces:
+Requires Go 1.26 or later; the module selects toolchain Go 1.26.9.
+On Linux, `make build` produces:
 
 - `dist/ztmail-linux-amd64`
 - `dist/ztmail-windows-amd64.exe`
@@ -21,12 +22,18 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dist/ztmail-window
 make test
 ```
 
-The requested [github.com/otuschhoff/gokrb5](https://github.com/otuschhoff/gokrb5)
-fork retains the `gopkg.in/jcmturner/gokrb5.v7` module/import path.
-`go.mod` pins that fork via `replace`; it is not using an unmodified upstream
-Kerberos implementation. Windows integrated authentication uses
-[alexbrainman/sspi](https://github.com/alexbrainman/sspi)'s **Kerberos** package,
-not its NTLM-capable Negotiate package.
+All DNS, Kerberos, and LDAP queries use the combined
+[`github.com/otuschhoff/adbind/ad/adclient`](https://github.com/otuschhoff/adbind)
+SDK. The application owns one selected AD client and borrows its DNS and
+credential lease; SMTP connections are made only to numeric IPs returned by
+that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
+Windows SSPI are delegated to the SDK. It uses
+`github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
+
+The SDK is pinned to revision `cb6973368047`, which adds external credential
+sources and OS DNS bootstrap. The repository is private: configure GitHub
+access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
+There is no local-path module replacement.
 
 ## Defaults and discovery
 
@@ -40,13 +47,16 @@ For a machine named `worker.corp.example.com`:
 | Port | `25` |
 | Service principal (SPN) | `smtp/mailgw.corp.example.com` |
 | TLS | Required STARTTLS, certificate/hostname verified, TLS >= 1.2 |
-| Envelope sender | Current OS user at the host DNS domain |
+| Envelope sender and From | Authenticated principal's canonical AD mail address |
+| DNS bootstrap | OS DNS servers, discovered by adclient |
+| DNS recursion probe zone | `example.com` (must be outside the AD domain) |
 
-Discovery uses the host FQDN, then its DNS canonical name. Linux additionally
+Domain inference uses local host configuration, without ambient DNS queries.
+Discovery uses the host FQDN. Linux additionally
 uses the first suffix from the last `search`/`domain` directive in
 `/etc/resolv.conf`; Windows reads the machine's primary DNS suffix using
-`GetComputerNameExW`, not the logged-in user's domain. Search suffixes and DNS
-aliases are heuristics: specify `--domain` on multihomed hosts, containers, or
+`GetComputerNameExW`, not the logged-in user's domain. Search suffixes
+are heuristics: specify `--domain` on multihomed hosts, containers, or
 machines whose resolver search domain differs from their AD domain.
 Discovery fails explicitly if no domain is available.
 
@@ -55,50 +65,70 @@ and/or `--spn`. The relay must be a DNS hostname, not a URL, IP literal, or
 `host:port`. The SPN must be registered to the relay's AD service account;
 an alias may require an explicit `--spn`.
 
+The SDK discovers and qualifies AD DNS servers from OS resolver configuration,
+then uses that DNS path for DC/KDC and relay resolution. There is no application
+`net.DefaultResolver`, alternate LDAP client, or direct Kerberos network client.
+Override bootstrap with repeatable `--dns-server IP[:port]` (IPv6 ports require
+brackets); this disables OS bootstrap fallback. Configure an external
+`--dns-probe-zone` if `example.com` is in your AD domain or unsuitable for your
+DNS policy. The SDK uses bounded random-name probes under that zone to qualify
+recursive capability. Bootstrap servers are discovery hints, not automatically
+trusted AD data servers.
+
 ## Credentials
-
-### Linux: existing Kerberos ticket
-
-```sh
-kinit alice@CORP.EXAMPLE.COM
-./dist/ztmail-linux-amd64 -oi -t < message.eml
-```
-
-By default, Linux reads `KRB5CCNAME`, falling back to `/tmp/krb5cc_<uid>`.
-Only a **FILE** credential cache is supported; DIR, KCM, and KEYRING caches
-must first be exported/replaced with a FILE cache:
-
-```sh
-KRB5CCNAME=FILE:/tmp/ztmail.ccache kinit alice@CORP.EXAMPLE.COM
-./dist/ztmail-linux-amd64 --ccache /tmp/ztmail.ccache -t < message.eml
-```
-
-The cache must contain a valid TGT. Its principal is used as-is, including for
-cross-realm clients; `--realm` does not change the cached identity.
-Expired caches are not renewed automatically.
 
 ### Linux or Windows: keytab
 
 ```sh
 ./dist/ztmail-linux-amd64 \
   --keytab /etc/ztmail/mailer.keytab \
-  --principal mailer@CORP.EXAMPLE.COM \
-  -f automation@corp.example.com recipient@corp.example.com < message.eml
+  --domain corp.example.com -oi -t < message.eml
+# Restrict selection to one identity and explicitly override the sender:
+./dist/ztmail-linux-amd64 \
+  --keytab /etc/ztmail/mailer.keytab --principal mailer@CORP.EXAMPLE.COM \
+  -f automation@corp.example.com -oi -t < message.eml
 ```
 
-`--principal` is optional if the keytab contains exactly one distinct principal
-in the selected realm (multiple encryption keys for that identity are fine).
-Otherwise specify it explicitly. Its realm must match `--realm` or the inferred
-realm. Protect keytabs and caches as credentials. Use AES-enabled AD accounts:
-the pure-Go SASL wrap implementation supports RFC 4121 integrity tokens, not
-legacy RC4/DES GSSAPI tokens. Kerberos FAST is disabled for AD interoperability.
+Without `--principal`, distinct keytab principals in the selected realm are
+tried in file order. Multiple encryption keys for one identity count as one
+candidate. Selection requires credential acquisition and an SMTP service
+ticket; by default it also requires an authenticated LDAP lookup with a valid,
+unique canonical mail address. Failed attempts are cleaned up before trying
+the next candidate. Skipped identities produce warnings; if all fail, the
+error retains every failure. Capacity, owner-close, cleanup failure, or the
+overall deadline stops probing. SMTP submission itself is never replayed.
 
-Config precedence is `--krb5-config`, `KRB5_CONFIG` (a single file), then
-`/etc/krb5.conf`. If the default file is absent, an in-memory configuration
-uses the inferred realm and DNS SRV KDC discovery (`_kerberos._udp`/`_tcp`).
-Explicitly selected missing or malformed files cause errors. Existing config
-KDC entries and DNS settings are preserved; the selected AD realm and domain
-mapping are applied. Realm/KDC DNS and clock synchronization must work.
+An explicit principal disables probing other identities. Its realm must match
+`--realm` or the inferred realm. Principals in other realms are not tried:
+the combined AD client is scoped to one domain/realm. Use AES-enabled AD
+accounts; software SMTP contexts support AES128/AES256 RFC 4121 wrap tokens,
+not legacy RC4/DES tokens.
+
+**No krb5.conf is required or read.** `KRB5_CONFIG` is ignored and the former
+`--krb5-config` flag is removed. The SDK discovers KDCs through its AD DNS path
+and owns its in-memory ticket configuration and cache. ztmail never launches
+external `kinit` commands, writes a keytab, exports a TGT, or writes an external
+credential cache. DNS and Kerberos clock synchronization must work.
+
+### Linux or Windows: existing FILE credential cache
+
+```sh
+./dist/ztmail-linux-amd64 --ccache /path/to/existing.ccache -oi -t < message.eml
+```
+
+`--ccache` is an alternative to `--keytab`, not an output file. Optional `FILE:`
+prefixes are accepted; relative paths are resolved before passing them to the
+SDK. Linux defaults to `KRB5CCNAME` or `/tmp/krb5cc_<uid>` when no keytab is
+specified. Explicit cache mode on Windows requires `--ccache` or `KRB5CCNAME`.
+Only FILE caches are supported, not DIR, KCM, or KEYRING. An external provisioner
+must supply a valid cache with an unexpired TGT. It is read-only and is not
+renewed. Its default principal is the authenticated identity; an optional
+`--principal` constrains that identity rather than switching it.
+
+Protect keytabs and caches as credentials. The SDK applies bounded private-file
+reads; on Linux use owner-private regular files (for example mode `0600`).
+Cache/keytab identities must match the selected AD realm; arbitrary cross-realm
+and directory referral routing are not inferred.
 
 ### Windows: integrated SSPI
 
@@ -116,9 +146,11 @@ For byte-preserving file redirection on Windows, use Command Prompt:
 dist\ztmail-windows-amd64.exe --auth sspi -oi -t < message.eml
 ```
 
-SSPI obtains the Kerberos service ticket from the Windows logon session and
-Windows manages KDC/realm routing. `--realm` does not switch Windows identities
-or override SSPI's ticket routing. `--krb5-config` is rejected with SSPI.
+The SDK obtains the current Windows logon principal through SSPI and uses it
+for both LDAP and SMTP Kerberos authentication. `--principal`, if supplied,
+must match that identity. `--realm` constrains the identity/domain rather than
+switching Windows identities or overriding Windows ticket routing.
+Verified SMTP TLS state is passed to the SDK for SSPI channel binding.
 No NTLM fallback occurs. Windows SSPI requires an appropriate domain logon,
 reachable domain controllers, and the registered SMTP SPN.
 
@@ -126,11 +158,39 @@ reachable domain controllers, and the registered SMTP SPN.
 Windows SSPI or Linux's default FILE cache. Use `--auth keytab|ccache|sspi` to
 require a backend. Explicit backends never silently fall back on failure.
 
+## Canonical sender
+
+By default, the selected principal is looked up through authenticated,
+certificate-verified LDAP TLS using `adclient.Search`. The base comes from
+verified RootDSE `defaultNamingContext`, never from an assumed DN.
+The search matches `userPrincipalName` plus `sAMAccountName` for simple
+principals, or `servicePrincipalName` for service principals. LDAP filter values
+are escaped; absent, ambiguous, incomplete, or failed searches are errors.
+
+The SDK's `directory.CanonicalMail` selects exactly one uppercase `SMTP:`
+primary from `proxyAddresses`, falling back to the single `mail` value if no
+primary exists. Lowercase `smtp:` aliases are not substituted. Missing,
+ambiguous, or malformed mail is an error, not a guessed `user@domain` address.
+
+The chosen mailbox becomes both SMTP `MAIL FROM` and the message `From`.
+An existing `Sender` field is also rewritten to avoid retaining a different
+sender identity. Old folded/duplicate From/Sender fields are removed; the MIME
+body and unrelated headers remain unchanged. Resent headers remain unchanged.
+Rewriting invalidates signatures that cover changed headers; sign the resulting
+message downstream rather than relying on a preexisting DKIM header.
+
+`-f address` explicitly overrides both envelope and From/Sender, and skips
+canonical mail lookup (useful for service accounts without mailboxes).
+`-f '<>'` retains a null envelope sender and preserves the original sender
+headers. Override addresses are still validated, and gateway relay permissions
+still apply. Use `--ldap-ca bundle.pem` to add enterprise LDAP trust anchors;
+there is no LDAP certificate-verification bypass.
+
 ## Sendmail compatibility
 
 Input is a complete RFC 5322 message on stdin, with a blank line separating
-headers and body. Headers such as `From`, `Date`, `Message-ID`, and MIME content
-must be supplied by the caller; this tool does not generate or rewrite them.
+headers and body. `Date`, `Message-ID`, and MIME content must be supplied by the
+caller. From/Sender rewriting follows the policy above.
 
 ```sh
 printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject: Test\n\nHello\n' |
@@ -144,10 +204,11 @@ printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject:
   Header recipient syntax must use complete RFC mailbox addresses.
 - All `Bcc` and `Resent-Bcc` fields, including folded continuation lines, are
   removed from the transmitted message even without `-t`. Other header bytes
-  and body content are preserved, apart from SMTP line-ending normalization.
+  (except From/Sender) and body content are preserved, apart from SMTP
+  line-ending normalization.
 - CLI and header recipients are combined and exact duplicates are removed.
-- `-f address` selects the envelope sender. `-f '<>'` sends a null sender.
-  The message's `From` header remains unchanged.
+- `-f address` overrides both the envelope sender and message From/Sender.
+  `-f '<>'` sends a null envelope sender without rewriting sender headers.
 - `-i` or legacy `-oi` preserves lone-dot lines; otherwise a line containing
   only `.` terminates input. SMTP dot-stuffing is handled automatically.
 - `-F name` is accepted for caller compatibility, but does not change headers.
@@ -172,8 +233,9 @@ integrity/confidentiality layer rather than TLS are not supported.
 - Explicit opt-out: `--tls off`. This authenticates with Kerberos but exposes
   the message and envelope in plaintext; only use on a suitably protected network.
 - Uses system-trusted CA certificates; there is no certificate-verification bypass.
-- `--timeout 60s` bounds the entire SMTP connection/exchange. Host DNS discovery
-  has a separate five-second lookup timeout; KDC operations use library timeouts.
+- `--timeout 60s` bounds AD discovery, principal probing, mail lookup, and SMTP
+  submission after stdin has been read. Individual SDK operations also have
+  their own bounded timeouts. Cleanup has a separate five-second bound.
 
 Exit status is zero only after the relay confirms DATA acceptance; it is nonzero
 for validation, credential, authentication, recipient, or submission failures.
@@ -182,8 +244,10 @@ cleanup after confirmed acceptance produces a warning, not a retry-inducing
 failure. A lost connection during DATA/final acknowledgement can leave delivery
 uncertain; the error says so. There are no automatic retries.
 
-Tests cover argument validation, message privacy, Resent handling, discovery
-parsing, keytab selection, AES wrap checksums/rotation/sequences, AP-REP timestamp
-validation, SASL negotiation, and a local SMTP protocol exchange. Tests do not
-replace an end-to-end check against your AD KDC and GSSAPI-enabled SMTP gateway.
+Tests cover argument validation, message privacy, Resent handling, domain
+parsing, ordered principal probing, source configuration, canonical mail lookup,
+sender rewriting and overrides, SDK GSSAPI delegation, and a local SMTP protocol
+exchange. Cryptographic and native credential operations belong to the SDK.
+Tests do not replace an end-to-end check against your AD KDC, protected LDAP
+service, and GSSAPI-enabled SMTP gateway.
 Windows SSPI must also be exercised on a domain-joined Windows machine.

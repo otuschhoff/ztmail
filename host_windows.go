@@ -3,11 +3,8 @@ package main
 import (
 	"fmt"
 	"syscall"
-	"time"
 	"unsafe"
 )
-
-const discoveryTimeout = 5 * time.Second
 
 func computerName(format uintptr) (string, error) {
 	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("GetComputerNameExW")
