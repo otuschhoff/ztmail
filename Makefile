@@ -22,5 +22,6 @@ build-one:
 	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o "$(OUTPUT)" .
 
 test:
+	bash .github/scripts/release-notes-test.sh
 	go test -race ./...
 	go vet ./...

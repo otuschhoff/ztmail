@@ -39,7 +39,12 @@ Makefile or inject `-X main.buildTime=... -X main.commitSHA=...` yourself.
 ### GitHub Actions
 
 The build workflow runs on main pushes, `v*` tags, pull requests, and manual
-dispatch. It shares one timestamp/SHA across its six-target matrix, sets
+dispatch. Its official checkout, Go setup, and artifact actions use the Node.js
+24 runtime rather than deprecated Node.js 20. Node.js 24 requires Actions Runner
+2.327.1 or later; all jobs use GitHub-hosted `ubuntu-26.04` runners, pinning the
+OS release to avoid automatic `ubuntu-latest` migrations. Runner images still
+receive regular security and tool updates.
+It shares one timestamp/SHA across its six-target matrix, sets
 `CGO_ENABLED=0`, checks build metadata, runs Linux regression tests, and uploads
 each binary as a separately named Actions artifact. macOS binaries are
 cross-compiled, not signed or notarized; cross-compilation does not imply native
@@ -47,10 +52,28 @@ runtime testing on every target.
 
 Version-tag pushes automatically publish a GitHub Release after all six builds
 succeed, attaching the binaries and `SHA256SUMS`. The release is created as a
-draft and published only after asset uploads succeed. Reruns replace existing
-assets rather than failing on duplicate releases; prerelease tags such as
+draft and published only after asset uploads succeed. Its release-page body is
+the matching curated section of [CHANGELOG.md](CHANGELOG.md), not GitHub-generated
+PR notes. Reruns update both release notes and assets rather than failing on
+duplicate releases; prerelease tags such as
 `v0.2.0-rc.1` are marked as prereleases. Only the publication job receives
 `contents: write`; build and pull-request jobs retain read-only permissions.
+
+Before creating a new version tag:
+
+1. Bump the semantic version and its tests/documentation.
+2. Move the relevant `Unreleased` changes into a dated section such as
+   `## [0.1.4] - 2026-11-01`, using headings like `Added`, `Changed`, and `Fixed`.
+3. Include user-visible behavior changes, compatibility notes, and known
+   limitations. Each entry must contain at least one change bullet.
+4. Commit the changelog with the code, then tag that commit as `v0.1.4`.
+
+CI validates the tag against the application version and extracts exactly one
+matching changelog section before building a new release. Missing, duplicate,
+undated, or empty entries fail explicitly. Prerelease tags use their complete
+prerelease version in the heading (for example `[0.1.4-rc.1]`); optional tag
+build metadata does not affect the changelog heading. The section is taken from
+the tagged source, never a later revision on `main`.
 
 To rebuild and publish an existing tag without moving it, manually dispatch:
 
@@ -58,7 +81,13 @@ To rebuild and publish an existing tag without moving it, manually dispatch:
 gh workflow run build.yml --repo otuschhoff/ztmail -f release_tag=v0.1.0
 ```
 
-Both build jobs check out that tag, so its commit SHA and source are preserved.
+Metadata and binary builds check out that tag, so its commit SHA and source are
+preserved. The release-note extraction script comes from the workflow revision.
+For a manual rebuild of a historical tag that predates `CHANGELOG.md`, CI
+explicitly retains the existing published release notes; an unpublished tag or
+a release with empty notes cannot use this exception. New tag pushes always
+require their own curated entry. Existing published releases are not modified
+merely by adding the changelog on `main`.
 An empty manual `release_tag` performs a build only. Main pushes and pull requests
 never publish releases.
 

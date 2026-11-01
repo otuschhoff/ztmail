@@ -21,42 +21,79 @@ env:
 
 jobs:
   metadata:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       build_time: ${{ steps.metadata.outputs.build_time }}
       commit_sha: ${{ steps.metadata.outputs.commit_sha }}
       semver: ${{ steps.metadata.outputs.semver }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
+          path: source
+      - uses: actions/checkout@v7
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          path: workflow
       - name: Set shared build metadata
         id: metadata
         run: |
-          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' version.go)
+          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' source/version.go)
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Could not read the semantic version from version.go."
             exit 1
           fi
           echo "semver=$version" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
-          echo "commit_sha=$(git rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git -C source rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - name: Prepare curated release notes
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          SEMVER: ${{ steps.metadata.outputs.semver }}
+          MANUAL_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+        run: |
+          if bash workflow/.github/scripts/release-notes.sh "$RELEASE_TAG" "$SEMVER" source/CHANGELOG.md > release-notes.md; then
+            echo "Using the curated changelog entry for $RELEASE_TAG."
+          else
+            status=$?
+            if [[ "$status" == 3 && "$MANUAL_REBUILD" == true ]]; then
+              echo "::warning::This historical tag predates CHANGELOG.md; retaining its existing published release notes."
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '
+                if .draft then error("Historical release must already be published")
+                elif (.body | type) != "string" then error("Historical release has no notes")
+                elif (.body | test("\\S") | not) then error("Historical release has empty notes")
+                else .body end' > release-notes.md
+            else
+              echo "::error::Cannot publish $RELEASE_TAG without a valid matching changelog entry."
+              exit "$status"
+            fi
+          fi
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
 
   build:
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
         goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false
@@ -92,7 +129,7 @@ jobs:
           SEMVER: ${{ needs.metadata.outputs.semver }}
         run: |
           test "$(dist/ztmail-linux-amd64 --version)" = "${SEMVER}+${BUILD_TIME}.${COMMIT_SHA}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ztmail-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
@@ -101,14 +138,18 @@ jobs:
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     concurrency:
       group: release-${{ inputs.release_tag || github.ref_name }}
       cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: release-notes
+      - uses: actions/download-artifact@v8
         with:
           pattern: ztmail-*
           path: release-assets
@@ -140,10 +181,12 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > release-tags.txt
           if ! grep -Fxq -- "$RELEASE_TAG" release-tags.txt; then
             gh release create "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --notes-file release-notes/release-notes.md \
               --draft --prerelease="$prerelease"
           fi
           gh release upload "$RELEASE_TAG" release-assets/* \
             --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" --draft=false --prerelease="$prerelease"
+            --repo "$GITHUB_REPOSITORY" --notes-file release-notes/release-notes.md \
+            --draft=false --prerelease="$prerelease"
