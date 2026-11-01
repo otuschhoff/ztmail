@@ -30,6 +30,9 @@ func TestCommandFlagValidation(t *testing.T) {
 		{"--keytab", "a", "--ccache", "b"},
 		{"--auth", "keytab"},
 		{"--auth", "sspi", "--keytab", "a"},
+		{"--auth", "sspi", "--password-prompt"},
+		{"--auth", "keytab", "--keytab", "a", "--password-prompt"},
+		{"--auth", "ccache", "--ccache", "a", "--password-prompt"},
 		{"--auth", "keytab", "--keytab", "a", "--ccache", "b"},
 		{"--krb5-config", "/tmp/krb5.conf"},
 		{"--unsupported"},
@@ -59,6 +62,19 @@ func TestCommandHelp(t *testing.T) {
 func TestValidOptions(t *testing.T) {
 	if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required"}); err != nil {
 		t.Fatal(err)
+	}
+
+}
+
+func TestPasswordFallbackAllowsConfiguredKeytabAndCache(t *testing.T) {
+	o := options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required",
+		keytab: "keytab", ccache: "cache", passwordPrompt: true}
+	if err := validateOptions(o); err != nil {
+		t.Fatal(err)
+	}
+	o.passwordPrompt = false
+	if err := validateOptions(o); err == nil {
+		t.Fatal("source exclusivity must remain unchanged without opt-in")
 	}
 }
 

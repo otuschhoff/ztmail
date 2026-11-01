@@ -22,6 +22,7 @@ type options struct {
 	port                             int
 	timeout                          time.Duration
 	readHeaders, ignoreDots, verbose bool
+	passwordPrompt                   bool
 }
 
 func main() {
@@ -84,6 +85,7 @@ func newCommand() *cobra.Command {
 	f.StringVar(&o.hello, "hostname", "", "EHLO hostname (default: discovered host FQDN)")
 	f.StringVar(&o.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
 	f.StringVar(&o.auth, "auth", "auto", "Credential backend: auto, keytab, ccache, sspi")
+	f.BoolVar(&o.passwordPrompt, "password-prompt", false, "In auto mode, prompt for principal/password only after keytab, cache, and SSPI fail")
 	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
 	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try keytab principals or use the cache/SSPI identity")
 	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
@@ -96,7 +98,7 @@ func newCommand() *cobra.Command {
 	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
 	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status to stderr, without tokens or message content")
 	f.StringVar(&o.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
-	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "Overall AD discovery/authentication and SMTP submission timeout (excludes stdin)")
+	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "AD/SMTP timeout; per stage with --password-prompt (excludes message and credential input)")
 	return cmd
 }
 
@@ -117,7 +119,10 @@ func validateOptions(o options) error {
 	default:
 		return errors.New("--auth must be auto, keytab, ccache, or sspi")
 	}
-	if o.keytab != "" && o.ccache != "" {
+	if o.passwordPrompt && o.auth != "auto" {
+		return errors.New("--password-prompt requires --auth auto; explicit credential backends do not fall back")
+	}
+	if o.keytab != "" && o.ccache != "" && !o.passwordPrompt {
 		return errors.New("--keytab and --ccache are mutually exclusive")
 	}
 	if o.auth == "keytab" && o.keytab == "" {
@@ -176,8 +181,11 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	defer cancel()
+	if !o.passwordPrompt {
+		work, cancel := context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+		ctx = work
+	}
 	session, err := openAD(ctx, o)
 	if err != nil {
 		return fmt.Errorf("AD identity selection: %w", err)

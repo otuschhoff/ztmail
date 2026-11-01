@@ -2,7 +2,8 @@
 
 A sendmail-style SMTP submission client written in Go, using Cobra and
 Kerberos **SASL GSSAPI** (RFC 4752). Builds for Linux, Windows, and macOS without CGO.
-It does not use passwords, NTLM, HTTP Negotiate, or anonymous SMTP fallback.
+Password authentication is available only through an opt-in terminal prompt.
+It does not use NTLM, HTTP Negotiate, or anonymous SMTP fallback.
 
 ## Build
 
@@ -23,12 +24,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.1.1+20261101-110716.abcdef0
+# 0.1.2+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.1.1**. Every supported build includes UTC build time
+The semantic version is **0.1.2**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.1.1+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.1.2+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 Raw `go build` without linker metadata has no trustworthy build timestamp:
@@ -80,8 +81,9 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to revision `cb6973368047`, which adds external credential
-sources and OS DNS bootstrap. The repository is private: configure GitHub
+The SDK is pinned to revision `20d29e4f0676`, which includes password-based TGT
+acquisition, external credential sources, and OS DNS bootstrap.
+The repository is private: configure GitHub
 access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
 There is no local-path module replacement.
 
@@ -208,6 +210,49 @@ reachable domain controllers, and the registered SMTP SPN.
 Windows SSPI or the non-Windows default FILE cache. Use `--auth keytab|ccache|sspi` to
 require a backend. Explicit backends never silently fall back on failure.
 
+### Opt-in password fallback
+
+```sh
+./dist/ztmail-linux-amd64 --password-prompt -oi -t < message.eml
+# Pin the password identity instead of accepting an editable guess:
+./dist/ztmail-linux-amd64 --password-prompt \
+  --principal alice@CORP.EXAMPLE.COM -oi -t < message.eml
+```
+
+`--password-prompt` requires `--auth auto`. It first tries the configured keytab
+(including its principal candidates), then a configured/default FILE cache,
+then Windows SSPI. Only if those methods fail does it prompt for a password.
+Successful earlier methods never prompt. With this flag, both `--keytab` and
+`--ccache` may be provided to try them in that order; without it, the original
+mutually exclusive, no-fallback source policy remains unchanged.
+
+The prompt shows a guessed `current-user@REALM` principal. Press Enter to accept
+it or type a replacement account, optionally including `@REALM`. An explicit
+`--principal` is shown and enforced without offering interactive replacement.
+The password principal must remain in the configured/discovered realm; use
+`--realm` to select a different AD realm before starting the program.
+
+Credentials are read from the controlling terminal (`/dev/tty` on Linux/macOS,
+`CONIN$`/`CONOUT$` on Windows), never from message stdin. Password echo is disabled;
+passwords are not accepted in command-line flags or printed in logs. A missing
+terminal, EOF, an empty password, or failed authentication produces an explicit
+error. There are no automatic password retries, avoiding repeated lockout-prone
+attempts. Fatal cancellation, credential-capacity, or cleanup errors stop fallback.
+
+The AD SDK obtains a TGT from the supplied password, then obtains SMTP/LDAP
+service tickets and performs the same canonical-mail lookup and SMTP GSSAPI
+authentication. No external commands or credential-cache writes are used.
+The prompt byte buffer is cleared after use. The SDK retains an in-memory Go
+password string for on-demand TGT reacquisition until its credential owner closes;
+Go does not guarantee zeroization of immutable strings or runtime copies.
+
+Interactive input does not consume the network timeout. With
+`--password-prompt`, `--timeout` applies separately to each existing credential
+source stage, the password-based AD stage, and SMTP submission. Cancellation is
+checked before and after terminal reads; an already-blocked terminal read may
+need input/EOF to return. Without the flag, the existing overall AD/SMTP timeout
+is unchanged.
+
 ## Canonical sender
 
 By default, the selected principal is looked up through authenticated,
@@ -299,7 +344,8 @@ integrity/confidentiality layer rather than TLS are not supported.
 - Uses system-trusted CA certificates; there is no certificate-verification bypass.
 - `--timeout 60s` bounds AD discovery, principal probing, mail lookup, and SMTP
   submission after stdin has been read. Individual SDK operations also have
-  their own bounded timeouts. Cleanup has a separate five-second bound.
+  their own bounded timeouts. Opt-in password fallback uses the per-stage
+  timeouts described above. Cleanup has a separate five-second bound.
 
 Exit status is zero only after the relay confirms DATA acceptance; it is nonzero
 for validation, credential, authentication, recipient, or submission failures.

@@ -88,6 +88,10 @@ func adOptions(o options) (adclient.ADOptions, error) {
 	if err != nil {
 		return adclient.ADOptions{}, err
 	}
+	return adOptionsForCredentials(o, credentials)
+}
+
+func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.ADOptions, error) {
 	dns := addns.Options{Domain: o.domain, RecursionProbeZone: o.dnsProbeZone}
 	for _, server := range o.dnsServers {
 		endpoint, err := netip.ParseAddrPort(server)
@@ -114,6 +118,70 @@ func adOptions(o options) (adclient.ADOptions, error) {
 }
 
 func openAD(ctx context.Context, o options) (*adSession, error) {
+	return chooseADCredentials(ctx, o, func(ctx context.Context, attempt options) (*adSession, error) {
+		if !o.passwordPrompt {
+			return openADSource(ctx, attempt)
+		}
+		ctx, cancel := context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+		return openADSource(ctx, attempt)
+	}, openADPassword)
+}
+
+func chooseADCredentials(ctx context.Context, o options,
+	trySource func(context.Context, options) (*adSession, error),
+	tryPassword func(context.Context, options) (*adSession, error)) (*adSession, error) {
+	if !o.passwordPrompt {
+		return trySource(ctx, o)
+	}
+	var sources []string
+	if o.keytab != "" {
+		sources = append(sources, "keytab")
+	}
+	sources = append(sources, "ccache")
+	if runtime.GOOS == "windows" {
+		sources = append(sources, "sspi")
+	}
+	var failures []error
+	for _, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(append(failures, err)...)
+		}
+		attempt := o
+		attempt.auth = source
+		if source != "keytab" {
+			attempt.keytab = ""
+		}
+		if source != "ccache" {
+			attempt.ccache = ""
+		}
+		session, err := trySource(ctx, attempt)
+		if err == nil {
+			session.failures = append(failures, session.failures...)
+			return session, nil
+		}
+		failures = append(failures, fmt.Errorf("%s: %w", source, err))
+		if stopCredentialFallback(ctx, err) {
+			return nil, errors.Join(failures...)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(append(failures, err)...)
+	}
+	session, err := tryPassword(ctx, o)
+	if err != nil {
+		return nil, errors.Join(append(failures, fmt.Errorf("password prompt: %w", err))...)
+	}
+	session.failures = append(failures, session.failures...)
+	return session, nil
+}
+
+func stopCredentialFallback(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) || errors.Is(err, errADCleanup)
+}
+
+func openADSource(ctx context.Context, o options) (*adSession, error) {
 	settings, err := adOptions(o)
 	if err != nil {
 		return nil, err
@@ -167,7 +235,7 @@ func selectADSession(ctx context.Context, candidates []string, try func(context.
 			return session, nil
 		}
 		failures = append(failures, fmt.Errorf("principal %q: %w", principal, err))
-		if errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) || errors.Is(err, errADCleanup) {
+		if stopCredentialFallback(ctx, err) {
 			break
 		}
 	}
