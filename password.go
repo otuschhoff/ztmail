@@ -69,7 +69,7 @@ func openADPassword(ctx context.Context, o options) (*adSession, error) {
 	}
 	defer clear(password)
 	settings.Credentials = kerberos.Options{Source: kerberos.SourcePassword,
-		Principal: principal, Realm: o.realm, Password: string(password)}
+		Principal: principal, Realm: o.realm, Password: string(password), Hooks: settings.Credentials.Hooks}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	return openADAttempt(ctx, o, settings)

@@ -24,12 +24,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.1.2+20261101-110716.abcdef0
+# 0.1.3+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.1.2**. Every supported build includes UTC build time
+The semantic version is **0.1.3**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.1.2+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.1.3+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 Raw `go build` without linker metadata has no trustworthy build timestamp:
@@ -81,8 +81,9 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to revision `20d29e4f0676`, which includes password-based TGT
-acquisition, external credential sources, and OS DNS bootstrap.
+The SDK is pinned to revision `7f5968481ca7`, which includes server-attributed
+DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
+external credential sources, and OS DNS bootstrap.
 The repository is private: configure GitHub
 access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
 There is no local-path module replacement.
@@ -126,6 +127,53 @@ brackets); this disables OS bootstrap fallback. Configure an external
 DNS policy. The SDK uses bounded random-name probes under that zone to qualify
 recursive capability. Bootstrap servers are discovery hints, not automatically
 trusted AD data servers.
+
+## Authentication test (no email)
+
+```sh
+./dist/ztmail-linux-amd64 --test --keytab /etc/ztmail/mailer.keytab
+./dist/ztmail-linux-amd64 --test --ccache /tmp/krb5cc_1000 \
+  --domain corp.example.com --relay mailgw.corp.example.com
+# Use Windows SSPI, with optional password fallback:
+ztmail-windows-amd64.exe --test --password-prompt
+```
+
+`--test` does not read message stdin and does not accept recipient arguments.
+It follows the normal credential-selection and AD discovery path, obtains the
+SMTP service ticket, and performs the canonical AD mail lookup (unless `-f`
+explicitly bypasses that lookup). It then resolves and connects to the relay,
+verifies TLS according to `--tls`, exchanges SMTP greetings/EHLO, completes
+GSSAPI mutual authentication and signed SASL negotiation, and sends `QUIT`.
+It never sends `MAIL FROM`, `RCPT TO`, `DATA`, or message content.
+
+The step report is written to stderr without requiring `--verbose`. It shows:
+
+- Local host, AD domain, realm, relay hostname/port, EHLO name, and SMTP SPN.
+- Credential attempts, the selected principal and actual keytab/ccache/SSPI/
+  password source, and the canonical mail address where applicable.
+- SDK operation results and observed DNS, LDAP, and Kerberos exchanges,
+  including the logical server, actual connected peer, request kind, transport,
+  outcome, and duration.
+- Relay DNS addresses, the connected SMTP peer, TLS, GSSAPI, and cleanup results.
+
+Only real SDK exchanges identify used AD servers; discovered candidates are not
+presented as contacted servers. Cached DNS results/TGTs/service tickets emit no
+new network exchange. Windows SSPI manages its own KDC traffic, so the SDK
+cannot report its used KDC endpoint. An exchange marked `SUCCESS` means a
+response was received, not necessarily successful authentication: a KDC
+preauthentication challenge or error reply is still a completed exchange.
+The separate credential and SMTP authentication steps establish success.
+Passwords, security tokens, LDAP filters, DNS query names, and payloads are
+not included in exchange diagnostics. The report does contain account and
+internal routing information; review it before sharing.
+
+Authentication failures stop the test with a nonzero exit status and retain
+step diagnostics; configured credential/principal fallback may first try other
+identities. QUIT, security/credential cleanup, and diagnostic-output failures
+also fail test mode rather than claiming that a message was accepted.
+Normal submission semantics, TLS requirements, authentication flags, and
+password-prompt timeout behavior remain unchanged. `--test` does not check
+sender/recipient acceptance or permission to submit message data.
 
 ## Credentials
 

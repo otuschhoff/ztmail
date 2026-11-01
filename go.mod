@@ -6,7 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.13-0.20260212000640-570560be831a
-	github.com/otuschhoff/adbind/ad v0.0.0-20261101122557-20d29e4f0676
+	github.com/otuschhoff/adbind/ad v0.0.0-20261101134518-7f5968481ca7
 	github.com/otuschhoff/gokrb5/v8 v8.5.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.46.0

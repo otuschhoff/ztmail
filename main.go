@@ -23,6 +23,8 @@ type options struct {
 	timeout                          time.Duration
 	readHeaders, ignoreDots, verbose bool
 	passwordPrompt                   bool
+	testMode                         bool
+	report                           *testReport
 }
 
 func main() {
@@ -73,11 +75,15 @@ func newCommand() *cobra.Command {
 			if err := validateOptions(o); err != nil {
 				return err
 			}
+			if o.testMode && len(recipients) != 0 {
+				return errors.New("--test does not accept recipients; no email is sent")
+			}
 			return run(cmd.Context(), o, recipients, cmd.InOrStdin(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
+	f.BoolVar(&o.testMode, "test", false, "Report AD/DNS/TLS/GSSAPI checks and authenticate to the relay without reading stdin or sending email")
 	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
 	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
 	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
@@ -138,7 +144,13 @@ func validateOptions(o options) error {
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+	if o.testMode {
+		o.report = newTestReport(log)
+		defer o.report.finish(&err)
+		o.report.line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
+	}
 	host, domain, err := discoverHost(ctx, o.domain)
+	o.report.step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
 	if err != nil {
 		return err
 	}
@@ -177,9 +189,14 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.from = sender
 		}
 	}
-	message, recipients, err := prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
-	if err != nil {
-		return err
+	o.report.step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q auth=%q requested principal=%q",
+		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
+	var message []byte
+	if !o.testMode {
+		message, recipients, err = prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
+		if err != nil {
+			return err
+		}
 	}
 	if !o.passwordPrompt {
 		work, cancel := context.WithTimeout(ctx, o.timeout)
@@ -187,33 +204,45 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		ctx = work
 	}
 	session, err := openAD(ctx, o)
+	o.report.step("AD identity selection", err, "credential source and identity selected")
 	if err != nil {
 		return fmt.Errorf("AD identity selection: %w", err)
 	}
 	defer func() {
 		if closeErr := session.Close(); closeErr != nil {
-			if err != nil {
+			if err != nil || o.testMode {
 				err = errors.Join(err, closeErr)
 			} else {
 				fmt.Fprintf(log, "Warning: message accepted, but credential cleanup failed: %v\n", closeErr)
 			}
+			o.report.step("AD credential cleanup", closeErr, "")
+		} else {
+			o.report.step("AD credential cleanup", nil, "credential owner closed")
 		}
 	}()
 	for _, failure := range session.failures {
-		fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
+		if o.report != nil {
+			o.report.line("WARN", "Skipped credential identity", failure.Error())
+		} else {
+			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
+		}
 	}
-	message, o.from, err = applySender(message, o.from, session.mail, domain)
-	if err != nil {
-		return err
+	o.report.step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
+		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
+	if !o.testMode {
+		message, o.from, err = applySender(message, o.from, session.mail, domain)
+		if err != nil {
+			return err
+		}
 	}
-	if o.verbose {
+	if o.verbose && !o.testMode {
 		fmt.Fprintf(log, "Submitting to %s:%d; principal=%s; source=%s; SPN=%s; TLS=%s\n",
 			o.relay, o.port, session.identity.Principal, session.identity.Source, o.spn, o.tlsMode)
 	}
 	if err := deliver(ctx, o, recipients, message, session, log); err != nil {
 		return err
 	}
-	if o.verbose {
+	if o.verbose && !o.testMode {
 		fmt.Fprintln(log, "Message accepted by relay")
 	}
 	return nil

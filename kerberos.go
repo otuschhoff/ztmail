@@ -18,6 +18,7 @@ import (
 	"github.com/otuschhoff/adbind/ad/directory"
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
+	"github.com/otuschhoff/adbind/ad/observe"
 	"github.com/otuschhoff/gokrb5/v8/iana/flags"
 )
 
@@ -114,7 +115,14 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 	if err != nil {
 		return adclient.ADOptions{}, fmt.Errorf("LDAP TLS trust: %w", err)
 	}
-	return adclient.ADOptions{DNS: dns, Credentials: credentials, Trust: trust, Protection: "tls"}, nil
+	settings := adclient.ADOptions{DNS: dns, Credentials: credentials, Trust: trust, Protection: "tls"}
+	if o.report != nil {
+		hooks := observe.Hooks{Observe: o.report.operation, Exchange: o.report.exchange}
+		settings.Hooks = hooks
+		settings.Credentials.Hooks = observe.Hooks{Observe: o.report.operation}
+		settings.Discovery.Hooks = observe.Hooks{Observe: o.report.operation}
+	}
+	return settings, nil
 }
 
 func openAD(ctx context.Context, o options) (*adSession, error) {
@@ -183,16 +191,19 @@ func stopCredentialFallback(ctx context.Context, err error) bool {
 
 func openADSource(ctx context.Context, o options) (*adSession, error) {
 	settings, err := adOptions(o)
+	o.report.step("AD source configuration", err, fmt.Sprintf("source=%q principal=%q", settings.Credentials.Source, settings.Credentials.Principal))
 	if err != nil {
 		return nil, err
 	}
 	candidates := []string{settings.Credentials.Principal}
 	if settings.Credentials.Source == kerberos.SourceKeytab && settings.Credentials.Principal == "" {
 		entries, err := keytab.Inspect(settings.Credentials.Keytab)
+		o.report.step("Keytab inspection", err, fmt.Sprintf("%d entries", len(entries)))
 		if err != nil {
 			return nil, fmt.Errorf("inspect keytab: %w", err)
 		}
 		candidates, err = principalCandidates(entries, o.realm)
+		o.report.step("Keytab principal selection", err, fmt.Sprintf("candidates=%q", candidates))
 		if err != nil {
 			return nil, err
 		}
@@ -243,34 +254,47 @@ func selectADSession(ctx context.Context, candidates []string, try func(context.
 }
 
 func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) (_ *adSession, err error) {
+	o.report.line("INFO", "AD identity attempt", fmt.Sprintf("source=%q principal=%q realm=%q (empty principal means auto-selection)",
+		settings.Credentials.Source, settings.Credentials.Principal, settings.Credentials.Realm))
 	client, err := adclient.NewAD(settings)
+	o.report.step("AD client configuration", err, "SDK DNS, KDC discovery and verified LDAP TLS configured")
 	if err != nil {
 		return nil, err
 	}
 	session := &adSession{client: client}
 	defer func() {
 		if err != nil {
-			if closeErr := session.Close(); closeErr != nil {
+			closeErr := session.Close()
+			o.report.step("Failed AD attempt cleanup", closeErr, "credential owner closed")
+			if closeErr != nil {
 				err = errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
 			}
 		}
 	}()
 	session.lease, err = client.Credentials().Acquire(ctx)
+	o.report.step("Acquire credential lease", err, "credentials acquired")
 	if err != nil {
 		return nil, fmt.Errorf("acquire AD credentials: %w", err)
 	}
 	session.identity, err = session.lease.Identity()
+	o.report.step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
+		session.identity.Principal, session.identity.Realm, session.identity.Source))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := session.lease.ServiceTicket(ctx, o.spn); err != nil {
+	_, err = session.lease.ServiceTicket(ctx, o.spn)
+	o.report.step("SMTP service ticket", err, fmt.Sprintf("SPN=%q", o.spn))
+	if err != nil {
 		return nil, fmt.Errorf("get SMTP service ticket: %w", err)
 	}
 	if o.from == "" {
 		session.mail, err = canonicalMail(ctx, client, session.identity)
+		o.report.step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
 		if err != nil {
 			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w", session.identity.Principal, err)
 		}
+	} else {
+		o.report.line("SKIP", "Canonical AD mail lookup", "explicit -f override; LDAP lookup is not required by this authentication path")
 	}
 	return session, nil
 }

@@ -21,10 +21,11 @@ import (
 )
 
 type fakeSecurity struct {
-	offer   []byte
-	wrapped []byte
-	fail    bool
-	closed  int
+	offer    []byte
+	wrapped  []byte
+	fail     bool
+	closed   int
+	closeErr error
 }
 
 func (f *fakeSecurity) Start() ([]byte, error) { return []byte("request"), nil }
@@ -44,7 +45,7 @@ func (f *fakeSecurity) Negotiate([]byte) ([]byte, error) {
 	f.wrapped = []byte{1, 0, 0, 0}
 	return []byte("signed-selection"), nil
 }
-func (f *fakeSecurity) Close() error { f.closed++; return nil }
+func (f *fakeSecurity) Close() error { f.closed++; return f.closeErr }
 
 type fakeBackend struct {
 	security   *fakeSecurity
@@ -139,6 +140,10 @@ type smtpResult struct {
 }
 
 func serveSMTP(conn net.Conn, rejectRecipient, quitFailure bool) (result smtpResult) {
+	return serveSMTPWithTLS(conn, rejectRecipient, quitFailure, nil)
+}
+
+func serveSMTPWithTLS(conn net.Conn, rejectRecipient, quitFailure bool, tlsConfig *tls.Config) (result smtpResult) {
 	defer conn.Close()
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		result.err = err
@@ -157,6 +162,7 @@ func serveSMTP(conn net.Conn, rejectRecipient, quitFailure bool) (result smtpRes
 		return
 	}
 	authStep := 0
+	secure := false
 	for {
 		line, err := r.ReadLine()
 		if err != nil {
@@ -168,6 +174,24 @@ func serveSMTP(conn net.Conn, rejectRecipient, quitFailure bool) (result smtpRes
 		switch {
 		case strings.HasPrefix(line, "EHLO "):
 			response = "250-test\r\n250 AUTH GSSAPI"
+			if tlsConfig != nil && !secure {
+				response = "250-test\r\n250-STARTTLS\r\n250 AUTH GSSAPI"
+			}
+		case line == "STARTTLS" && tlsConfig != nil && !secure:
+			if err := reply("220 start TLS"); err != nil {
+				result.err = err
+				return
+			}
+			tlsConn := tls.Server(conn, tlsConfig)
+			if err := tlsConn.Handshake(); err != nil {
+				result.err = err
+				return
+			}
+			conn = tlsConn
+			r = textproto.NewReader(bufio.NewReader(conn))
+			w = bufio.NewWriter(conn)
+			secure = true
+			continue
 		case strings.HasPrefix(line, "AUTH GSSAPI "):
 			if line != "AUTH GSSAPI "+base64.StdEncoding.EncodeToString([]byte("request")) {
 				result.err = fmt.Errorf("bad initial response: %q", line)
