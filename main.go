@@ -52,6 +52,7 @@ func normalizeArgs(args []string) []string {
 
 func newCommand() *cobra.Command {
 	o := options{}
+	var showVersion bool
 	cmd := &cobra.Command{
 		Use:           "ztmail [flags] [recipient ...]",
 		Short:         "Send an RFC 5322 message from stdin using SMTP and Kerberos GSSAPI",
@@ -60,6 +61,14 @@ func newCommand() *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, recipients []string) error {
+			if showVersion {
+				version, err := fullVersion()
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), version)
+				return err
+			}
 			if err := validateOptions(o); err != nil {
 				return err
 			}
@@ -67,6 +76,7 @@ func newCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
 	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
 	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
 	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")

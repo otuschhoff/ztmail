@@ -1,26 +1,57 @@
 # ztmail
 
 A sendmail-style SMTP submission client written in Go, using Cobra and
-Kerberos **SASL GSSAPI** (RFC 4752). Builds for Linux and Windows without CGO.
+Kerberos **SASL GSSAPI** (RFC 4752). Builds for Linux, Windows, and macOS without CGO.
 It does not use passwords, NTLM, HTTP Negotiate, or anonymous SMTP fallback.
 
 ## Build
 
 Requires Go 1.26 or later; the module selects toolchain Go 1.26.9.
-On Linux, `make build` produces:
+`make build` produces all six combinations of Linux, Windows, and macOS
+(`darwin`) with `amd64` and `arm64`:
 
 - `dist/ztmail-linux-amd64`
+- `dist/ztmail-linux-arm64`
 - `dist/ztmail-windows-amd64.exe`
+- `dist/ztmail-windows-arm64.exe`
+- `dist/ztmail-darwin-amd64`
+- `dist/ztmail-darwin-arm64`
 
-Alternatively, cross-compile directly (PowerShell users can set the environment
-variables using `$env:GOOS`, `$env:GOARCH`, and `$env:CGO_ENABLED`):
+To build just one target with the same CGO-free and version metadata settings:
 
 ```sh
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/ztmail-linux-amd64 .
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dist/ztmail-windows-amd64.exe .
-# ARM64: substitute GOARCH=arm64 and use an appropriately named output file.
+make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
+./dist/ztmail-linux-amd64 --version
+# 0.1.0+20261101-110716.abcdef0
 ```
+
+The semantic version is **0.1.0**. Every supported build includes UTC build time
+and exactly seven characters of the checked-out commit SHA as SemVer build
+metadata: `0.1.0+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
+Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
+Raw `go build` without linker metadata has no trustworthy build timestamp:
+`--version` reports an explicit error rather than inventing one. Use the
+Makefile or inject `-X main.buildTime=... -X main.commitSHA=...` yourself.
+
+### GitHub Actions
+
+The build workflow runs on main pushes, `v*` tags, pull requests, and manual
+dispatch. It shares one timestamp/SHA across its six-target matrix, sets
+`CGO_ENABLED=0`, checks build metadata, runs Linux regression tests, and uploads
+each binary as a separately named Actions artifact. macOS binaries are
+cross-compiled, not signed or notarized; cross-compilation does not imply native
+runtime testing on every target.
+
+The private AD SDK requires an Actions secret named `ADBIND_READ_TOKEN` with
+repository read access. Prefer a read-only token scoped to that dependency.
+The default `GITHUB_TOKEN` cannot read another private repository.
+Missing credentials fail explicitly; fork PRs normally have no access to the
+secret and cannot run the dependency build. The workflow deliberately does not
+use `pull_request_target` to expose credentials to untrusted fork code.
+Tags use plain SemVer, starting with `v0.1.0`; timestamps belong in binaries,
+not release tags. Download binaries from the matching tag's workflow artifacts.
 
 All DNS, Kerberos, and LDAP queries use the combined
 [`github.com/otuschhoff/adbind/ad/adclient`](https://github.com/otuschhoff/adbind)
@@ -52,7 +83,7 @@ For a machine named `worker.corp.example.com`:
 | DNS recursion probe zone | `example.com` (must be outside the AD domain) |
 
 Domain inference uses local host configuration, without ambient DNS queries.
-Discovery uses the host FQDN. Linux additionally
+Discovery uses the host FQDN. Linux and macOS additionally
 uses the first suffix from the last `search`/`domain` directive in
 `/etc/resolv.conf`; Windows reads the machine's primary DNS suffix using
 `GetComputerNameExW`, not the logged-in user's domain. Search suffixes
@@ -77,7 +108,7 @@ trusted AD data servers.
 
 ## Credentials
 
-### Linux or Windows: keytab
+### Linux, macOS, or Windows: keytab
 
 ```sh
 ./dist/ztmail-linux-amd64 \
@@ -110,7 +141,7 @@ and owns its in-memory ticket configuration and cache. ztmail never launches
 external `kinit` commands, writes a keytab, exports a TGT, or writes an external
 credential cache. DNS and Kerberos clock synchronization must work.
 
-### Linux or Windows: existing FILE credential cache
+### Linux, macOS, or Windows: existing FILE credential cache
 
 ```sh
 ./dist/ztmail-linux-amd64 --ccache /path/to/existing.ccache -oi -t < message.eml
@@ -118,7 +149,7 @@ credential cache. DNS and Kerberos clock synchronization must work.
 
 `--ccache` is an alternative to `--keytab`, not an output file. Optional `FILE:`
 prefixes are accepted; relative paths are resolved before passing them to the
-SDK. Linux defaults to `KRB5CCNAME` or `/tmp/krb5cc_<uid>` when no keytab is
+SDK. Linux and macOS default to `KRB5CCNAME` or `/tmp/krb5cc_<uid>` when no keytab is
 specified. Explicit cache mode on Windows requires `--ccache` or `KRB5CCNAME`.
 Only FILE caches are supported, not DIR, KCM, or KEYRING. An external provisioner
 must supply a valid cache with an unexpired TGT. It is read-only and is not
@@ -155,7 +186,7 @@ No NTLM fallback occurs. Windows SSPI requires an appropriate domain logon,
 reachable domain controllers, and the registered SMTP SPN.
 
 `--auth auto` chooses an explicit keytab first, then an explicit cache, then
-Windows SSPI or Linux's default FILE cache. Use `--auth keytab|ccache|sspi` to
+Windows SSPI or the non-Windows default FILE cache. Use `--auth keytab|ccache|sspi` to
 require a backend. Explicit backends never silently fall back on failure.
 
 ## Canonical sender

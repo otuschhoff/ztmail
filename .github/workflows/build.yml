@@ -1,0 +1,84 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOPRIVATE: github.com/otuschhoff/*
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      build_time: ${{ steps.metadata.outputs.build_time }}
+      commit_sha: ${{ steps.metadata.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set shared build metadata
+        id: metadata
+        run: |
+          echo "build_time=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Download private dependencies
+        env:
+          ADBIND_READ_TOKEN: ${{ secrets.ADBIND_READ_TOKEN }}
+        run: |
+          if [ -z "$ADBIND_READ_TOKEN" ]; then
+            echo "::error::Configure ADBIND_READ_TOKEN with read access to the private AD SDK repository."
+            exit 1
+          fi
+          git config --global credential.https://github.com.helper '!printf "username=x-access-token\npassword=%s\n" "$ADBIND_READ_TOKEN"'
+          go mod download
+          git config --global --unset credential.https://github.com.helper
+      - name: Test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: make test
+      - name: Build CGO-free binary
+        env:
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
+          BUILD_TIME: ${{ needs.metadata.outputs.build_time }}
+          COMMIT_SHA: ${{ needs.metadata.outputs.commit_sha }}
+        run: |
+          make build-one
+          go version -m dist/* | tee build-info.txt
+          grep -q 'CGO_ENABLED=0' build-info.txt
+      - name: Verify version
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          BUILD_TIME: ${{ needs.metadata.outputs.build_time }}
+          COMMIT_SHA: ${{ needs.metadata.outputs.commit_sha }}
+        run: |
+          test "$(dist/ztmail-linux-amd64 --version)" = "0.1.0+${BUILD_TIME}.${COMMIT_SHA}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ztmail-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
