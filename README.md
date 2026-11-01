@@ -23,12 +23,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.1.0+20261101-110716.abcdef0
+# 0.1.1+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.1.0**. Every supported build includes UTC build time
+The semantic version is **0.1.1**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.1.0+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.1.1+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 Raw `go build` without linker metadata has no trustworthy build timestamp:
@@ -241,6 +241,20 @@ there is no LDAP certificate-verification bypass.
 Input is a complete RFC 5322 message on stdin, with a blank line separating
 headers and body. `Date`, `Message-ID`, and MIME content must be supplied by the
 caller. From/Sender rewriting follows the policy above.
+
+For interactive input, press Enter twice after the last header to insert that
+blank line, then type the body and finish with a line containing only `.`:
+
+```text
+Subject: test
+
+This is a testmail
+.
+```
+
+Without the blank line, body text is interpreted as another header. A formatting
+error reports the offending line and how to correct it; the message is rejected
+locally before any AD authentication or SMTP submission.
 
 ```sh
 printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject: Test\n\nHello\n' |

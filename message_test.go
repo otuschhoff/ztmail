@@ -83,6 +83,43 @@ func TestPrepareMessageFailures(t *testing.T) {
 	}
 }
 
+func TestMissingHeaderBodyBlankLineExplainsRejection(t *testing.T) {
+	for _, newline := range []string{"\n", "\r\n"} {
+		input := strings.Join([]string{"Subject: test", "This is a testmail", ".", ""}, newline)
+		_, _, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
+		want := "invalid RFC 5322 message: line 2: expected a header before the blank line, but this line is not \"Name: value\"\n" +
+			"Each header must use \"Name: value\". Insert a blank line between the last header and the body " +
+			"(press Enter twice after the last header).\n" +
+			"The message was rejected locally; nothing was sent to the mail gateway."
+		if err == nil || err.Error() != want {
+			t.Fatalf("error=%v; want %q", err, want)
+		}
+		if strings.Contains(err.Error(), "This is a testmail") {
+			t.Fatal("error must not echo the message body")
+		}
+	}
+}
+
+func TestInteractiveMessageWithBlankLineIsAccepted(t *testing.T) {
+	for _, newline := range []string{"\n", "\r\n"} {
+		input := strings.Join([]string{"Subject: test", "", "This is a testmail", ".", ""}, newline)
+		message, recipients, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
+		want := strings.Join([]string{"Subject: test", "", "This is a testmail", ""}, newline)
+		if err != nil || string(message) != want || !reflect.DeepEqual(recipients, []string{"recipient@example.com"}) {
+			t.Fatalf("message=%q recipients=%v err=%v", message, recipients, err)
+		}
+	}
+}
+
+func TestHeaderOnlyInputExplainsMissingBlankLine(t *testing.T) {
+	for _, input := range []string{"Subject: test\n", "Subject: test"} {
+		_, _, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, true)
+		if err == nil || !strings.Contains(err.Error(), "missing blank line") || !strings.Contains(err.Error(), "press Enter twice") {
+			t.Fatalf("error=%v", err)
+		}
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("input failed") }

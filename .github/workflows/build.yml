@@ -25,6 +25,7 @@ jobs:
     outputs:
       build_time: ${{ steps.metadata.outputs.build_time }}
       commit_sha: ${{ steps.metadata.outputs.commit_sha }}
+      semver: ${{ steps.metadata.outputs.semver }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +34,12 @@ jobs:
       - name: Set shared build metadata
         id: metadata
         run: |
+          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' version.go)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not read the semantic version from version.go."
+            exit 1
+          fi
+          echo "semver=$version" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
           echo "commit_sha=$(git rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
@@ -82,8 +89,9 @@ jobs:
         env:
           BUILD_TIME: ${{ needs.metadata.outputs.build_time }}
           COMMIT_SHA: ${{ needs.metadata.outputs.commit_sha }}
+          SEMVER: ${{ needs.metadata.outputs.semver }}
         run: |
-          test "$(dist/ztmail-linux-amd64 --version)" = "0.1.0+${BUILD_TIME}.${COMMIT_SHA}"
+          test "$(dist/ztmail-linux-amd64 --version)" = "${SEMVER}+${BUILD_TIME}.${COMMIT_SHA}"
       - uses: actions/upload-artifact@v4
         with:
           name: ztmail-${{ matrix.goos }}-${{ matrix.goarch }}

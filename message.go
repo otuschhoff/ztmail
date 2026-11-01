@@ -36,6 +36,13 @@ type headerField struct {
 	value string
 }
 
+func invalidMessage(err error) error {
+	return fmt.Errorf("invalid RFC 5322 message: %w\n"+
+		"Each header must use \"Name: value\". Insert a blank line between the last header and the body "+
+		"(press Enter twice after the last header).\n"+
+		"The message was rejected locally; nothing was sent to the mail gateway.", err)
+}
+
 func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
 	r := bufio.NewReader(in)
 	var raw bytes.Buffer
@@ -53,21 +60,23 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 		}
 	}
 	data := raw.Bytes()
-	if _, err := mail.ReadMessage(bytes.NewReader(data)); err != nil {
-		return nil, nil, fmt.Errorf("invalid RFC 5322 message: %w", err)
+	if len(data) == 0 {
+		return nil, nil, invalidMessage(errors.New("message input is empty"))
 	}
 	// Preserve header bytes and MIME body exactly, removing blind-recipient fields and their folds.
 	var clean bytes.Buffer
 	var fields []headerField
 	offset, skip, bodyFound := 0, false, false
+	lineNumber := 0
 	for offset < len(data) {
 		end := bytes.IndexByte(data[offset:], '\n')
 		if end < 0 {
-			return nil, nil, errors.New("message has no header/body separator")
+			return nil, nil, invalidMessage(errors.New("missing blank line separating headers from the body"))
 		}
 		end += offset + 1
 		line := data[offset:end]
 		offset = end
+		lineNumber++
 		text := strings.TrimSuffix(strings.TrimSuffix(string(line), "\n"), "\r")
 		if text == "" {
 			clean.Write(line)
@@ -77,13 +86,13 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 		}
 		if text[0] == ' ' || text[0] == '\t' {
 			if len(fields) == 0 {
-				return nil, nil, errors.New("header continuation has no preceding field")
+				return nil, nil, invalidMessage(fmt.Errorf("line %d: header continuation has no preceding field", lineNumber))
 			}
 			fields[len(fields)-1].value += " " + strings.TrimSpace(text)
 		} else {
 			name, value, ok := strings.Cut(text, ":")
-			if !ok {
-				return nil, nil, errors.New("malformed message header")
+			if !ok || name == "" {
+				return nil, nil, invalidMessage(fmt.Errorf("line %d: expected a header before the blank line, but this line is not \"Name: value\"", lineNumber))
 			}
 			name = strings.ToLower(name)
 			fields = append(fields, headerField{name, strings.TrimSpace(value)})
@@ -94,7 +103,10 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 		}
 	}
 	if !bodyFound {
-		return nil, nil, errors.New("message has no header/body separator")
+		return nil, nil, invalidMessage(errors.New("missing blank line separating headers from the body"))
+	}
+	if _, err := mail.ReadMessage(bytes.NewReader(data)); err != nil {
+		return nil, nil, invalidMessage(err)
 	}
 	recipients := append([]string(nil), args...)
 	if fromHeaders {
