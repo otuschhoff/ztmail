@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to rebuild and publish (leave empty for a build only)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - name: Set shared build metadata
         id: metadata
@@ -41,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
@@ -82,3 +89,53 @@ jobs:
           name: ztmail-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ inputs.release_tag || github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ztmail-*
+          path: release-assets
+          merge-multiple: true
+      - name: Validate release assets and generate checksums
+        working-directory: release-assets
+        run: |
+          for binary in \
+            ztmail-linux-amd64 ztmail-linux-arm64 \
+            ztmail-windows-amd64.exe ztmail-windows-arm64.exe \
+            ztmail-darwin-amd64 ztmail-darwin-arm64; do
+            test -s "$binary"
+          done
+          sha256sum ztmail-* > SHA256SUMS
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::A version tag such as v0.1.0 is required."
+            exit 1
+          fi
+          prerelease=false
+          version_tag="${RELEASE_TAG%%+*}"
+          if [[ "$version_tag" == *-* ]]; then
+            prerelease=true
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > release-tags.txt
+          if ! grep -Fxq -- "$RELEASE_TAG" release-tags.txt; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+              --draft --prerelease="$prerelease"
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --draft=false --prerelease="$prerelease"

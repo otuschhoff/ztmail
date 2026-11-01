@@ -44,6 +44,23 @@ each binary as a separately named Actions artifact. macOS binaries are
 cross-compiled, not signed or notarized; cross-compilation does not imply native
 runtime testing on every target.
 
+Version-tag pushes automatically publish a GitHub Release after all six builds
+succeed, attaching the binaries and `SHA256SUMS`. The release is created as a
+draft and published only after asset uploads succeed. Reruns replace existing
+assets rather than failing on duplicate releases; prerelease tags such as
+`v0.2.0-rc.1` are marked as prereleases. Only the publication job receives
+`contents: write`; build and pull-request jobs retain read-only permissions.
+
+To rebuild and publish an existing tag without moving it, manually dispatch:
+
+```sh
+gh workflow run build.yml --repo otuschhoff/ztmail -f release_tag=v0.1.0
+```
+
+Both build jobs check out that tag, so its commit SHA and source are preserved.
+An empty manual `release_tag` performs a build only. Main pushes and pull requests
+never publish releases.
+
 The private AD SDK requires an Actions secret named `ADBIND_READ_TOKEN` with
 repository read access. Prefer a read-only token scoped to that dependency.
 The default `GITHUB_TOKEN` cannot read another private repository.
@@ -51,7 +68,9 @@ Missing credentials fail explicitly; fork PRs normally have no access to the
 secret and cannot run the dependency build. The workflow deliberately does not
 use `pull_request_target` to expose credentials to untrusted fork code.
 Tags use plain SemVer, starting with `v0.1.0`; timestamps belong in binaries,
-not release tags. Download binaries from the matching tag's workflow artifacts.
+not release tags. Download binaries from the repository's GitHub Releases page;
+Actions artifacts are also retained for individual builds. On Linux/macOS,
+mark a downloaded bare executable as executable with `chmod +x`.
 
 All DNS, Kerberos, and LDAP queries use the combined
 [`github.com/otuschhoff/adbind/ad/adclient`](https://github.com/otuschhoff/adbind)
