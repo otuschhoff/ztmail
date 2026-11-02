@@ -252,7 +252,32 @@ func tlsTransportSummary(state tls.ConnectionState, now time.Time) string {
 		}
 		expiry = certificateLifetime(cert.NotAfter, now)
 	}
-	return "OK (" + cn + "; " + expiry + ")"
+	return "OK (" + tlsConnectionDetails(state) + "; " + cn + "; " + expiry + ")"
+}
+
+func tlsConnectionDetails(state tls.ConnectionState) string {
+	version := strings.ReplaceAll(tls.VersionName(state.Version), "TLS ", "TLS")
+	if state.Version == 0 {
+		version = "TLS unavailable"
+	}
+	cipher := tls.CipherSuiteName(state.CipherSuite)
+	if state.CipherSuite == 0 {
+		cipher = "cipher unavailable"
+	}
+	if _, bulk, ok := strings.Cut(cipher, "_WITH_"); ok {
+		cipher = bulk
+	} else {
+		cipher = strings.TrimPrefix(cipher, "TLS_")
+	}
+	for _, suffix := range []string{"_SHA256", "_SHA384", "_SHA"} {
+		cipher = strings.TrimSuffix(cipher, suffix)
+	}
+	if cipher == "CHACHA20_POLY1305" {
+		cipher = "ChaCha20-256"
+	} else {
+		cipher = strings.ReplaceAll(cipher, "_", "-")
+	}
+	return version + " " + cipher
 }
 
 func certificateLifetime(notAfter, now time.Time) string {

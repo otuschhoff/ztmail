@@ -56,7 +56,7 @@ func credentialOptions(o options) (kerberos.Options, error) {
 			path = fmt.Sprintf("/tmp/krb5cc_%d", os.Getuid())
 		}
 		if path == "" {
-			return credentials, errors.New("--auth ccache requires --ccache or KRB5CCNAME")
+			return credentials, errors.New("--cred-source ccache requires --ccache or KRB5CCNAME")
 		}
 		credentials.CCache, err = cachePath(path)
 	}

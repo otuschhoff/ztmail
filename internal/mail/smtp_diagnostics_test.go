@@ -261,7 +261,7 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if err != nil || backend.state == nil || len(backend.state.VerifiedChains) == 0 {
 		t.Fatalf("verified TLS state not passed to GSSAPI: %v", err)
 	}
-	if value := report.values["Transport security"]; !strings.HasPrefix(value, "OK (CN=localhost; ") ||
+	if value := report.values["Transport security"]; !strings.HasPrefix(value, "OK ("+tlsConnectionDetails(*backend.state)+"; CN=localhost; ") ||
 		!strings.HasSuffix(value, " left)") {
 		t.Fatalf("missing verified certificate CN/expiry: %q", value)
 	}
@@ -289,15 +289,36 @@ func TestCertificateLifetime(t *testing.T) {
 		}
 	}
 	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "smtp.corp.example"}, NotAfter: now.Add(69 * 24 * time.Hour)}
-	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, {NotAfter: now.Add(365 * 24 * time.Hour)}}}
-	if got := tlsTransportSummary(state, now); got != "OK (CN=smtp.corp.example; 69 days left)" {
+	state := tls.ConnectionState{Version: tls.VersionTLS13, CipherSuite: tls.TLS_AES_128_GCM_SHA256,
+		PeerCertificates: []*x509.Certificate{leaf, {NotAfter: now.Add(365 * 24 * time.Hour)}}}
+	if got := tlsTransportSummary(state, now); got != "OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)" {
 		t.Fatalf("wrong leaf certificate summary: %s", got)
 	}
 	leaf.Subject.CommonName = ""
-	if got := tlsTransportSummary(state, now); got != "OK (CN unavailable; 69 days left)" {
+	if got := tlsTransportSummary(state, now); got != "OK (TLS1.3 AES-128-GCM; CN unavailable; 69 days left)" {
 		t.Fatalf("wrong missing-CN summary: %s", got)
 	}
-	if got := tlsTransportSummary(tls.ConnectionState{}, now); got != "OK (CN unavailable; expiry unavailable)" {
+	if got := tlsTransportSummary(tls.ConnectionState{}, now); got != "OK (TLS unavailable cipher unavailable; CN unavailable; expiry unavailable)" {
 		t.Fatalf("wrong missing-certificate summary: %s", got)
+	}
+
+}
+
+func TestTLSConnectionDetails(t *testing.T) {
+	for _, tc := range []struct {
+		version, cipher uint16
+		want            string
+	}{
+		{tls.VersionTLS13, tls.TLS_AES_128_GCM_SHA256, "TLS1.3 AES-128-GCM"},
+		{tls.VersionTLS13, tls.TLS_AES_256_GCM_SHA384, "TLS1.3 AES-256-GCM"},
+		{tls.VersionTLS13, tls.TLS_CHACHA20_POLY1305_SHA256, "TLS1.3 ChaCha20-256"},
+		{tls.VersionTLS12, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, "TLS1.2 AES-128-GCM"},
+		{tls.VersionTLS12, tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, "TLS1.2 AES-256-GCM"},
+		{tls.VersionTLS12, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, "TLS1.2 AES-128-CBC"},
+		{tls.VersionTLS12, 0xffff, "TLS1.2 0xFFFF"},
+	} {
+		if got := tlsConnectionDetails(tls.ConnectionState{Version: tc.version, CipherSuite: tc.cipher}); got != tc.want {
+			t.Errorf("version=%x cipher=%x: got %q, want %q", tc.version, tc.cipher, got, tc.want)
+		}
 	}
 }

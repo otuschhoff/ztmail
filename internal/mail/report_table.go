@@ -102,6 +102,12 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 	if format == reportPlain || (format == reportTerminal && !color) {
 		return styled
 	}
+	if value == "-" {
+		if format == reportHTML {
+			return `<span style="color:#6b7280">-</span>`
+		}
+		return text.FgHiBlack.EscapeSeq() + "-" + text.Reset.EscapeSeq()
+	}
 	shade, ansi := "", text.FgCyan
 	ok := false
 	if key == "Authentication" || key == "Transport security" {

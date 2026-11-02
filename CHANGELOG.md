@@ -5,6 +5,17 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-11-02
+
+### Changed
+
+- Hide per-DC Kerberos rows for SSPI, include observed per-DC DNS reply latency
+  when resolver endpoints can be matched, and display missing response metrics
+  as grey dashes. Add compact negotiated TLS version and cipher/key-size labels.
+- Rename `--auth` to `--cred-source` for selecting auto, keytab, ccache or SSPI
+  credentials. The default and credential-selection behavior are unchanged;
+  update existing invocations because `--auth` is no longer accepted.
+
 ## [0.2.9] - 2026-11-02
 
 ### Changed

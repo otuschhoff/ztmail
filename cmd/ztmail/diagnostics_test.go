@@ -20,7 +20,7 @@ import (
 
 func TestTestFlagDoesNotReadStdin(t *testing.T) {
 	cmd := newCommand()
-	cmd.SetArgs([]string{"--test", "--domain", "corp.example", "--keytab", filepath.Join(t.TempDir(), "missing"), "-t", "-v"})
+	cmd.SetArgs([]string{"--test", "--domain", "corp.example", "--cred-source", "keytab", "--keytab", filepath.Join(t.TempDir(), "missing"), "-t", "-v"})
 	cmd.SetIn(failingReader{})
 	var output bytes.Buffer
 	cmd.SetErr(&output)
@@ -33,6 +33,7 @@ func TestTestFlagDoesNotReadStdin(t *testing.T) {
 		`relay="mailgw.corp.example"`, `SPN="smtp/mailgw.corp.example"`, `source="keytab"`,
 		"[FAIL] Keytab inspection", "[FAIL] Test", "stdin is not read",
 		"Authentication method", "GSSAPI", "smtp/mailgw.corp.example",
+		`cred-source="keytab"`,
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("missing %q in %s", expected, &output)

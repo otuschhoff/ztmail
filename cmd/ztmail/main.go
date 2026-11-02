@@ -96,7 +96,7 @@ func newCommand() *cobra.Command {
 	f.IntVar(&o.port, "port", 25, "SMTP port; use 465 with --tls implicit")
 	f.StringVar(&o.hello, "hostname", "", "EHLO hostname (default: discovered host FQDN)")
 	f.StringVar(&o.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
-	f.StringVar(&o.auth, "auth", "auto", "Credential backend: auto, keytab, ccache, sspi")
+	f.StringVar(&o.auth, "cred-source", "auto", "Credential source: auto, keytab, ccache, sspi")
 	f.BoolVar(&o.passwordPrompt, "password-prompt", false, "In auto mode, prompt for principal/password only after keytab, cache, and SSPI fail")
 	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
 	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try keytab principals or use the cache/SSPI identity")
@@ -135,22 +135,22 @@ func validateOptions(o options) error {
 	switch o.auth {
 	case "auto", "keytab", "ccache", "sspi":
 	default:
-		return errors.New("--auth must be auto, keytab, ccache, or sspi")
+		return errors.New("--cred-source must be auto, keytab, ccache, or sspi")
 	}
 	if o.passwordPrompt && o.auth != "auto" {
-		return errors.New("--password-prompt requires --auth auto; explicit credential backends do not fall back")
+		return errors.New("--password-prompt requires --cred-source auto; explicit credential backends do not fall back")
 	}
 	if o.keytab != "" && o.ccache != "" && !o.passwordPrompt {
 		return errors.New("--keytab and --ccache are mutually exclusive")
 	}
 	if o.auth == "keytab" && o.keytab == "" {
-		return errors.New("--auth keytab requires --keytab")
+		return errors.New("--cred-source keytab requires --keytab")
 	}
 	if o.keytab != "" && o.auth != "auto" && o.auth != "keytab" {
-		return errors.New("--keytab conflicts with the selected --auth backend")
+		return errors.New("--keytab conflicts with the selected --cred-source backend")
 	}
 	if o.ccache != "" && o.auth != "auto" && o.auth != "ccache" {
-		return errors.New("--ccache conflicts with the selected --auth backend")
+		return errors.New("--ccache conflicts with the selected --cred-source backend")
 	}
 	return nil
 }
@@ -216,7 +216,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.from = sender
 		}
 	}
-	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q auth=%q requested principal=%q",
+	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q cred-source=%q requested principal=%q",
 		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
 	o.report.Value("Target relay", fmt.Sprintf("%s:%d", o.relay, o.port))
 	if o.tlsMode == "off" {

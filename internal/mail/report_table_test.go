@@ -34,12 +34,20 @@ func TestReportCellStyles(t *testing.T) {
 		{"User", `a<&@CORP.EXAMPLE`, `a&lt;&amp;<span style="color:#6b7280">@CORP.EXAMPLE</span>`},
 		{"Hostname", "relay.corp.example.attacker.test", "relay.corp.example.attacker.test"},
 		{"Hostname", "relay.corp.example-other.test", "relay.corp.example-other.test"},
+		{"Replies", "-", `<span style="color:#6b7280">-</span>`},
+		{"Avg response", "-", `<span style="color:#6b7280">-</span>`},
 	} {
 		if got := formatReportCell(tc.value, tc.key, reportHTML, false, "corp.example"); got != tc.want {
 			t.Errorf("%s %q: got %q, want %q", tc.key, tc.value, got, tc.want)
 		}
 		if got := formatReportCell(tc.value, tc.key, reportPlain, true, "corp.example"); got != tc.value {
 			t.Errorf("plain value changed: %q", got)
+		}
+		if got := formatReportCell("-", "Replies", reportTerminal, true, ""); got != "\x1b[90m-\x1b[0m" {
+			t.Errorf("missing grey terminal placeholder: %q", got)
+		}
+		if got := formatReportCell("-", "Replies", reportTerminal, false, ""); got != "-" {
+			t.Errorf("unstyled terminal placeholder changed: %q", got)
 		}
 	}
 }

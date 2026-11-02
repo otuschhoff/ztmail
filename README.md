@@ -307,7 +307,10 @@ Authentication, and Total runtime. The method is currently `GSSAPI`; User,
 Cred source and SPN are shown only for GSSAPI. This does not enable mTLS
 authentication.
 The table has no redundant column-header row. Successful authentication displays
-`OK`; healthy transport displays `OK (CN=smtp.corp.example; 69 days left)`.
+`OK`; healthy transport displays
+`OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)`.
+The compact cipher label identifies the negotiated symmetric encryption/key
+size, not the certificate's signing key or an overall security rating.
 The remaining leaf-certificate lifetime uses whole days, hours or minutes,
 or `less than 1 minute left`. Certificate validation
 still uses the relay hostname/SANs, not the displayed CN. Certificates without a
@@ -331,7 +334,13 @@ and KDC times cannot be separated from their enclosing call. Detailed step
 durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
 Untested protocols say `Not tested`; canceled losers do not prove
-unreachability. Resolver traffic is not DC reachability. Native SSPI KDC endpoints
+unreachability. Missing response times and zero reply counts display a grey `-`
+(unstyled when colours are disabled). With SSPI credentials, per-DC Kerberos rows
+are omitted because Windows manages ticket routing. Observed DNS exchange latency
+is included only where resolver endpoints match discovered DC names or addresses,
+deduplicated across advertised services; no DNS probes are added. DNS replies do
+not prove LDAP/Kerberos reachability, and unmatched resolvers are not attributed
+to a DC. Native SSPI KDC endpoints
 and wire timing are OS-managed/unavailable. Response latency is not authentication
 proof. Nested/concurrent step durations overlap and must not be summed.
 `--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
@@ -496,13 +505,13 @@ Windows defaults to the logged-in user's credentials, with no keytab or cache:
 ```powershell
 Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe -oi -t
 Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe `
-  --auth sspi --domain corp.example.com --relay relay.corp.example.com -t
+  --cred-source sspi --domain corp.example.com --relay relay.corp.example.com -t
 ```
 
 For byte-preserving file redirection on Windows, use Command Prompt:
 
 ```bat
-dist\ztmail-windows-amd64.exe --auth sspi -oi -t < message.eml
+dist\ztmail-windows-amd64.exe --cred-source sspi -oi -t < message.eml
 ```
 
 The SDK obtains the current Windows logon principal through SSPI and uses it
@@ -513,8 +522,8 @@ Verified SMTP TLS state is passed to the SDK for SSPI channel binding.
 No NTLM fallback occurs. Windows SSPI requires an appropriate domain logon,
 reachable domain controllers, and the registered SMTP SPN.
 
-`--auth auto` chooses an explicit keytab first, then an explicit cache, then
-Windows SSPI or the non-Windows default FILE cache. Use `--auth keytab|ccache|sspi` to
+`--cred-source auto` chooses an explicit keytab first, then an explicit cache, then
+Windows SSPI or the non-Windows default FILE cache. Use `--cred-source keytab|ccache|sspi` to
 require a backend. Explicit backends never silently fall back on failure.
 
 ### Opt-in password fallback
@@ -526,7 +535,7 @@ require a backend. Explicit backends never silently fall back on failure.
   --principal alice@CORP.EXAMPLE.COM -oi -t < message.eml
 ```
 
-`--password-prompt` requires `--auth auto`. It first tries the configured keytab
+`--password-prompt` requires `--cred-source auto`. It first tries the configured keytab
 (including its principal candidates), then a configured/default FILE cache,
 then Windows SSPI. Only if those methods fail does it prompt for a password.
 Successful earlier methods never prompt. With this flag, both `--keytab` and

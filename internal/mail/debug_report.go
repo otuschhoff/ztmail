@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,60 +78,52 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	for _, key := range keys {
 		endpoint := seen[key]
 		for _, protocol := range []string{"ldap", "kerberos"} {
-			var total time.Duration
-			replies, failed, canceled, connected, connectionFailures := 0, 0, 0, 0, 0
-			for _, event := range r.traces {
-				if (event.Kind != observe.ExchangeTrace && event.Kind != observe.ConnectionTrace) || event.Protocol != protocol {
-					continue
-				}
-				matches := strings.EqualFold(event.Server, key)
-				host, port, _ := net.SplitHostPort(event.Server)
-				for _, address := range endpoint.Addresses {
-					if host == address.String() && port == fmt.Sprint(endpoint.Port) {
-						matches = true
-					}
-				}
-				if !matches {
-					continue
-				}
-				if event.Kind == observe.ConnectionTrace {
-					if event.Outcome == observe.Success {
-						connected++
-					} else if event.Outcome == observe.Canceled {
-						canceled++
-					} else {
-						connectionFailures++
-					}
-					continue
-				}
-				if event.Response {
-					replies++
-					total += event.Duration
-				} else if event.Outcome == observe.Canceled {
-					canceled++
-				} else {
-					failed++
-				}
+			if protocol == "kerberos" && strings.EqualFold(r.values["Cred source"], "sspi") {
+				continue
 			}
-			status, avg := "Not tested", "-"
-			if replies > 0 {
-				status = "Responded (not authentication proof)"
-				avg = (total / time.Duration(replies)).Round(time.Microsecond).String()
-			} else if failed > 0 || connectionFailures > 0 {
-				status = "Failed observed attempts"
-			} else if canceled > 0 {
-				status = "Canceled; reachability unknown"
-			} else if connected > 0 {
-				status = "Connected; no complete reply"
-			}
-			if replies > 0 && failed > 0 {
-				status += fmt.Sprintf("; %d failed attempts", failed)
-			}
-			dcs.rows = append(dcs.rows, table.Row{key, protocol, status, avg, replies})
+			dcs.rows = append(dcs.rows, r.dcObservationRow(key, protocol, endpoint))
 		}
 	}
+	dnsEndpoints := make(map[string]discovery.Endpoint)
+	for _, event := range r.traces {
+		if event.Protocol != "dns" || (event.Kind != observe.ExchangeTrace && event.Kind != observe.ConnectionTrace) {
+			continue
+		}
+		_, port, err := net.SplitHostPort(event.Server)
+		if err != nil {
+			continue
+		}
+		number, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || number == 0 {
+			continue
+		}
+		for _, key := range keys {
+			endpoint := seen[key]
+			endpoint.Port = uint16(number)
+			if matchesDCEndpoint(event, endpoint) {
+				dnsKey := endpoint.Address()
+				previous := dnsEndpoints[dnsKey]
+				addresses := previous.Addresses
+				for _, address := range endpoint.Addresses {
+					if !slices.Contains(addresses, address) {
+						addresses = append(addresses, address)
+					}
+				}
+				endpoint.Addresses = addresses
+				dnsEndpoints[dnsKey] = endpoint
+			}
+		}
+	}
+	dnsKeys := make([]string, 0, len(dnsEndpoints))
+	for key := range dnsEndpoints {
+		dnsKeys = append(dnsKeys, key)
+	}
+	sort.Strings(dnsKeys)
+	for _, key := range dnsKeys {
+		dcs.rows = append(dcs.rows, r.dcObservationRow(key, "dns", dnsEndpoints[key]))
+	}
 	if len(keys) == 0 {
-		dcs.rows = append(dcs.rows, table.Row{"No DC advertisements observed", "-", "Not tested", "-", 0})
+		dcs.rows = append(dcs.rows, table.Row{"No DC advertisements observed", "-", "Not tested", "-", "-"})
 	}
 	timings := reportTable{header: table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"}}
 	for _, event := range r.traces {
@@ -138,12 +132,75 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	}
 	result := r.runtimeBreakdownFormat(format) + "\n" +
 		reportNote(format, "DC inventory (advertised during this test; includes historical/unresolved entries)") + "\n" + dcs.render(format, r.color, r.values["AD domain"]) +
-		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS resolver traffic is not DC reachability.") +
+		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs; DNS replies do not prove LDAP/Kerberos reachability.") +
 		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
 		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format, r.color, r.values["AD domain"])
 	}
 	return result
+}
+
+func matchesDCEndpoint(event observe.TraceEvent, endpoint discovery.Endpoint) bool {
+	for _, peer := range []string{event.Server, event.Address} {
+		host, port, err := net.SplitHostPort(peer)
+		if err != nil || port != fmt.Sprint(endpoint.Port) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(endpoint.FQDN, ".")) {
+			return true
+		}
+		for _, address := range endpoint.Addresses {
+			if host == address.String() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.Endpoint) table.Row {
+	var total time.Duration
+	replies, failed, canceled, connected, connectionFailures := 0, 0, 0, 0, 0
+	for _, event := range r.traces {
+		if (event.Kind != observe.ExchangeTrace && event.Kind != observe.ConnectionTrace) ||
+			event.Protocol != protocol || !matchesDCEndpoint(event, endpoint) {
+			continue
+		}
+		if event.Kind == observe.ConnectionTrace {
+			if event.Outcome == observe.Success {
+				connected++
+			} else if event.Outcome == observe.Canceled {
+				canceled++
+			} else {
+				connectionFailures++
+			}
+			continue
+		}
+		if event.Response {
+			replies++
+			total += event.Duration
+		} else if event.Outcome == observe.Canceled {
+			canceled++
+		} else {
+			failed++
+		}
+	}
+	status, avg, count := "Not tested", "-", "-"
+	if replies > 0 {
+		status = "Responded (not authentication proof)"
+		avg = (total / time.Duration(replies)).Round(time.Microsecond).String()
+		count = fmt.Sprint(replies)
+	} else if failed > 0 || connectionFailures > 0 {
+		status = "Failed observed attempts"
+	} else if canceled > 0 {
+		status = "Canceled; reachability unknown"
+	} else if connected > 0 {
+		status = "Connected; no complete reply"
+	}
+	if replies > 0 && failed > 0 {
+		status += fmt.Sprintf("; %d failed attempts", failed)
+	}
+	return table.Row{key, protocol, status, avg, count}
 }
 
 func runtimeCategory(event observe.TraceEvent) int {

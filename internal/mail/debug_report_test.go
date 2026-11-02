@@ -135,6 +135,7 @@ func TestDebugObservedInventoryAndTimings(t *testing.T) {
 				Response: true, Outcome: observe.Success, Duration: duration, Operation: "search"})
 		})
 	}
+
 	wg.Wait()
 	report.Trace(context.Background(), observe.TraceEvent{Kind: observe.ExchangeTrace,
 		Phase: observe.TraceStarted, Protocol: "ldap", Server: "192.0.2.10:389",
@@ -157,5 +158,79 @@ func TestDebugObservedInventoryAndTimings(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "Avg response") && !strings.Contains(output.String(), "20ms") {
 		t.Fatal("started or elected observations counted as completed response latency")
+	}
+}
+
+func TestDebugSSPIAndObservedDCDNSLatency(t *testing.T) {
+	report := NewTestReport(&bytes.Buffer{}, false)
+	report.EnableDebug()
+	report.Value("Cred source", "SSPI")
+	report.Inventory(discovery.InventoryEvent{Advertised: []discovery.Endpoint{
+		{FQDN: "dc1.corp.example", Port: 389, Addresses: []netip.Addr{
+			netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.11")}},
+		{FQDN: "dc1.corp.example", Port: 88, Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10")}},
+		{FQDN: "dc2.corp.example", Port: 389, Addresses: []netip.Addr{netip.MustParseAddr("2001:db8::20")}},
+	}})
+	for _, event := range []observe.TraceEvent{
+		{Protocol: "dns", Server: "192.0.2.10:53", Response: true, Duration: 10 * time.Millisecond},
+		{Protocol: "dns", Server: "192.0.2.11:53", Response: true, Duration: 30 * time.Millisecond},
+		{Protocol: "dns", Server: "[2001:db8::20]:5353", Response: true, Duration: 5 * time.Millisecond},
+		{Protocol: "dns", Server: "192.0.2.99:53", Response: true, Duration: time.Hour},
+		{Protocol: "dns", Server: "192.0.2.10:53", Outcome: observe.Canceled, Duration: time.Hour},
+		{Protocol: "ldap", Server: "192.0.2.10:389", Response: true, Duration: 7 * time.Millisecond},
+		{Protocol: "kerberos", Server: "192.0.2.10:88", Response: true, Duration: 9 * time.Millisecond},
+	} {
+		event.Kind, event.Phase = observe.ExchangeTrace, observe.TraceCompleted
+		report.Trace(context.Background(), event)
+	}
+	report.Trace(context.Background(), observe.TraceEvent{Kind: observe.ConnectionTrace, Phase: observe.TraceCompleted,
+		Protocol: "dns", Server: "192.0.2.10:53", Outcome: observe.Success, Duration: time.Hour})
+	report.Trace(context.Background(), observe.TraceEvent{Kind: observe.ExchangeTrace, Phase: observe.TraceStarted,
+		Protocol: "dns", Server: "192.0.2.10:53", Response: true, Duration: time.Hour})
+	plain := report.renderDebug(reportPlain)
+	if strings.Contains(plain, "Protocol: kerberos") || strings.Contains(plain, "192.0.2.99") ||
+		strings.Count(plain, "Protocol: dns") != 2 {
+		t.Fatalf("incorrect SSPI/DNS inventory:\n%s", plain)
+	}
+	for _, want := range []string{
+		"dc1.corp.example:53\nProtocol: dns", "Avg response: 20ms\nReplies: 2",
+		"dc2.corp.example:5353\nProtocol: dns", "Avg response: 5ms\nReplies: 1",
+		"Avg response: 7ms\nReplies: 1", "Avg response: -\nReplies: -",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
+		}
+	}
+	for _, format := range []reportFormat{reportTerminal, reportHTML} {
+		result := report.renderDebug(format)
+		if strings.Contains(result, "kerberos") || !strings.Contains(result, "20ms") {
+			t.Errorf("incorrect SSPI format %v:\n%s", format, result)
+		}
+	}
+	report.Value("Cred source", "keytab")
+	if !strings.Contains(report.renderDebug(reportPlain), "Protocol: kerberos") {
+		t.Fatal("Kerberos rows hidden for keytab credentials")
+	}
+}
+
+func TestDCObservationMissingResponses(t *testing.T) {
+	endpoint := discovery.Endpoint{FQDN: "dc.corp.example", Port: 389,
+		Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10")}}
+	for _, tc := range []struct {
+		kind    observe.TraceKind
+		outcome observe.Outcome
+		want    string
+	}{
+		{observe.ExchangeTrace, observe.Canceled, "Canceled; reachability unknown"},
+		{observe.ExchangeTrace, observe.Failed, "Failed observed attempts"},
+		{observe.ConnectionTrace, observe.Success, "Connected; no complete reply"},
+	} {
+		report := NewTestReport(&bytes.Buffer{}, false)
+		report.Trace(context.Background(), observe.TraceEvent{Kind: tc.kind, Phase: observe.TraceCompleted,
+			Protocol: "ldap", Server: endpoint.Address(), Outcome: tc.outcome, Duration: time.Second})
+		row := report.dcObservationRow(endpoint.Address(), "ldap", endpoint)
+		if row[2] != tc.want || row[3] != "-" || row[4] != "-" {
+			t.Fatalf("incorrect unavailable response metrics: %v", row)
+		}
 	}
 }

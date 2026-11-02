@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -31,14 +32,14 @@ func TestCommandFlagValidation(t *testing.T) {
 		{"--port", "0"},
 		{"--timeout", "0s"},
 		{"--tls", "insecure"},
-		{"--auth", "plain"},
+		{"--cred-source", "plain"},
 		{"--keytab", "a", "--ccache", "b"},
-		{"--auth", "keytab"},
-		{"--auth", "sspi", "--keytab", "a"},
-		{"--auth", "sspi", "--password-prompt"},
-		{"--auth", "keytab", "--keytab", "a", "--password-prompt"},
-		{"--auth", "ccache", "--ccache", "a", "--password-prompt"},
-		{"--auth", "keytab", "--keytab", "a", "--ccache", "b"},
+		{"--cred-source", "keytab"},
+		{"--cred-source", "sspi", "--keytab", "a"},
+		{"--cred-source", "sspi", "--password-prompt"},
+		{"--cred-source", "keytab", "--keytab", "a", "--password-prompt"},
+		{"--cred-source", "ccache", "--ccache", "a", "--password-prompt"},
+		{"--cred-source", "keytab", "--keytab", "a", "--ccache", "b"},
 		{"--krb5-config", "/tmp/krb5.conf"},
 		{"--unsupported"},
 	}
@@ -58,9 +59,43 @@ func TestCommandFlagValidation(t *testing.T) {
 func TestCommandHelp(t *testing.T) {
 	cmd := newCommand()
 	cmd.SetArgs([]string{"--help"})
-	cmd.SetOut(io.Discard)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "--cred-source") || strings.Contains(output.String(), "--auth") {
+		t.Fatalf("incorrect credential flag in help:\n%s", &output)
+	}
+}
+
+func TestCredentialSourceFlag(t *testing.T) {
+	for _, source := range []string{"auto", "keytab", "ccache", "sspi"} {
+		cmd := newCommand()
+		if err := cmd.ParseFlags([]string{"--cred-source", source}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := cmd.Flags().GetString("cred-source"); err != nil || got != source {
+			t.Fatalf("source=%q: got %q, err=%v", source, got, err)
+		}
+	}
+	cmd := newCommand()
+	if got, err := cmd.Flags().GetString("cred-source"); err != nil || got != "auto" {
+		t.Fatalf("default source=%q, err=%v", got, err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--cred-source", "plain"}, "--cred-source must be auto, keytab, ccache, or sspi"},
+		{[]string{"--cred-source", "keytab"}, "--cred-source keytab requires --keytab"},
+		{[]string{"--auth", "auto"}, "unknown flag: --auth"},
+	} {
+		cmd := newCommand()
+		cmd.SetArgs(tc.args)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: expected %q, got %v", tc.args, tc.want, err)
+		}
 	}
 }
 
