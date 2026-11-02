@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/otuschhoff/adbind/ad/addns"
 	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/observe"
+	"golang.org/x/term"
 )
 
 type TestReport struct {
@@ -18,10 +23,20 @@ type TestReport struct {
 	outputErr error
 	exchanges int
 	verbose   bool
+	color     bool
+	rows      []reportRow
+}
+
+type reportRow struct {
+	status, step, detail string
 }
 
 func NewTestReport(output io.Writer, verbose bool) *TestReport {
-	return &TestReport{output: output, verbose: verbose}
+	color := false
+	if file, ok := output.(*os.File); ok {
+		color = term.IsTerminal(int(file.Fd())) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	}
+	return &TestReport{output: output, verbose: verbose, color: color}
 }
 
 func (r *TestReport) Line(status, step, detail string) {
@@ -30,10 +45,33 @@ func (r *TestReport) Line(status, step, detail string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.outputErr != nil {
-		return
+	if importantResult(status, step) {
+		r.rows = append(r.rows, reportRow{status, step, detail})
 	}
-	_, r.outputErr = fmt.Fprintf(r.output, "[%s] %s: %s\n", status, step, detail)
+	if r.verbose && r.outputErr == nil {
+		_, r.outputErr = fmt.Fprintf(r.output, "[%s] %s: %s\n", status, step, detail)
+	}
+}
+
+func importantResult(status, step string) bool {
+	if strings.HasPrefix(step, "AD SDK ") || step == "AD exchange" {
+		return false
+	}
+	if step == "DNS" {
+		return status == "FAIL"
+	}
+	if status == "FAIL" || status == "WARN" || status == "SKIP" {
+		return true
+	}
+	switch step {
+	case "Host/domain discovery", "Target configuration", "Message submission", "Borrowed AD owner",
+		"Authenticated AD identity", "Credential identity", "Canonical AD mail lookup",
+		"SMTP service ticket", "Relay DNS lookup", "SMTP TCP connection", "SMTP STARTTLS",
+		"Implicit TLS", "GSSAPI mutual authentication", "GSSAPI SASL negotiation",
+		"SMTP AUTH GSSAPI", "SMTP QUIT", "DNS failure diagnostics", "Test":
+		return true
+	}
+	return false
 }
 
 func (r *TestReport) Step(step string, err error, detail string) {
@@ -96,6 +134,21 @@ func (r *TestReport) DNSSummary(event dns.SummaryEvent) {
 	r.Line(status, "DNS", detail)
 }
 
+func (r *TestReport) DNSDiagnostic(result addns.DiagnosticResult) {
+	detail := fmt.Sprintf("original_failure=%s", result.Failure)
+	if result.Skip != addns.DiagnosticNotSkipped {
+		detail += fmt.Sprintf(" ran=%t skipped=%s duration=%s", result.Ran, result.Skip, result.Duration)
+	} else {
+		detail += fmt.Sprintf(" ran=%t outcome=%s server=%s transport=%s duration=%s attempts=%d",
+			result.Ran, result.Outcome, result.Server, result.Transport, result.Duration, result.Attempts)
+	}
+	if r.verbose {
+		detail += fmt.Sprintf(" lookup_id=%d question_id=%d original_question_id=%d peer=%q probe_failure=%s",
+			result.LookupID, result.QuestionID, result.Original.QuestionID, result.Address, result.ProbeFailure)
+	}
+	r.Line("INFO", "DNS failure diagnostics", detail+" (supplementary evidence only; original lookup failure retained)")
+}
+
 func (r *TestReport) Finish(err *error) {
 	r.Line("INFO", "Endpoint visibility", "Only observed exchanges identify used servers. Cache hits emit no exchange; Windows SSPI KDC traffic is OS-managed and not observable.")
 	r.mu.Lock()
@@ -109,4 +162,35 @@ func (r *TestReport) Finish(err *error) {
 	if outputErr == nil {
 		*err = errors.Join(*err, r.outputErr)
 	}
+	if r.outputErr == nil {
+		_, writeErr := fmt.Fprintln(r.output, r.render())
+		*err = errors.Join(*err, writeErr)
+	}
+}
+
+func (r *TestReport) render() string {
+	t := table.NewWriter()
+	t.SetStyle(table.StyleRounded)
+	t.AppendHeader(table.Row{"Check", "Result / details"})
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 1, WidthMax: 36, WidthMaxEnforcer: text.WrapSoft},
+		{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft},
+	})
+	for _, row := range r.rows {
+		label := "[" + row.status + "] " + row.step
+		if r.color {
+			color := text.FgCyan
+			switch row.status {
+			case "OK":
+				color = text.FgGreen
+			case "FAIL":
+				color = text.FgRed
+			case "WARN", "SKIP":
+				color = text.FgYellow
+			}
+			label = color.EscapeSeq() + label + text.Reset.EscapeSeq()
+		}
+		t.AppendRow(table.Row{label, row.detail})
+	}
+	return t.Render()
 }

@@ -214,7 +214,8 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.4.0`, which includes opt-in per-question DNS summaries,
+The SDK is pinned to `v0.4.2`, which includes optimistic DNS qualification,
+explicit bounded failure diagnostics, opt-in per-question DNS summaries,
 server-attributed
 DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
 external credential sources, and OS DNS bootstrap. It also handles unpaged
@@ -238,7 +239,7 @@ For a machine named `worker.corp.example.com`:
 | TLS | Required STARTTLS, certificate/hostname verified, TLS >= 1.2 |
 | Envelope sender and From | Authenticated principal's canonical AD mail address |
 | DNS bootstrap | OS DNS servers, discovered by adclient |
-| DNS recursion probe zone | `example.com` (must be outside the AD domain) |
+| DNS diagnostic probe zone | `example.com` (outside the AD domain; used only for eligible `--test` failures) |
 
 Domain inference uses local host configuration, without ambient DNS queries.
 Discovery uses the host FQDN. Linux and macOS additionally
@@ -254,15 +255,22 @@ and/or `--spn`. The relay must be a DNS hostname, not a URL, IP literal, or
 `host:port`. The SPN must be registered to the relay's AD service account;
 an alias may require an explicit `--spn`.
 
-The SDK discovers and qualifies AD DNS servers from OS resolver configuration,
-then uses that DNS path for DC/KDC and relay resolution. There is no application
+The SDK discovers AD DNS servers from OS resolver configuration and qualifies
+their AD namespace service, then uses that DNS path for DC/KDC and relay
+resolution. CLI-owned clients select `QualificationOptimistic`: resolve actual
+required internal/external names and alias targets without advance proof of
+external recursion. Successful lookups do not trigger synthetic recursion
+probes, including during topology refresh. Namespace and response validation
+remain enforced. There is no application
 `net.DefaultResolver`, alternate LDAP client, or direct Kerberos network client.
 Override bootstrap with repeatable `--dns-server IP[:port]` (IPv6 ports require
 brackets); this disables OS bootstrap fallback. Configure an external
 `--dns-probe-zone` if `example.com` is in your AD domain or unsuitable for your
-DNS policy. The SDK uses bounded random-name probes under that zone to qualify
-recursive capability. Bootstrap servers are discovery hints, not automatically
-trusted AD data servers.
+DNS policy. This zone is used only for optional failure diagnostics in `--test`,
+not for normal sends or server admission. Such probes can generate upstream
+external DNS traffic. Bootstrap servers are discovery hints, not automatically
+trusted AD data servers. Library clients retain the qualification policy and
+diagnostic configuration of their application-owned AD client.
 
 ## Authentication test (no email)
 
@@ -288,35 +296,52 @@ that produces no output token still requires an empty SMTP continuation; it
 must not terminate AUTH early. A final `535` is reported as an authentication
 failure, not as a QUIT failure.
 
-The step report is written to stderr without requiring `--verbose`. It shows:
+The report is written to stderr as a final go-pretty table with rounded
+corners. Important checks, failures, warnings, and the overall result are
+shown without requiring `--verbose`:
 
 - Local host, AD domain, realm, relay hostname/port, EHLO name, and SMTP SPN.
-- Credential attempts, the selected principal and actual keytab/ccache/SSPI/
+- The selected principal and actual keytab/ccache/SSPI/
   password source, and the canonical mail address where applicable.
-- One compact summary per DNS question/race: queried name and record type,
-  total question runtime, winning server IP/port and transport, number of
-  distinct servers actually queried, outcome, and purpose (discovery, probe,
-  or application). Failed requests remain visible; negative answers are
-  informational and do not by themselves establish lookup/authentication success.
-- SDK operation results and observed LDAP and Kerberos exchanges,
-  including the logical server, actual connected peer, request kind, transport,
-  outcome, and duration.
-- Relay DNS addresses, the connected SMTP peer, TLS, GSSAPI, and cleanup results.
+- Relay DNS addresses, the connected SMTP peer, verified TLS, GSSAPI mutual
+  authentication/SASL negotiation, relay AUTH acceptance, and QUIT.
+- Failed DNS questions, supplementary diagnostics, skipped checks, credential
+  warnings, cleanup failures, and overall success/failure. Test mode never sends
+  email, including when a check fails.
 
-For example:
+Colours highlight successful checks in green, failures in red, and
+warnings/skips in yellow only when the report writer is an interactive terminal.
+`NO_COLOR` (nonempty) and `TERM=dumb` disable colours. Files, pipes, and
+library report buffers receive uncoloured tables. The library's `Test` method
+uses the same final-table format without changing its borrowed AD owner's hooks.
+
+Add `--verbose` (or `-v`) for live step-by-step output before the final table,
+including SDK operations, LDAP/Kerberos endpoint exchanges, and one DNS summary
+per question/race. For example:
 
 ```text
 [OK] DNS: name="mailgw.corp.example." type=A duration=42ms winner=192.0.2.10:53 transport=udp servers_queried=3 outcome=answered purpose=application
 ```
 
-Add `--verbose` (or `-v`) to retain low-level DNS SDK operation/exchange
-diagnostics and add correlation IDs, attempt counts, and response peer/status
-details to summaries. Counts exclude unscheduled candidates and deduplicate
+Verbose summaries also include correlation IDs, attempt counts, and response
+peer/status details. Counts exclude unscheduled candidates and deduplicate
 endpoints across retries/UDP-to-TCP fallback. Duration includes budget waits,
 attempts, fallback, and started losing-worker cleanup; it is not the whole
 AD discovery or multi-question lookup duration. A/AAAA and alias questions
 have separate summaries. When there is no unique winner, the summary says
 `winner=none`; consensus negatives list contributing responders instead.
+
+After a DNS lookup failure carrying SDK failure evidence, test mode explicitly
+requests supplementary diagnostics before credential cleanup. The SDK probes
+only eligible failed external resolution, at one endpoint, within the original
+remaining deadline and its bounded timeout/cooldown. Valid negatives, internal-only
+failures, cancellation, and expired operations do not cause external probes;
+successful A resolution with no AAAA records is not a failure. Skipped
+diagnostics have an explicit reason. Probe work is labeled
+`diagnostic_recursion`. Probe results never replace the original error, replay
+the lookup, or change server selection. Success proves only that the probe
+worked; failure does not establish the original failure's cause. Normal sends
+do not enable or invoke these additional diagnostics.
 
 Only real SDK exchanges identify used AD servers; discovered candidates are not
 presented as contacted servers. Cached DNS results/TGTs/service tickets emit no
@@ -326,7 +351,8 @@ response was received, not necessarily successful authentication: a KDC
 preauthentication challenge or error reply is still a completed exchange.
 The separate credential and SMTP authentication steps establish success.
 Passwords, security tokens, LDAP filters, and payloads are not included.
-DNS query names are included in summaries, even without `--verbose`.
+DNS query names are included in verbose summaries and in failed-question
+rows even without `--verbose`.
 The report contains account names, queried internal DNS names, and network
 topology; review it before sharing. Normal submissions do not enable DNS
 summary hooks, even with `--verbose`.

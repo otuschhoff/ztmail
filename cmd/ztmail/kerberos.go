@@ -24,6 +24,7 @@ type adSession struct {
 	identity kerberos.Identity
 	mail     string
 	failures []error
+	report   *testReport
 }
 
 var errADCleanup = errors.New("AD credential cleanup failed")
@@ -89,7 +90,11 @@ func adOptions(o options) (adclient.ADOptions, error) {
 }
 
 func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.ADOptions, error) {
-	dns := addns.Options{Domain: o.domain, RecursionProbeZone: o.dnsProbeZone}
+	dns := addns.Options{Domain: o.domain, RecursionProbeZone: o.dnsProbeZone,
+		QualificationPolicy: addns.QualificationOptimistic}
+	if o.report != nil {
+		dns.Diagnostics = addns.DiagnosticOptions{Enabled: true, Observe: o.report.DNSDiagnostic}
+	}
 	for _, server := range o.dnsServers {
 		endpoint, err := netip.ParseAddrPort(server)
 		if err != nil {
@@ -258,9 +263,10 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	if err != nil {
 		return nil, err
 	}
-	session := &adSession{client: client}
+	session := &adSession{client: client, report: o.report}
 	defer func() {
 		if err != nil {
+			session.diagnoseDNS(ctx, err)
 			closeErr := session.Close()
 			o.report.Step("Failed AD attempt cleanup", closeErr, "credential owner closed")
 			if closeErr != nil {
@@ -294,6 +300,19 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		o.report.Line("SKIP", "Canonical AD mail lookup", "explicit -f override; LDAP lookup is not required by this authentication path")
 	}
 	return session, nil
+}
+
+func (s *adSession) diagnoseDNS(ctx context.Context, lookupErr error) {
+	var receipt *addns.ResolutionError
+	if s.report == nil || !errors.As(lookupErr, &receipt) {
+		return
+	}
+	dns, err := s.client.DNS()
+	if err != nil {
+		s.report.Step("DNS failure diagnostics", err, "")
+		return
+	}
+	dns.Diagnose(ctx, lookupErr)
 }
 
 func (s *adSession) Close() error {

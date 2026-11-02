@@ -12,10 +12,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/otuschhoff/adbind/ad/addns"
 	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/observe"
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+func TestDNSFailureDiagnosticReport(t *testing.T) {
+	for _, verbose := range []bool{false, true} {
+		for _, skip := range []addns.DiagnosticSkipReason{addns.DiagnosticNotSkipped, addns.DiagnosticDeadline} {
+			t.Run(fmt.Sprintf("%v/%s", verbose, skip), func(t *testing.T) {
+				var output bytes.Buffer
+				report := NewTestReport(&output, verbose)
+				report.DNSDiagnostic(addns.DiagnosticResult{
+					LookupID: 1, QuestionID: 2, Failure: addns.FailureSERVFAIL, Skip: skip,
+					Ran: skip == addns.DiagnosticNotSkipped, Outcome: addns.DiagnosticNoData,
+					Server: netip.MustParseAddrPort("192.0.2.10:53"), Transport: "udp",
+					Address: "192.0.2.10:53", Duration: 12 * time.Millisecond, Attempts: 1,
+				})
+				if !verbose {
+					var err error
+					report.Finish(&err)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				text := output.String()
+				for _, want := range []string{"[INFO] DNS failure diagnostics", "original_failure=servfail",
+					"duration=12ms", "original", "retained"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("missing %q:\n%s", want, text)
+					}
+				}
+				if strings.Contains(text, "lookup_id=1") != verbose || strings.Contains(text, `peer=`) != verbose {
+					t.Fatalf("incorrect diagnostic verbosity:\n%s", text)
+				}
+				if skip == addns.DiagnosticNotSkipped {
+					for _, want := range []string{"ran=true", "outcome=probe_no_data", "server=192.0.2.10:53", "transport=udp"} {
+						if !strings.Contains(text, want) {
+							t.Fatalf("missing actual probe evidence %q:\n%s", want, text)
+						}
+					}
+				} else if !strings.Contains(text, "ran=false skipped=deadline") || strings.Contains(text, "outcome=") {
+					t.Fatalf("skip reported as probe:\n%s", text)
+				}
+			})
+		}
+	}
+}
 
 func dnsSummaryFixture() dns.SummaryEvent {
 	response := dns.SummaryResponse{
@@ -27,6 +71,72 @@ func dnsSummaryFixture() dns.SummaryEvent {
 		Name: "_ldap._tcp.corp.example.", Type: dnsmessage.TypeSRV, Duration: 42 * time.Millisecond,
 		Outcome: dns.SummaryAnswered, Winner: response, Responses: []dns.SummaryResponse{response},
 		ServersQueried: 3, Attempts: 4,
+	}
+}
+
+func TestCompactResultsTable(t *testing.T) {
+	var output bytes.Buffer
+	report := NewTestReport(&output, false)
+	report.Line("INFO", "Message submission", "disabled; no email sent")
+	report.Step("SMTP STARTTLS", nil, "verified certificate")
+	report.Step("SMTP AUTH GSSAPI", errors.New("535 authentication rejected"), "")
+	report.Line("WARN", "Skipped credential identity", "unusable identity")
+	report.Step("SMTP greeting", nil, "verbose-only greeting")
+	report.Operation(context.Background(), observe.Event{Operation: "credential_acquire", Outcome: observe.Success})
+	report.DNSSummary(dnsSummaryFixture())
+	if output.Len() != 0 {
+		t.Fatal("compact results must be buffered until Finish")
+	}
+	original := errors.New("authentication failed")
+	err := original
+	report.Finish(&err)
+	if !errors.Is(err, original) {
+		t.Fatalf("lost original failure: %v", err)
+	}
+	rendered := output.String()
+	for _, want := range []string{"╭", "╮", "╰", "╯", "CHECK", "RESULT / DETAILS",
+		"[OK] SMTP STARTTLS", "[FAIL] SMTP AUTH GSSAPI", "535 authentication rejected",
+		"[WARN] Skipped credential identity", "[FAIL] Test", "no email sent"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, unwanted := range []string{"\x1b[", "verbose-only", "credential_acquire", "_ldap._tcp"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Errorf("unexpected detail %q:\n%s", unwanted, rendered)
+		}
+	}
+}
+
+func TestReportTableColoursAreLocal(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		var output bytes.Buffer
+		report := NewTestReport(&output, false)
+		report.color = enabled
+		report.Step("SMTP STARTTLS", nil, "verified")
+		report.Step("SMTP AUTH GSSAPI", errors.New("rejected"), "")
+		var err error
+		report.Finish(&err)
+		for _, colour := range []string{"\x1b[32m", "\x1b[31m"} {
+			if strings.Contains(output.String(), colour) != enabled {
+				t.Fatalf("color=%v missing/unexpected %q:\n%s", enabled, colour, &output)
+			}
+		}
+	}
+}
+
+func TestReportDoesNotColourNonTerminalWriters(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var output bytes.Buffer
+	report := NewTestReport(&output, false)
+	if report.color {
+		t.Fatal("non-terminal writer must not enable colour")
+	}
+	report.Step("SMTP AUTH GSSAPI", nil, "accepted")
+	var err error
+	report.Finish(&err)
+	if err != nil || strings.Contains(output.String(), "\x1b[") {
+		t.Fatalf("unexpected error or ANSI escapes: %v\n%s", err, &output)
 	}
 }
 
@@ -42,6 +152,20 @@ func TestDNSReportVerbosity(t *testing.T) {
 			report.DNSSummary(dnsSummaryFixture())
 			report.Exchange(ctx, observe.ExchangeEvent{Protocol: "ldap", Outcome: observe.Success})
 			report.Operation(ctx, observe.Event{Operation: "credential_acquire", Outcome: observe.Success})
+			if !verbose {
+				if output.Len() != 0 {
+					t.Fatal("compact report emitted low-level events before completion")
+				}
+				var err error
+				report.Finish(&err)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(output.String(), "protocol=") || strings.Contains(output.String(), "_ldap.") {
+					t.Fatalf("compact report leaked DNS/SDK details:\n%s", &output)
+				}
+				return
+			}
 			text := output.String()
 			want := "[OK] DNS: name=\"_ldap._tcp.corp.example.\" type=SRV duration=42ms " +
 				"winner=192.0.2.10:5353 transport=udp servers_queried=3 outcome=answered purpose=discovery"
@@ -83,7 +207,7 @@ func TestDNSSummaryOutcomesWithoutWinner(t *testing.T) {
 			event.Responses = nil
 			event.ServersQueried, event.Attempts = 0, 0
 			var output bytes.Buffer
-			NewTestReport(&output, false).DNSSummary(event)
+			NewTestReport(&output, true).DNSSummary(event)
 			text := output.String()
 			for _, want := range []string{"[" + test.status + "] DNS:", "winner=none", "servers_queried=0",
 				"outcome=" + string(test.outcome), "duration=42ms"} {
@@ -107,14 +231,14 @@ func TestDNSSummaryConsensusAndIPv6(t *testing.T) {
 		{Server: netip.MustParseAddrPort("[2001:db8::10]:5353"), Transport: "tcp", RCode: dnsmessage.RCodeNameError},
 	}
 	var output bytes.Buffer
-	NewTestReport(&output, false).DNSSummary(event)
+	NewTestReport(&output, true).DNSSummary(event)
 	if !strings.Contains(output.String(), "winner=none") ||
 		!strings.Contains(output.String(), "responders=[192.0.2.10:53/udp, [2001:db8::10]:5353/tcp]") {
 		t.Fatalf("consensus was misattributed:\n%s", &output)
 	}
 	event.Winner = event.Responses[1]
 	output.Reset()
-	NewTestReport(&output, false).DNSSummary(event)
+	NewTestReport(&output, true).DNSSummary(event)
 	if !strings.Contains(output.String(), "winner=[2001:db8::10]:5353 transport=tcp") {
 		t.Fatalf("IPv6/TCP endpoint was not preserved:\n%s", &output)
 	}
@@ -122,7 +246,7 @@ func TestDNSSummaryConsensusAndIPv6(t *testing.T) {
 
 func TestDNSSummariesAreConcurrentAndQuestionAttributed(t *testing.T) {
 	var output bytes.Buffer
-	report := NewTestReport(&output, false)
+	report := NewTestReport(&output, true)
 	var wg sync.WaitGroup
 	for index := range 40 {
 		wg.Go(func() {
@@ -142,7 +266,7 @@ func TestDNSSummariesAreConcurrentAndQuestionAttributed(t *testing.T) {
 		want := fmt.Sprintf("[OK] DNS: name=\"host%d.corp.example.\" type=SRV duration=%s "+
 			"winner=192.0.2.10:5353 transport=udp servers_queried=%d outcome=answered purpose=discovery",
 			index, time.Duration(index+1)*time.Millisecond, index+1)
-		if !strings.Contains(output.String(), want+"\n") {
+		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing intact summary %q", want)
 		}
 	}
@@ -161,6 +285,18 @@ func TestDNSSummaryOutputFailureIsReturned(t *testing.T) {
 	report.Finish(&err)
 	if !errors.Is(err, writeErr) || !errors.Is(err, lookupErr) {
 		t.Fatalf("lost report or lookup error: %v", err)
+	}
+}
+
+func TestDNSDiagnosticOutputFailureIsReturned(t *testing.T) {
+	writeErr := errors.New("DNS diagnostic output failed")
+	report := NewTestReport(dnsReportFailureWriter{writeErr}, false)
+	report.DNSDiagnostic(addns.DiagnosticResult{Skip: addns.DiagnosticDeadline})
+	lookupErr := errors.New("original lookup failed")
+	err := lookupErr
+	report.Finish(&err)
+	if !errors.Is(err, writeErr) || !errors.Is(err, lookupErr) {
+		t.Fatalf("lost diagnostic output or original lookup error: %v", err)
 	}
 }
 
@@ -232,6 +368,12 @@ func TestDNSReportWithSDKQuery(t *testing.T) {
 				t.Fatal(err)
 			}
 			text := output.String()
+			if !verbose {
+				if text != "" {
+					t.Fatalf("successful DNS details escaped compact report:\n%s", text)
+				}
+				return
+			}
 			for _, want := range []string{`[OK] DNS: name="mailgw.corp.example." type=A duration=`,
 				"winner=" + server.String() + " transport=udp servers_queried=1 outcome=answered purpose=application"} {
 				if !strings.Contains(text, want) {

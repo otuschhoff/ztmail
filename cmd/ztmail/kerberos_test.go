@@ -150,6 +150,9 @@ func TestADOptions(t *testing.T) {
 	if settings.DNS.Bootstrap != nil || settings.DNS.BootstrapMethods != nil {
 		t.Fatal("default must delegate OS DNS bootstrap to adclient")
 	}
+	if settings.DNS.QualificationPolicy != addns.QualificationOptimistic || settings.DNS.Diagnostics.Enabled {
+		t.Fatal("CLI must use optimistic qualification without normal-send diagnostics")
+	}
 	if settings.Credentials.KDCProvider != nil || settings.Credentials.DialContext != nil {
 		t.Fatal("application must not override composed KDC routing")
 	}
@@ -174,6 +177,29 @@ func TestADOptions(t *testing.T) {
 		if _, err := adOptions(o); err == nil {
 			t.Fatalf("invalid DNS server %q accepted", server)
 		}
+	}
+}
+
+func TestOptimisticDNSNeedsNoProbeZoneForSubmission(t *testing.T) {
+	for _, relay := range []string{"mailgw.corp.example", "relay.external.example"} {
+		t.Run(relay, func(t *testing.T) {
+			settings, err := adOptions(options{auth: "keytab", keytab: "mailer.keytab",
+				domain: "corp.example", realm: "CORP.EXAMPLE", relay: relay})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.DNS.QualificationPolicy != addns.QualificationOptimistic ||
+				settings.DNS.RecursionProbeZone != "" || settings.DNS.Diagnostics.Enabled {
+				t.Fatal("optimistic submission must not require recursion diagnostics or a probe zone")
+			}
+			client, err := adclient.NewAD(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

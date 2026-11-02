@@ -5,6 +5,23 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-02
+
+### Changed
+
+- Render important test results in a rounded go-pretty summary table for CLI
+  and library, with terminal-only status colours respecting `NO_COLOR` and
+  `TERM=dumb`. Keep failures/warnings visible and move routine per-query
+  DNS/SDK events to live `--verbose` output. Preserve report-write failures.
+- Upgrade the AD SDK to `v0.4.2` and use optimistic DNS qualification for
+  CLI-owned AD clients: retain AD namespace checks but resolve actual required
+  internal/external names and aliases without upfront external recursion probes.
+- Enable explicit, bounded supplementary DNS failure diagnostics only in
+  `--test`, before failed AD-attempt cleanup and after relay-resolution failure.
+  Preserve original lookup errors and SDK skip/deadline/cancellation rules;
+  report actual probes separately from normal lookups. Normal sends and
+  application-owned library policies/hooks remain unchanged.
+
 ## [0.2.3] - 2026-11-02
 
 ### Changed

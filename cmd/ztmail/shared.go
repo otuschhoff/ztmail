@@ -22,7 +22,11 @@ var identityFilter = mail.IdentityFilter
 var dnsName = mail.DNSName
 
 func (s *adSession) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
-	return (&mail.ADBackend{Client: s.client, Lease: s.lease}).Resolve(ctx, host)
+	addresses, err := (&mail.ADBackend{Client: s.client, Lease: s.lease}).Resolve(ctx, host)
+	if err != nil {
+		s.diagnoseDNS(ctx, err)
+	}
+	return addresses, err
 }
 
 func (s *adSession) NewSecurityContext(ctx context.Context, spn string, state *tls.ConnectionState) (securityContext, error) {

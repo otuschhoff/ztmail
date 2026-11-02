@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/otuschhoff/adbind/ad/adclient"
+	"github.com/otuschhoff/adbind/ad/addns"
 	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/observe"
 )
@@ -87,11 +89,11 @@ func TestDiagnosticHooksAreOptInAndPreserveSDKRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	if settings.Hooks.Exchange != nil || settings.Credentials.Hooks.Exchange != nil || settings.DNSSummary != nil ||
-		settings.DNS.DNS.Summary != nil {
+		settings.DNS.DNS.Summary != nil || settings.DNS.Diagnostics.Enabled || settings.DNS.Diagnostics.Observe != nil {
 		t.Fatal("diagnostics were enabled without --test")
 	}
 	var output bytes.Buffer
-	o.report = newTestReport(&output, false)
+	o.report = newTestReport(&output, true)
 	settings, err = adOptions(o)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +103,7 @@ func TestDiagnosticHooksAreOptInAndPreserveSDKRouting(t *testing.T) {
 		t.Fatal("diagnostics replaced SDK-managed network routing")
 	}
 	if settings.Hooks.Exchange == nil || settings.Credentials.Hooks.Observe == nil || settings.Discovery.Hooks.Observe == nil ||
-		settings.DNSSummary == nil {
+		settings.DNSSummary == nil || !settings.DNS.Diagnostics.Enabled || settings.DNS.Diagnostics.Observe == nil {
 		t.Fatal("shared/credential/discovery hooks were not wired")
 	}
 	if settings.Credentials.Hooks.Exchange != nil || settings.Discovery.Hooks.Exchange != nil ||
@@ -115,6 +117,45 @@ func TestDiagnosticHooksAreOptInAndPreserveSDKRouting(t *testing.T) {
 	settings.DNSSummary(dns.SummaryEvent{Name: "mailgw.corp.example", Outcome: dns.SummaryFailed})
 	if strings.Count(output.String(), "] DNS:") != 1 || !strings.Contains(output.String(), `[FAIL] DNS: name="mailgw.corp.example"`) {
 		t.Fatalf("DNS summary hook was not connected exactly once: %s", &output)
+	}
+}
+
+func TestDNSFailureDiagnosticsAreSupplementary(t *testing.T) {
+	var output bytes.Buffer
+	report := newTestReport(&output, true)
+	settings, err := adOptions(options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
+		ccache: filepath.Join(t.TempDir(), "cache"), dnsProbeZone: "example.com", report: report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := adclient.NewAD(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := client.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	session := &adSession{client: client, report: report}
+	for _, failure := range []error{nil, errors.New("LDAP failure without DNS receipt")} {
+		session.diagnoseDNS(context.Background(), failure)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("diagnosed non-DNS failure: %s", &output)
+	}
+	receipt := &addns.ResolutionError{}
+	failure := fmt.Errorf("original lookup failed: %w", receipt)
+	session.diagnoseDNS(context.Background(), failure)
+	if !errors.Is(failure, receipt) || !strings.Contains(output.String(), "skipped=no_evidence") ||
+		!strings.Contains(output.String(), "original lookup failure retained") {
+		t.Fatalf("diagnostics lost original failure or did not report skip: %v\n%s", failure, &output)
+	}
+	output.Reset()
+	session.report = nil
+	session.diagnoseDNS(context.Background(), failure)
+	if output.Len() != 0 {
+		t.Fatal("normal submission enabled diagnostic output")
 	}
 }
 
@@ -144,7 +185,7 @@ func TestTestFlagWiresDNSVerbosity(t *testing.T) {
 			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "inspect keytab") {
 				t.Fatalf("expected keytab failure without reading stdin: %v", err)
 			}
-			if !strings.Contains(output.String(), "[FAIL] DNS:") ||
+			if !strings.Contains(output.String(), "[FAIL] DNS") ||
 				strings.Contains(output.String(), `protocol="dns"`) != verbose {
 				t.Fatalf("incorrect DNS verbosity:\n%s", &output)
 			}
