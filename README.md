@@ -24,12 +24,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.2.0+20261101-110716.abcdef0
+# 0.2.1+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.2.0**. Every supported build includes UTC build time
+The semantic version is **0.2.1**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.2.0+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.2.1+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 The executable now lives in `cmd/ztmail`; `go build ./cmd/ztmail` builds the CLI,
@@ -212,10 +212,11 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to revision `1a78ba528554`, which includes server-attributed
+The SDK is pinned to `v0.3.0`, which includes server-attributed
 DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
 external credential sources, and OS DNS bootstrap. It also handles unpaged
-RootDSE/base-object LDAP responses while preserving strict subtree paging.
+RootDSE/base-object LDAP responses while preserving strict subtree paging, and
+provides explicit per-search naming-context confinement.
 The repository is private: configure GitHub
 access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
 There is no local-path module replacement.
@@ -436,8 +437,16 @@ is unchanged.
 ## Canonical sender
 
 By default, the selected principal is looked up through authenticated,
-certificate-verified LDAP TLS using `adclient.Search`. The base comes from
+certificate-verified LDAP TLS. The base comes from
 verified RootDSE `defaultNamingContext`, never from an assumed DN.
+RootDSE is read without a scope policy; the subsequent canonical-user search
+uses `adclient.SearchWithOptions` with `SingleNamingContext: true`. This asks
+AD to suppress continuation referrals and confines the search to that naming
+context without changing the shared client's policy or observation hooks.
+It is not referral chasing or forest-wide lookup: "not found" means absent in
+the selected naming context. An unsupported critical control or an unexpected
+referral remains an error; ztmail never retries without the policy or accepts
+partial results. The same shared helper serves the CLI and Go library.
 The search matches `userPrincipalName` plus `sAMAccountName` for simple
 principals, or `servicePrincipalName` for service principals. LDAP filter values
 are escaped; absent, ambiguous, incomplete, or failed searches are errors.

@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/netip"
+	"strings"
+
 	"github.com/go-ldap/ldap/v3"
 	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/directory"
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/gokrb5/v8/iana/flags"
-	"net/netip"
-	"strings"
 )
 
 type ADBackend struct {
@@ -20,6 +21,7 @@ type ADBackend struct {
 }
 type ADSearcher interface {
 	Search(context.Context, *ldap.SearchRequest) ([]adclient.Entry, error)
+	SearchWithOptions(context.Context, *ldap.SearchRequest, adclient.SearchOptions) ([]adclient.Entry, error)
 }
 
 func CanonicalMail(ctx context.Context, client ADSearcher, identity kerberos.Identity) (string, error) {
@@ -40,7 +42,7 @@ func CanonicalMail(ctx context.Context, client ADSearcher, identity kerberos.Ide
 	}
 	request := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 0, false,
 		filter, []string{"mail", "proxyAddresses"}, nil)
-	entries, err := client.Search(ctx, request)
+	entries, err := client.SearchWithOptions(ctx, request, adclient.SearchOptions{SingleNamingContext: true})
 	if err != nil {
 		return "", err
 	}

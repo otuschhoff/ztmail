@@ -194,11 +194,16 @@ func attribute(name string, values ...string) adldap.Attribute {
 
 func (f *fakeDirectory) Search(_ context.Context, request *ldap.SearchRequest) ([]adclient.Entry, error) {
 	f.requests = append(f.requests, request)
-	if request.BaseDN == "" {
-		if request.Scope != ldap.ScopeBaseObject {
-			f.t.Fatal("RootDSE must use base-object scope")
-		}
-		return []adclient.Entry{{Attributes: []adldap.Attribute{attribute("defaultNamingContext", "DC=corp,DC=example")}}}, nil
+	if request.BaseDN != "" || request.Scope != ldap.ScopeBaseObject || len(request.Controls) != 0 {
+		f.t.Fatal("only unscoped RootDSE may use Search")
+	}
+	return []adclient.Entry{{Attributes: []adldap.Attribute{attribute("defaultNamingContext", "DC=corp,DC=example")}}}, nil
+}
+
+func (f *fakeDirectory) SearchWithOptions(_ context.Context, request *ldap.SearchRequest, options adclient.SearchOptions) ([]adclient.Entry, error) {
+	f.requests = append(f.requests, request)
+	if !options.SingleNamingContext {
+		f.t.Fatal("canonical-user lookup must stay in the selected naming context")
 	}
 	if request.BaseDN != "DC=corp,DC=example" || request.SizeLimit != 2 || request.Scope != ldap.ScopeWholeSubtree {
 		f.t.Fatalf("unbounded or guessed LDAP search: %+v", request)
@@ -222,6 +227,8 @@ func TestCanonicalMailUsesAuthenticatedIdentity(t *testing.T) {
 		{"no-mail", []adclient.Entry{{}}, nil, "", true},
 		{"bad-mail", []adclient.Entry{{Attributes: []adldap.Attribute{attribute("mail", "bad\n@example.com")}}}, nil, "", true},
 		{"failed-search", nil, errors.New("LDAP failed"), "", true},
+		{"referral-rejected", nil, adclient.ErrReferralRejected, "", true},
+		{"unsupported-control", nil, ldap.NewError(ldap.LDAPResultUnavailableCriticalExtension, errors.New("critical control unsupported")), "", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fakeDirectory{t: t, entries: tt.entries, err: tt.err}
@@ -231,6 +238,9 @@ func TestCanonicalMailUsesAuthenticatedIdentity(t *testing.T) {
 			}
 			if len(client.requests) != 2 || !strings.Contains(client.requests[1].Filter, "sAMAccountName=mailer") {
 				t.Fatalf("identity lookup requests=%v", client.requests)
+			}
+			if tt.err != nil && !errors.Is(err, tt.err) {
+				t.Fatalf("search error lost: %v", err)
 			}
 		})
 	}

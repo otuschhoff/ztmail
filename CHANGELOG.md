@@ -5,6 +5,22 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-02
+
+### Fixed
+
+- Upgrade the AD SDK to `v0.3.0` and confine canonical-user LDAP searches to
+  the verified naming context, suppressing continuation referrals without
+  following them. RootDSE discovery remains unscoped; strict paging, complete
+  results, and verified protection are preserved for both CLI and library.
+
+### Compatibility
+
+- Canonical-mail lookup is confined to the selected naming context, not a
+  forest-wide search. Unsupported critical controls and unexpected referrals
+  remain explicit failures; the shared AD client's policy and hooks are
+  unchanged. Live Windows/AD verification is still required.
+
 ## [0.2.0] - 2026-11-02
 
 ### Added
