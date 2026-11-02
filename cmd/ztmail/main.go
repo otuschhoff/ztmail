@@ -25,6 +25,7 @@ type options struct {
 	readHeaders, ignoreDots, verbose bool
 	passwordPrompt                   bool
 	testMode                         bool
+	testMail                         bool
 	debug                            bool
 	needOwnMail                      bool
 	report                           *testReport
@@ -87,7 +88,8 @@ func newCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
 	f.BoolVar(&o.testMode, "test", false, "Report AD/DNS/TLS/GSSAPI checks and authenticate to the relay without reading stdin or sending email")
-	f.BoolVar(&o.debug, "debug", false, "Include observed DC reachability and step timing tables with --test")
+	f.BoolVar(&o.testMail, "testmail", false, "Run authentication diagnostics and send a generated report (default recipient: own canonical AD mail); never read stdin")
+	f.BoolVar(&o.debug, "debug", false, "Include observed DC reachability and runtime tables with --test or --testmail")
 	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
 	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
 	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
@@ -100,7 +102,7 @@ func newCommand() *cobra.Command {
 	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try keytab principals or use the cache/SSPI identity")
 	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
 	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
-	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test DNS failure diagnostics (not probed on success)")
+	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
 	f.StringVar(&o.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
 	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: principal's canonical AD mail); <> keeps null envelope and original headers")
 	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
@@ -113,8 +115,11 @@ func newCommand() *cobra.Command {
 }
 
 func validateOptions(o options) error {
-	if o.debug && !o.testMode {
-		return errors.New("--debug requires --test")
+	if o.testMode && o.testMail {
+		return errors.New("--test and --testmail are mutually exclusive")
+	}
+	if o.debug && !o.testMode && !o.testMail {
+		return errors.New("--debug requires --test or --testmail")
 	}
 	if o.port < 1 || o.port > 65535 {
 		return errors.New("--port must be between 1 and 65535")
@@ -151,13 +156,20 @@ func validateOptions(o options) error {
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
-	if o.testMode {
+	if o.testMode || o.testMail {
 		o.report = newTestReport(log, o.verbose)
+		if o.testMail {
+			o.report.EnableTestMail()
+		}
 		if o.debug {
 			o.report.EnableDebug()
 		}
 		defer o.report.Finish(&err)
-		o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
+		if o.testMail {
+			o.report.Line("INFO", "Message submission", "generated diagnostic email; stdin is not read")
+		} else {
+			o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
+		}
 	}
 	hostDone := o.report.Measure("Host/domain discovery")
 	host, domain, err := discoverHost(ctx, o.domain)
@@ -210,7 +222,15 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		o.report.Value("Transport security", "Disabled; no confidentiality")
 	}
 	var message []byte
-	if !o.testMode {
+	if o.testMail {
+		for i, recipient := range recipients {
+			recipients[i], err = envelopeAddress(recipient, domain, false)
+			if err != nil {
+				return fmt.Errorf("testmail recipient: %w", err)
+			}
+		}
+		o.needOwnMail = true
+	} else if !o.testMode {
 		message, recipients, err = prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
 		if err != nil {
 			return err
@@ -257,7 +277,18 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		from = o.from
 	}
 	o.report.Value("Mail (from)", from)
-	if !o.testMode {
+	if o.testMail {
+		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
+		if err != nil {
+			return err
+		}
+		o.report.Value("Canonical mail", session.mail)
+		if o.from == "" {
+			o.from = session.mail
+		} else if o.from == "<>" {
+			o.from = ""
+		}
+	} else if !o.testMode {
 		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
 		if err != nil {
 			return err

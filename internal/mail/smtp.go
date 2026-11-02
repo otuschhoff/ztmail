@@ -206,6 +206,12 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 		return nil
 	}
+	if o.testMail {
+		message, err = o.report.TestMessage(o.from, recipients)
+		if err != nil {
+			return fmt.Errorf("build testmail: %w", err)
+		}
+	}
 	if err := c.Mail(o.from); err != nil {
 		return fmt.Errorf("SMTP MAIL FROM: %w", err)
 	}
@@ -224,9 +230,18 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("relay did not confirm message acceptance: %w: %w", ErrDeliveryUncertain, err)
 	}
+	if o.testMail {
+		o.report.Value("Testmail delivery", "Accepted by relay (not mailbox delivery proof)")
+		o.report.Step("SMTP DATA", nil, "testmail accepted by relay")
+	}
 	// A QUIT failure after a positive DATA reply must not cause the caller to resend.
 	if err := c.Quit(); err != nil {
 		warn(o, log, fmt.Errorf("message accepted, but SMTP QUIT failed: %w", err))
+		if o.testMail {
+			o.report.Line("WARN", "SMTP QUIT", "testmail accepted, but disconnect failed: "+err.Error())
+		}
+	} else if o.testMail {
+		o.report.Step("SMTP QUIT", nil, "testmail accepted; disconnected")
 	}
 	return nil
 }

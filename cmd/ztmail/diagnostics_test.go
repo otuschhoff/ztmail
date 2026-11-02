@@ -42,6 +42,32 @@ func TestTestFlagDoesNotReadStdin(t *testing.T) {
 	}
 }
 
+func TestTestmailFlagDoesNotReadStdin(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		cmd := newCommand()
+		args := []string{"--testmail", "--domain", "corp.example", "--keytab", filepath.Join(t.TempDir(), "missing"), "recipient@corp.example"}
+		if debug {
+			args = append(args, "--debug")
+		}
+		cmd.SetArgs(args)
+		cmd.SetIn(failingReader{})
+		var output bytes.Buffer
+		cmd.SetErr(&output)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "inspect keytab") {
+			t.Fatalf("expected credential failure without reading stdin: %v", err)
+		}
+		if strings.Contains(output.String(), "No email sent") || !strings.Contains(output.String(), "Testmail delivery: Not confirmed") {
+			t.Fatalf("incorrect testmail report: %s", &output)
+		}
+	}
+	cmd := newCommand()
+	cmd.SetArgs([]string{"--test", "--testmail"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("test flags must conflict: %v", err)
+	}
+}
+
 func TestTestFlagRejectsRecipients(t *testing.T) {
 	cmd := newCommand()
 	cmd.SetArgs([]string{"--test", "recipient@corp.example"})

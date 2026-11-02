@@ -32,6 +32,7 @@ type TestReport struct {
 	debug     bool
 	traces    []observe.TraceEvent
 	traceEnds []time.Time
+	testMail  bool
 	inventory []discovery.InventoryEvent
 }
 
@@ -180,7 +181,11 @@ func (r *TestReport) Finish(err *error) {
 	outputErr := r.outputErr
 	r.mu.Unlock()
 	*err = errors.Join(*err, outputErr)
-	r.Step("Test", *err, fmt.Sprintf("authentication checks completed; %d AD exchanges observed; no email sent", count))
+	detail := fmt.Sprintf("authentication checks completed; %d AD exchanges observed; no email sent", count)
+	if r.testMail {
+		detail = fmt.Sprintf("testmail checks completed; %d AD exchanges observed; delivery status shown separately", count)
+	}
+	r.Step("Test", *err, detail)
 	if *err != nil {
 		r.mu.Lock()
 		if r.values["Authentication"] == "" {
@@ -235,6 +240,13 @@ func (r *TestReport) render() string {
 	}
 	if r.debug {
 		result += "\n" + r.renderDebug()
+	}
+	if r.testMail {
+		delivery := r.values["Testmail delivery"]
+		if delivery == "" {
+			delivery = "Not confirmed; consult the error before retrying."
+		}
+		return result + "\nTestmail delivery: " + delivery
 	}
 	return result + "\nNo email sent."
 }

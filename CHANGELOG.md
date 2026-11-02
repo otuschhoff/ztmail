@@ -5,6 +5,18 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-02
+
+### Added
+
+- Add `--testmail` to run diagnostic checks and send an uncoloured UTF-8 report
+  after SMTP authentication, without reading stdin. Default to the authenticated
+  user's canonical AD address, or accept explicit recipients. Support sender
+  overrides and `--debug` inventory/runtime detail.
+- Report actual testmail relay acceptance locally and clearly distinguish the
+  emailed pre-DATA snapshot from later delivery/QUIT/cleanup results. Preserve
+  no-email `--test`, failure-before-send and uncertain-delivery semantics.
+
 ## [0.2.6] - 2026-11-02
 
 ### Changed

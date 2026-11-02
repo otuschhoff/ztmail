@@ -329,7 +329,7 @@ Untested protocols say `Not tested`; canceled losers do not prove
 unreachability. Resolver traffic is not DC reachability. Native SSPI KDC endpoints
 and wire timing are OS-managed/unavailable. Response latency is not authentication
 proof. Nested/concurrent step durations overlap and must not be summed.
-`--debug` requires `--test` and does not imply verbose event streaming.
+`--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
 
 Colours highlight successful checks in green, failures in red, and
 warnings/skips in yellow only when the report writer is an interactive terminal.
@@ -386,6 +386,42 @@ also fail test mode rather than claiming that a message was accepted.
 Normal submission semantics, TLS requirements, authentication flags, and
 password-prompt timeout behavior remain unchanged. `--test` does not check
 sender/recipient acceptance or permission to submit message data.
+
+## Send a diagnostic test email
+
+Use `--testmail` to run the same AD, DNS, TLS and SMTP authentication checks
+and then submit a generated diagnostic email on that authenticated connection:
+
+```sh
+ztmail --testmail
+ztmail --testmail --debug
+ztmail --testmail --debug recipient@example.com
+```
+
+No message input is read from stdin. Without recipient arguments, the recipient
+is the authenticated user's canonical AD mail address, not the overridden
+sender. Arguments override that recipient; unqualified names use the AD domain.
+The canonical AD address is looked up even with `-f`. Sender overrides still
+apply; with `-f '<>'`, the envelope is null but the generated From header uses
+the canonical address.
+
+The UTF-8 plain-text email contains the uncoloured key/value report as observed
+immediately after SMTP authentication. `--debug` adds the DC inventory and
+runtime breakdown; `--verbose` streams local events, and with `--debug` also
+includes detailed timing rows in the email. Passwords, security tokens and
+message payloads from other submissions are never included. The report does
+contain account names and internal topology: choose recipients accordingly.
+
+The email cannot include its own DATA acceptance, subsequent QUIT or final
+cleanup outcomes. These are reported locally after submission. Relay acceptance
+does not prove mailbox delivery. Failures before DATA prevent sending; an
+uncertain DATA outcome must not be blindly retried. Post-acceptance QUIT or
+cleanup warnings do not undo delivery and must not trigger automatic resends.
+Report-output failures remain errors, even when delivery has already succeeded.
+
+`--test` and `--testmail` are mutually exclusive. `--test` remains strictly
+no-email. `--debug` works with either mode. This is a CLI convenience; library
+`Test` remains no-email and normal library `Send` behavior is unchanged.
 
 ## Credentials
 

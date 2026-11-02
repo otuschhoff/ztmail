@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
@@ -11,6 +12,7 @@ type Config struct {
 	Port                             int
 	Timeout                          time.Duration
 	Test                             bool
+	TestMail                         bool
 	Report                           *TestReport
 	Warning                          func(error)
 }
@@ -20,12 +22,16 @@ type options struct {
 	port                             int
 	timeout                          time.Duration
 	testMode                         bool
+	testMail                         bool
 	report                           *TestReport
 	warning                          func(error)
 }
 
 func Deliver(ctx context.Context, c Config, recipients []string, message []byte, backend Backend, log io.Writer) error {
+	if c.TestMail && (c.Test || c.Report == nil) {
+		return errors.New("testmail requires a report and cannot be combined with no-email test mode")
+	}
 	return deliver(ctx, options{relay: c.Relay, hello: c.Hello, spn: c.SPN, from: c.From,
-		tlsMode: c.TLSMode, port: c.Port, timeout: c.Timeout, testMode: c.Test, report: c.Report, warning: c.Warning},
+		tlsMode: c.TLSMode, port: c.Port, timeout: c.Timeout, testMode: c.Test, testMail: c.TestMail, report: c.Report, warning: c.Warning},
 		recipients, message, backend, log)
 }
