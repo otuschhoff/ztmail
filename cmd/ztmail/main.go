@@ -24,6 +24,7 @@ type options struct {
 	readHeaders, ignoreDots, verbose bool
 	passwordPrompt                   bool
 	testMode                         bool
+	debug                            bool
 	report                           *testReport
 }
 
@@ -84,6 +85,7 @@ func newCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
 	f.BoolVar(&o.testMode, "test", false, "Report AD/DNS/TLS/GSSAPI checks and authenticate to the relay without reading stdin or sending email")
+	f.BoolVar(&o.debug, "debug", false, "Include observed DC reachability and step timing tables with --test")
 	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
 	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
 	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
@@ -109,6 +111,9 @@ func newCommand() *cobra.Command {
 }
 
 func validateOptions(o options) error {
+	if o.debug && !o.testMode {
+		return errors.New("--debug requires --test")
+	}
 	if o.port < 1 || o.port > 65535 {
 		return errors.New("--port must be between 1 and 65535")
 	}
@@ -146,10 +151,17 @@ func validateOptions(o options) error {
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
 	if o.testMode {
 		o.report = newTestReport(log, o.verbose)
+		if o.debug {
+			o.report.EnableDebug()
+		}
 		defer o.report.Finish(&err)
 		o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
 	}
+	hostDone := o.report.Measure("Host/domain discovery")
 	host, domain, err := discoverHost(ctx, o.domain)
+	hostDone()
+	o.report.Value("Hostname", host)
+	o.report.Value("AD domain", domain)
 	o.report.Step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
 	if err != nil {
 		return err
@@ -191,6 +203,10 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q auth=%q requested principal=%q",
 		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
+	o.report.Value("Target relay", fmt.Sprintf("%s:%d", o.relay, o.port))
+	if o.tlsMode == "off" {
+		o.report.Value("Transport security", "Disabled; no confidentiality")
+	}
 	var message []byte
 	if !o.testMode {
 		message, recipients, err = prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
@@ -203,7 +219,9 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		defer cancel()
 		ctx = work
 	}
+	adDone := o.report.Measure("AD identity and canonical mail")
 	session, err := openAD(ctx, o)
+	adDone()
 	o.report.Step("AD identity selection", err, "credential source and identity selected")
 	if err != nil {
 		return fmt.Errorf("AD identity selection: %w", err)
@@ -229,6 +247,13 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	o.report.Step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
+	o.report.Value("User", session.identity.Principal)
+	o.report.Value("Cred source", string(session.identity.Source))
+	from := session.mail
+	if o.from != "" {
+		from = o.from
+	}
+	o.report.Value("Mail (from)", from)
 	if !o.testMode {
 		message, o.from, err = applySender(message, o.from, session.mail, domain)
 		if err != nil {

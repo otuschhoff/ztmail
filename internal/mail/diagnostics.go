@@ -8,10 +8,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/otuschhoff/adbind/ad/addns"
+	"github.com/otuschhoff/adbind/ad/discovery"
 	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/observe"
 	"golang.org/x/term"
@@ -25,6 +27,11 @@ type TestReport struct {
 	verbose   bool
 	color     bool
 	rows      []reportRow
+	values    map[string]string
+	started   time.Time
+	debug     bool
+	traces    []observe.TraceEvent
+	inventory []discovery.InventoryEvent
 }
 
 type reportRow struct {
@@ -36,7 +43,7 @@ func NewTestReport(output io.Writer, verbose bool) *TestReport {
 	if file, ok := output.(*os.File); ok {
 		color = term.IsTerminal(int(file.Fd())) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	}
-	return &TestReport{output: output, verbose: verbose, color: color}
+	return &TestReport{output: output, verbose: verbose, color: color, started: time.Now(), values: make(map[string]string)}
 }
 
 func (r *TestReport) Line(status, step, detail string) {
@@ -75,6 +82,22 @@ func importantResult(status, step string) bool {
 }
 
 func (r *TestReport) Step(step string, err error, detail string) {
+	if r != nil {
+		switch step {
+		case "SMTP STARTTLS", "Implicit TLS":
+			value := detail
+			if err != nil {
+				value = "FAILED: " + err.Error()
+			}
+			r.Value("Transport security", value)
+		case "SMTP AUTH GSSAPI":
+			value := "GSSAPI accepted by relay"
+			if err != nil {
+				value = "FAILED: " + err.Error()
+			}
+			r.Value("Authentication result", value)
+		}
+	}
 	if err != nil {
 		r.Line("FAIL", step, err.Error())
 	} else {
@@ -157,6 +180,13 @@ func (r *TestReport) Finish(err *error) {
 	r.mu.Unlock()
 	*err = errors.Join(*err, outputErr)
 	r.Step("Test", *err, fmt.Sprintf("authentication checks completed; %d AD exchanges observed; no email sent", count))
+	if *err != nil {
+		r.mu.Lock()
+		if r.values["Authentication result"] == "" {
+			r.values["Authentication result"] = "Not completed: " + (*err).Error()
+		}
+		r.mu.Unlock()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if outputErr == nil {
@@ -171,12 +201,53 @@ func (r *TestReport) Finish(err *error) {
 func (r *TestReport) render() string {
 	t := table.NewWriter()
 	t.SetStyle(table.StyleRounded)
+	t.AppendHeader(table.Row{"Key", "Value"})
+	t.SetColumnConfigs([]table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}})
+	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)", "Cred source",
+		"Transport security", "Authentication result", "Total runtime"} {
+		value := r.values[key]
+		if value == "" {
+			value = "Not reached / unavailable"
+		}
+		if key == "Total runtime" {
+			value = time.Since(r.started).Round(time.Millisecond).String()
+		}
+		if r.color && (key == "Authentication result" || key == "Transport security") {
+			color := text.FgCyan
+			if strings.Contains(value, "FAILED") {
+				color = text.FgRed
+			} else if strings.Contains(value, "accepted") || strings.Contains(value, "verified") {
+				color = text.FgGreen
+			}
+			value = color.EscapeSeq() + value + text.Reset.EscapeSeq()
+		}
+		t.AppendRow(table.Row{key, value})
+	}
+	result := t.Render()
+	// Failures and warnings must remain visible even if authentication succeeded.
+	if issues := r.renderIssues(); issues != "" {
+		result += "\n" + issues
+	}
+	if r.debug {
+		result += "\n" + r.renderDebug()
+	}
+	return result + "\nNo email sent."
+}
+
+func (r *TestReport) renderIssues() string {
+	t := table.NewWriter()
+	t.SetStyle(table.StyleRounded)
 	t.AppendHeader(table.Row{"Check", "Result / details"})
 	t.SetColumnConfigs([]table.ColumnConfig{
 		{Number: 1, WidthMax: 36, WidthMaxEnforcer: text.WrapSoft},
 		{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft},
 	})
+	count := 0
 	for _, row := range r.rows {
+		if row.status != "FAIL" && row.status != "WARN" && row.status != "SKIP" && row.step != "DNS failure diagnostics" {
+			continue
+		}
+		count++
 		label := "[" + row.status + "] " + row.step
 		if r.color {
 			color := text.FgCyan
@@ -191,6 +262,9 @@ func (r *TestReport) render() string {
 			label = color.EscapeSeq() + label + text.Reset.EscapeSeq()
 		}
 		t.AppendRow(table.Row{label, row.detail})
+	}
+	if count == 0 {
+		return ""
 	}
 	return t.Render()
 }

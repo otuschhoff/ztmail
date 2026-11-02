@@ -210,6 +210,12 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	var report *mail.TestReport
 	if test {
 		report = mail.NewTestReport(output, false)
+		report.Value("Hostname", c.options.Hostname)
+		report.Value("AD domain", c.options.Domain)
+		report.Value("Target relay", fmt.Sprintf("%s:%d", c.options.Relay, c.options.Port))
+		if c.options.TLS == TLSOff {
+			report.Value("Transport security", "Disabled; no confidentiality")
+		}
 		defer report.Finish(&err)
 		report.Line("INFO", "Target configuration", fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q",
 			c.options.Domain, c.options.Realm, c.options.Relay, c.options.Port, c.options.Hostname, c.options.SPN, c.options.TLS))
@@ -242,6 +248,8 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	}
 	report.Step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
 		result.Identity.Principal, result.Identity.Realm, result.Identity.Source))
+	report.Value("User", result.Identity.Principal)
+	report.Value("Cred source", string(result.Identity.Source))
 	if err != nil {
 		return result, err
 	}
@@ -262,6 +270,9 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		data, result.From, err = mail.ApplySender(data, from, canonical, c.options.Domain)
 		if err != nil {
 			return result, err
+		}
+		if test {
+			report.Value("Mail (from)", canonical)
 		}
 	}
 	err = mail.Deliver(ctx, mail.Config{Relay: c.options.Relay, Hello: c.options.Hostname, SPN: c.options.SPN,

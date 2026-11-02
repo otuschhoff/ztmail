@@ -5,6 +5,20 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-02
+
+### Changed
+
+- Simplify test output to nine key/value fields: hostname, relay/port, AD
+  domain, user, sender mail, credential source, transport security,
+  authentication result, and total wall-clock runtime. Failures and warnings
+  remain visible separately; an AUTH success does not hide cleanup failures.
+- Upgrade the AD SDK to `v0.5.0` and add `--test --debug` discovery-history and
+  step-timing tables without reporting probes. Show actual observed per-protocol
+  replies and average reply durations, distinguish canceled/untested work,
+  and label SSPI native KDC observations as OS-managed/unavailable. Verbose
+  event streaming remains independent of debug tables.
+
 ## [0.2.4] - 2026-11-02
 
 ### Changed

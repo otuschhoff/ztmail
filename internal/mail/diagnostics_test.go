@@ -95,8 +95,8 @@ func TestCompactResultsTable(t *testing.T) {
 	}
 	rendered := output.String()
 	for _, want := range []string{"╭", "╮", "╰", "╯", "CHECK", "RESULT / DETAILS",
-		"[OK] SMTP STARTTLS", "[FAIL] SMTP AUTH GSSAPI", "535 authentication rejected",
-		"[WARN] Skipped credential identity", "[FAIL] Test", "no email sent"} {
+		"Transport security", "[FAIL] SMTP AUTH GSSAPI", "535 authentication rejected",
+		"[WARN] Skipped credential identity", "[FAIL] Test", "No email sent"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("missing %q:\n%s", want, rendered)
 		}

@@ -51,6 +51,28 @@ func TestTestFlagRejectsRecipients(t *testing.T) {
 	}
 }
 
+func TestDebugRequiresTestAndWiresObservations(t *testing.T) {
+	if err := validateOptions(options{debug: true}); err == nil || !strings.Contains(err.Error(), "--debug requires --test") {
+		t.Fatalf("expected debug scope error: %v", err)
+	}
+	var output bytes.Buffer
+	o := options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
+		dnsProbeZone: "example.com", ccache: filepath.Join(t.TempDir(), "cache"), report: newTestReport(&output, false)}
+	for _, debug := range []bool{false, true} {
+		o.debug = debug
+		settings, err := adOptions(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (settings.Hooks.Trace != nil) != debug || (settings.Discovery.Inventory != nil) != debug {
+			t.Fatalf("debug hooks not scoped to debug=%v", debug)
+		}
+		if settings.Credentials.Hooks.Trace != nil || settings.Discovery.Hooks.Trace != nil {
+			t.Fatal("duplicate leaf trace forwarding")
+		}
+	}
+}
+
 func TestEndpointReportIsConcurrentAndServerAttributed(t *testing.T) {
 	var output bytes.Buffer
 	report := newTestReport(&output, true)

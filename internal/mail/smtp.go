@@ -103,7 +103,9 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Backend, log io.Writer) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
+	dialDone := o.report.Measure("Relay DNS and TCP connection")
 	conn, err := dialRelay(ctx, o, backend)
+	dialDone()
 	if err != nil {
 		return fmt.Errorf("connect to relay: %w", err)
 	}
@@ -119,20 +121,27 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	var transport net.Conn = conn
 	if o.tlsMode == "implicit" {
 		secure := tls.Client(conn, tlsConfig)
-		if err := secure.HandshakeContext(ctx); err != nil {
+		tlsDone := o.report.Measure("SMTP implicit TLS")
+		err := secure.HandshakeContext(ctx)
+		tlsDone()
+		if err != nil {
 			o.report.Step("Implicit TLS", err, "")
 			return fmt.Errorf("TLS handshake: %w", err)
 		}
 		o.report.Step("Implicit TLS", nil, "verified server certificate; TLS established")
 		transport = secure
 	}
+	greetingDone := o.report.Measure("SMTP greeting")
 	c, err := smtp.NewClient(transport, o.relay)
+	greetingDone()
 	o.report.Step("SMTP greeting", err, "relay greeting received")
 	if err != nil {
 		return fmt.Errorf("SMTP greeting: %w", err)
 	}
 	defer c.Close()
+	helloDone := o.report.Measure("SMTP EHLO")
 	err = c.Hello(o.hello)
+	helloDone()
 	o.report.Step("SMTP EHLO", err, fmt.Sprintf("hostname=%q", o.hello))
 	if err != nil {
 		return fmt.Errorf("SMTP EHLO: %w", err)
@@ -142,7 +151,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			o.report.Step("SMTP STARTTLS", errors.New("relay does not offer STARTTLS"), "")
 			return errors.New("relay does not offer STARTTLS; refusing an unencrypted submission")
 		}
+		tlsDone := o.report.Measure("SMTP STARTTLS")
 		err = c.StartTLS(tlsConfig)
+		tlsDone()
 		o.report.Step("SMTP STARTTLS", err, "verified server certificate; TLS and post-TLS EHLO completed")
 		if err != nil {
 			return fmt.Errorf("SMTP STARTTLS: %w", err)
@@ -172,7 +183,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 	}()
 	auth := &gssAuth{security: security, report: o.report}
+	authDone := o.report.Measure("SMTP GSSAPI authentication")
 	err = c.Auth(auth)
+	authDone()
 	if err == nil && !auth.confirmed {
 		err = errors.New("relay did not confirm SMTP authentication")
 	}
@@ -181,7 +194,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		return fmt.Errorf("SMTP AUTH GSSAPI: %w", err)
 	}
 	if o.testMode {
+		quitDone := o.report.Measure("SMTP QUIT")
 		err = c.Quit()
+		quitDone()
 		o.report.Step("SMTP QUIT", err, "disconnected without MAIL FROM, RCPT TO or DATA")
 		if err != nil {
 			return fmt.Errorf("SMTP test QUIT: %w", err)

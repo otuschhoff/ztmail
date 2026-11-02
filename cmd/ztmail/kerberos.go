@@ -119,7 +119,12 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 	settings := adclient.ADOptions{DNS: dns, Credentials: credentials, Trust: trust, Protection: "tls"}
 	if o.report != nil {
 		settings.DNSSummary = o.report.DNSSummary
+		if o.debug {
+			settings.Discovery.Inventory = o.report.Inventory
+			settings.Hooks.Trace = o.report.Trace
+		}
 		hooks := observe.Hooks{Observe: o.report.Operation, Exchange: o.report.Exchange}
+		hooks.Trace = settings.Hooks.Trace
 		settings.Hooks = hooks
 		settings.Credentials.Hooks = observe.Hooks{Observe: o.report.Operation}
 		settings.Discovery.Hooks = observe.Hooks{Observe: o.report.Operation}
@@ -280,6 +285,8 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		return nil, fmt.Errorf("acquire AD credentials: %w", err)
 	}
 	session.identity, err = session.lease.Identity()
+	o.report.Value("User", session.identity.Principal)
+	o.report.Value("Cred source", string(session.identity.Source))
 	o.report.Step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source))
 	if err != nil {

@@ -214,7 +214,8 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.4.2`, which includes optimistic DNS qualification,
+The SDK is pinned to `v0.5.0`, which includes read-only discovery inventory,
+correlated attempt/stage observations, optimistic DNS qualification,
 explicit bounded failure diagnostics, opt-in per-question DNS summaries,
 server-attributed
 DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
@@ -296,18 +297,25 @@ that produces no output token still requires an empty SMTP continuation; it
 must not terminate AUTH early. A final `535` is reported as an authentication
 failure, not as a QUIT failure.
 
-The report is written to stderr as a final go-pretty table with rounded
-corners. Important checks, failures, warnings, and the overall result are
-shown without requiring `--verbose`:
+The report is written to stderr as a rounded go-pretty key/value table:
+Hostname, Target relay (including port), AD domain, User, Mail (from),
+Cred source, Transport security, Authentication result, and Total runtime.
+Unreached values are marked unavailable rather than guessed. Total runtime is
+elapsed wall-clock time through test/credential cleanup, before report rendering.
+Failed checks, skipped protection, supplementary diagnostics, and warnings are
+shown separately. Authentication acceptance does not hide a later cleanup/test
+failure. No email is sent.
 
-- Local host, AD domain, realm, relay hostname/port, EHLO name, and SMTP SPN.
-- The selected principal and actual keytab/ccache/SSPI/
-  password source, and the canonical mail address where applicable.
-- Relay DNS addresses, the connected SMTP peer, verified TLS, GSSAPI mutual
-  authentication/SASL negotiation, relay AUTH acceptance, and QUIT.
-- Failed DNS questions, supplementary diagnostics, skipped checks, credential
-  warnings, cleanup failures, and overall success/failure. Test mode never sends
-  email, including when a check fails.
+Use `--test --debug` for additional tables containing all observed DC
+advertisements (including unresolved/historical entries), observed LDAP/Kerberos
+reachability and average completed-exchange response times, and SDK/application
+step durations. This collects existing observations only: no extra discovery,
+refresh, connections, or reachability probes are initiated for the report.
+Untested protocols say `Not tested`; canceled losers do not prove
+unreachability. Resolver traffic is not DC reachability. Native SSPI KDC endpoints
+and wire timing are OS-managed/unavailable. Response latency is not authentication
+proof. Nested/concurrent step durations overlap and must not be summed.
+`--debug` requires `--test` and does not imply verbose event streaming.
 
 Colours highlight successful checks in green, failures in red, and
 warnings/skips in yellow only when the report writer is an interactive terminal.

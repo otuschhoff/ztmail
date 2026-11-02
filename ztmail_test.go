@@ -448,7 +448,7 @@ func TestLibraryTestNeverSendsEmail(t *testing.T) {
 			t.Fatalf("test sent %q", command)
 		}
 	}
-	if !strings.Contains(report.String(), "[OK] SMTP AUTH GSSAPI") || !strings.Contains(report.String(), "[OK] Test") {
+	if !strings.Contains(report.String(), "GSSAPI accepted by relay") || !strings.Contains(report.String(), "Total runtime") {
 		t.Fatalf("missing report: %s", &report)
 	}
 }
