@@ -21,11 +21,13 @@ import (
 )
 
 type fakeSecurity struct {
-	offer    []byte
-	wrapped  []byte
-	fail     bool
-	closed   int
-	closeErr error
+	offer          []byte
+	wrapped        []byte
+	fail           bool
+	closed         int
+	closeErr       error
+	stepToken      []byte
+	emptySelection bool
 }
 
 func (f *fakeSecurity) Start() ([]byte, error) { return []byte("request"), nil }
@@ -33,7 +35,7 @@ func (f *fakeSecurity) Step(input []byte) ([]byte, bool, error) {
 	if !bytes.Equal(input, []byte("reply")) {
 		return nil, false, errors.New("bad mutual-auth reply")
 	}
-	return []byte{}, true, nil
+	return f.stepToken, true, nil
 }
 func (f *fakeSecurity) Negotiate([]byte) ([]byte, error) {
 	if f.fail {
@@ -43,6 +45,9 @@ func (f *fakeSecurity) Negotiate([]byte) ([]byte, error) {
 		return nil, errors.New("no supported SASL security layer")
 	}
 	f.wrapped = []byte{1, 0, 0, 0}
+	if f.emptySelection {
+		return nil, nil
+	}
 	return []byte("signed-selection"), nil
 }
 func (f *fakeSecurity) Close() error { f.closed++; return f.closeErr }
@@ -111,6 +116,27 @@ func TestGSSAPIAuth(t *testing.T) {
 	}
 }
 
+func TestGSSAPIAuthContinuesAfterEmptyContextToken(t *testing.T) {
+	for _, token := range [][]byte{nil, {}} {
+		f := &fakeSecurity{stepToken: token, offer: []byte{1, 0, 0, 0}}
+		a := &gssAuth{security: f}
+		response, err := a.Next([]byte("reply"), true)
+		if err != nil || response == nil || len(response) != 0 || a.stage != 1 {
+			t.Fatalf("context token=%#v response=%#v stage=%d err=%v; SMTP requires a non-nil empty continuation", token, response, a.stage, err)
+		}
+		response, err = a.Next([]byte("signed-offer"), true)
+		if err != nil || len(response) == 0 || a.stage != 2 {
+			t.Fatalf("SASL negotiation was skipped: response=%q stage=%d err=%v", response, a.stage, err)
+		}
+		if _, err := a.Next([]byte("authenticated"), false); err != nil {
+			t.Fatal(err)
+		}
+		if !a.confirmed {
+			t.Fatal("SMTP authentication was not confirmed")
+		}
+	}
+}
+
 func TestGSSAPIAuthRejectsInvalidNegotiation(t *testing.T) {
 	a := &gssAuth{security: &fakeSecurity{}}
 	if _, _, err := a.Start(&smtp.ServerInfo{Auth: []string{"PLAIN"}}); err == nil {
@@ -131,6 +157,10 @@ func TestGSSAPIAuthRejectsInvalidNegotiation(t *testing.T) {
 	if _, err := a.Next(nil, true); err == nil {
 		t.Fatal("invalid signature accepted")
 	}
+	a = &gssAuth{security: &fakeSecurity{offer: []byte{1, 0, 0, 0}, emptySelection: true}, stage: 1}
+	if _, err := a.Next(nil, true); err == nil || a.stage == 2 || a.confirmed {
+		t.Fatal("empty SASL response incorrectly completed authentication")
+	}
 }
 
 type smtpResult struct {
@@ -144,6 +174,10 @@ func serveSMTP(conn net.Conn, rejectRecipient, quitFailure bool) (result smtpRes
 }
 
 func serveSMTPWithTLS(conn net.Conn, rejectRecipient, quitFailure bool, tlsConfig *tls.Config) (result smtpResult) {
+	return serveSMTPAuthReply(conn, rejectRecipient, quitFailure, tlsConfig, "235 authenticated")
+}
+
+func serveSMTPAuthReply(conn net.Conn, rejectRecipient, quitFailure bool, tlsConfig *tls.Config, authReply string) (result smtpResult) {
 	defer conn.Close()
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		result.err = err
@@ -212,7 +246,9 @@ func serveSMTPWithTLS(conn net.Conn, rejectRecipient, quitFailure bool, tlsConfi
 				return
 			}
 			authStep = 3
-			response = "235 authenticated"
+			response = authReply
+		case line == "*":
+			response = "501 Authentication aborted"
 		case strings.HasPrefix(line, "MAIL FROM:"):
 			response = "250 sender accepted"
 		case strings.HasPrefix(line, "RCPT TO:"):

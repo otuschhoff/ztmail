@@ -37,9 +37,10 @@ type Backend interface {
 }
 
 type gssAuth struct {
-	security SecurityContext
-	stage    int
-	report   *TestReport
+	security  SecurityContext
+	stage     int
+	confirmed bool
+	report    *TestReport
 }
 
 func (a *gssAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
@@ -64,6 +65,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 		if a.stage != 2 {
 			return nil, errors.New("relay completed AUTH before GSSAPI mutual authentication and SASL negotiation")
 		}
+		a.confirmed = true
 		return nil, nil
 	}
 	switch a.stage {
@@ -77,9 +79,16 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 			a.stage = 1
 			a.report.Step("GSSAPI mutual authentication", nil, "server identity verified")
 		}
+		// net/smtp treats nil as end-of-AUTH, not as an empty GSSAPI token.
+		if token == nil {
+			token = []byte{}
+		}
 		return token, nil
 	case 1:
 		response, err := a.security.Negotiate(challenge)
+		if err == nil && len(response) == 0 {
+			err = errors.New("empty GSSAPI SASL negotiation response")
+		}
 		a.report.Step("GSSAPI SASL negotiation", err, "no-layer selection protected by GSSAPI")
 		if err != nil {
 			return nil, fmt.Errorf("AD GSSAPI SASL negotiation: %w", err)
@@ -162,7 +171,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			o.report.Step("GSSAPI cleanup", nil, "security context closed")
 		}
 	}()
-	err = c.Auth(&gssAuth{security: security, report: o.report})
+	auth := &gssAuth{security: security, report: o.report}
+	err = c.Auth(auth)
+	if err == nil && !auth.confirmed {
+		err = errors.New("relay did not confirm SMTP authentication")
+	}
 	o.report.Step("SMTP AUTH GSSAPI", err, "relay accepted authentication")
 	if err != nil {
 		return fmt.Errorf("SMTP AUTH GSSAPI: %w", err)

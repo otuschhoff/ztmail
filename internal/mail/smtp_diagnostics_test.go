@@ -37,6 +37,51 @@ func assertNoEmailCommands(t *testing.T, result smtpResult) {
 	}
 }
 
+func TestSMTPFinalAuthFailureIsNotReportedAsQuitFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	results := make(chan smtpResult, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			results <- smtpResult{err: err}
+			return
+		}
+		results <- serveSMTPAuthReply(conn, false, false, nil, "535 5.7.8 Authentication rejected")
+	}()
+	var output bytes.Buffer
+	o := options{testMode: true, report: NewTestReport(&output), relay: "relay.example.test",
+		port: listener.Addr().(*net.TCPAddr).Port, hello: "host.example.test", tlsMode: "off", timeout: 3 * time.Second}
+	security := &fakeSecurity{offer: []byte{1, 0, 0, 0}}
+	backend := &fakeBackend{security: security, address: netip.MustParseAddr("127.0.0.1")}
+	err = deliver(context.Background(), o, nil, nil, backend, &output)
+	result := <-results
+	assertNoEmailCommands(t, result)
+	if err == nil || !strings.Contains(err.Error(), "SMTP AUTH GSSAPI") || !strings.Contains(err.Error(), "535") {
+		t.Fatalf("final AUTH refusal incorrectly attributed: %v", err)
+	}
+	if result.err != nil || security.closed != 1 {
+		t.Fatalf("server=%v security closed=%d", result.err, security.closed)
+	}
+	if strings.Contains(output.String(), "[OK] SMTP AUTH GSSAPI") || strings.Contains(output.String(), "SMTP QUIT") ||
+		!strings.Contains(output.String(), "[OK] GSSAPI SASL negotiation") ||
+		!strings.Contains(output.String(), "[FAIL] SMTP AUTH GSSAPI") {
+		t.Fatalf("incorrect authentication report: %s", &output)
+	}
+	foundEmpty := false
+	for _, command := range result.commands {
+		if command == "" {
+			foundEmpty = true
+		}
+	}
+	if !foundEmpty {
+		t.Fatal("nil context token did not produce an empty SMTP continuation")
+	}
+}
+
 func TestSMTPTestAuthenticatesWithoutSendingEmail(t *testing.T) {
 	for _, mode := range []string{"success", "auth-failure", "quit-failure", "cleanup-failure", "starttls-missing"} {
 		t.Run(mode, func(t *testing.T) {

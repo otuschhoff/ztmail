@@ -140,7 +140,7 @@ func (s *fakeSession) NewSecurityContext(context.Context, string, *tls.Connectio
 type fakeContext struct{ cleanupErr error }
 
 func (*fakeContext) Start() ([]byte, error)            { return []byte("initial"), nil }
-func (*fakeContext) Step([]byte) ([]byte, bool, error) { return []byte{}, true, nil }
+func (*fakeContext) Step([]byte) ([]byte, bool, error) { return nil, true, nil }
 func (*fakeContext) Negotiate([]byte) ([]byte, error)  { return []byte("selection"), nil }
 func (c *fakeContext) Close() error                    { return c.cleanupErr }
 

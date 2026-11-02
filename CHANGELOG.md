@@ -5,6 +5,17 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-02
+
+### Fixed
+
+- Continue SMTP AUTH when GSSAPI mutual authentication returns a nil output
+  token, sending the required empty response instead of ending authentication
+  before SASL negotiation. Reject empty signed SASL selections and report
+  success only after the relay confirms authentication.
+- Attribute a final SMTP `535` rejection to AUTH instead of reporting a
+  misleading QUIT failure. The correction applies to both CLI and library.
+
 ## [0.2.1] - 2026-11-02
 
 ### Fixed

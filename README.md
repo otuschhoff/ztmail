@@ -279,6 +279,12 @@ verifies TLS according to `--tls`, exchanges SMTP greetings/EHLO, completes
 GSSAPI mutual authentication and signed SASL negotiation, and sends `QUIT`.
 It never sends `MAIL FROM`, `RCPT TO`, `DATA`, or message content.
 
+SMTP authentication is successful only after GSSAPI mutual authentication,
+signed SASL negotiation, and the relay's final `235` response. A GSSAPI step
+that produces no output token still requires an empty SMTP continuation; it
+must not terminate AUTH early. A final `535` is reported as an authentication
+failure, not as a QUIT failure.
+
 The step report is written to stderr without requiring `--verbose`. It shows:
 
 - Local host, AD domain, realm, relay hostname/port, EHLO name, and SMTP SPN.
