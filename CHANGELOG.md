@@ -5,6 +5,35 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
+### Added
+
+- Add the importable `github.com/otuschhoff/ztmail` library with `New`, `Send`,
+  and no-email `Test`, borrowing an application's existing AD client.
+- Return selected identity/envelope details, confirmed acceptance, structured
+  post-acceptance warnings, and an `ErrDeliveryUncertain` retry-safety sentinel.
+- Support concurrent submissions with independent credential leases, SMTP
+  connections and GSSAPI contexts; never close the application-owned AD client.
+
+### Changed
+
+- Move the executable to `cmd/ztmail` and share message, LDAP, DNS/GSSAPI and
+  SMTP/TLS implementation between CLI and library. Direct CLI builds now use
+  `go build ./cmd/ztmail`; Makefile builds preserve existing binary names and
+  version metadata. Historical tag release metadata remains supported.
+
+### Compatibility
+
+- The module path is now `github.com/otuschhoff/ztmail`. Existing CLI binaries,
+  flags, authentication behavior and release filenames are preserved; source
+  builds must target `./cmd/ztmail` rather than the repository root.
+- The library requires an application-owned `adclient.NewAD` client and an
+  explicit AD domain. It does not discover local credentials, prompt for
+  passwords, replace owner observation hooks, or close the shared AD owner.
+- A confirmed DATA acceptance remains successful even if QUIT/security cleanup
+  produces warnings. An uncertain DATA outcome must not be blindly retried.
+
 ## [0.1.4] - 2026-11-02
 
 ### Fixed

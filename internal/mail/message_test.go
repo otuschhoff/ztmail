@@ -1,4 +1,4 @@
-package main
+package mail
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ func TestPrepareMessage(t *testing.T) {
 	input := "From: Sender <sender@example.com>\r\nTo: Alice <alice@example.com>\r\nCc: bob@example.com\r\nBcc: hidden@example.com,\r\n\tother@example.com\r\nSubject: original\r\n\r\nHello\r\n.\r\ntrailing\r\n"
 	for _, ignore := range []bool{false, true} {
 		t.Run(map[bool]string{false: "dot-terminates", true: "ignore-dots"}[ignore], func(t *testing.T) {
-			data, recipients, err := prepareMessage(strings.NewReader(input), []string{"alice@example.com", "local"}, "example.com", true, ignore)
+			data, recipients, err := PrepareMessage(strings.NewReader(input), []string{"alice@example.com", "local"}, "example.com", true, ignore)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -34,7 +34,7 @@ func TestPrepareMessage(t *testing.T) {
 
 func TestPrepareMessageResent(t *testing.T) {
 	input := "Resent-Date: Thu, 1 Jan 2026 00:00:00 +0000\nResent-From: forwarder@example.com\nResent-To: new@example.com\nResent-Bcc: secret@example.com\nResent-Date: Wed, 31 Dec 2025 00:00:00 +0000\nResent-To: old@example.com\nTo: original@example.com\nBcc: original-secret@example.com\n\nbody\n"
-	data, recipients, err := prepareMessage(strings.NewReader(input), nil, "example.com", true, true)
+	data, recipients, err := PrepareMessage(strings.NewReader(input), nil, "example.com", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestPrepareMessageResent(t *testing.T) {
 
 func TestPrepareMessageNoHeaderRecipients(t *testing.T) {
 	input := "To: not-an-address\nBcc: secret@example.com\n\nbody\n"
-	data, recipients, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, true)
+	data, recipients, err := PrepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, true)
 	if err != nil || len(recipients) != 1 || bytes.Contains(data, []byte("Bcc:")) {
 		t.Fatalf("data=%q recipients=%v err=%v", data, recipients, err)
 	}
@@ -56,7 +56,7 @@ func TestPrepareMessageNoHeaderRecipients(t *testing.T) {
 
 func TestResentFieldsNeedNotStartWithDate(t *testing.T) {
 	input := "Resent-From: newest@example.com\nResent-To: new@example.com\nResent-Date: Thu, 1 Jan 2026 00:00:00 +0000\nResent-From: older@example.com\nResent-To: old@example.com\nResent-Date: Wed, 31 Dec 2025 00:00:00 +0000\nTo: original@example.com\n\nbody\n"
-	_, recipients, err := prepareMessage(strings.NewReader(input), nil, "example.com", true, true)
+	_, recipients, err := PrepareMessage(strings.NewReader(input), nil, "example.com", true, true)
 	if err != nil || !reflect.DeepEqual(recipients, []string{"new@example.com"}) {
 		t.Fatalf("recipients=%v err=%v", recipients, err)
 	}
@@ -76,7 +76,7 @@ func TestPrepareMessageFailures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := prepareMessage(strings.NewReader(tt.message), tt.recipients, "example.com", tt.headers, true); err == nil {
+			if _, _, err := PrepareMessage(strings.NewReader(tt.message), tt.recipients, "example.com", tt.headers, true); err == nil {
 				t.Fatal("expected failure")
 			}
 		})
@@ -86,7 +86,7 @@ func TestPrepareMessageFailures(t *testing.T) {
 func TestMissingHeaderBodyBlankLineExplainsRejection(t *testing.T) {
 	for _, newline := range []string{"\n", "\r\n"} {
 		input := strings.Join([]string{"Subject: test", "This is a testmail", ".", ""}, newline)
-		_, _, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
+		_, _, err := PrepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
 		want := "invalid RFC 5322 message: line 2: expected a header before the blank line, but this line is not \"Name: value\"\n" +
 			"Each header must use \"Name: value\". Insert a blank line between the last header and the body " +
 			"(press Enter twice after the last header).\n" +
@@ -103,7 +103,7 @@ func TestMissingHeaderBodyBlankLineExplainsRejection(t *testing.T) {
 func TestInteractiveMessageWithBlankLineIsAccepted(t *testing.T) {
 	for _, newline := range []string{"\n", "\r\n"} {
 		input := strings.Join([]string{"Subject: test", "", "This is a testmail", ".", ""}, newline)
-		message, recipients, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
+		message, recipients, err := PrepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, false)
 		want := strings.Join([]string{"Subject: test", "", "This is a testmail", ""}, newline)
 		if err != nil || string(message) != want || !reflect.DeepEqual(recipients, []string{"recipient@example.com"}) {
 			t.Fatalf("message=%q recipients=%v err=%v", message, recipients, err)
@@ -113,7 +113,7 @@ func TestInteractiveMessageWithBlankLineIsAccepted(t *testing.T) {
 
 func TestHeaderOnlyInputExplainsMissingBlankLine(t *testing.T) {
 	for _, input := range []string{"Subject: test\n", "Subject: test"} {
-		_, _, err := prepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, true)
+		_, _, err := PrepareMessage(strings.NewReader(input), []string{"recipient@example.com"}, "example.com", false, true)
 		if err == nil || !strings.Contains(err.Error(), "missing blank line") || !strings.Contains(err.Error(), "press Enter twice") {
 			t.Fatalf("error=%v", err)
 		}
@@ -125,7 +125,7 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("input failed") }
 
 func TestPrepareMessageReadFailure(t *testing.T) {
-	if _, _, err := prepareMessage(failingReader{}, nil, "example.com", true, true); err == nil || !strings.Contains(err.Error(), "input failed") {
+	if _, _, err := PrepareMessage(failingReader{}, nil, "example.com", true, true); err == nil || !strings.Contains(err.Error(), "input failed") {
 		t.Fatalf("expected input error; got %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestEnvelopeAddress(t *testing.T) {
 		{"", "", false, true},
 		{"a@example.com\nx", "", false, true},
 	} {
-		got, err := envelopeAddress(tt.input, "example.com", tt.null)
+		got, err := EnvelopeAddress(tt.input, "example.com", tt.null)
 		if (err != nil) != tt.fail || got != tt.want {
 			t.Errorf("%q: got %q, %v; want %q (fail=%v)", tt.input, got, err, tt.want, tt.fail)
 		}
@@ -165,7 +165,7 @@ func TestApplySender(t *testing.T) {
 		{"invalid", "bad\n@example.com", "", "", false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			result, envelope, err := applySender([]byte(body), tt.explicit, tt.canonical, "example.com")
+			result, envelope, err := ApplySender([]byte(body), tt.explicit, tt.canonical, "example.com")
 			if (err != nil) != tt.fail {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -191,7 +191,7 @@ func TestApplySender(t *testing.T) {
 
 func TestRewriteSenderWithoutFrom(t *testing.T) {
 	message := "Subject: test\n\nbody\n"
-	got, err := rewriteSender([]byte(message), "primary@example.com")
+	got, err := RewriteSender([]byte(message), "primary@example.com")
 	if err != nil || string(got) != "From: <primary@example.com>\n"+message {
 		t.Fatalf("message=%q err=%v", got, err)
 	}
@@ -199,7 +199,7 @@ func TestRewriteSenderWithoutFrom(t *testing.T) {
 
 func TestRewriteSenderRemovesDuplicateFoldedFields(t *testing.T) {
 	message := "From: one@example.com\nFrom: two@example.com\nSender: three@example.com\n folded\nSender: four@example.com\n\nbody\n"
-	got, err := rewriteSender([]byte(message), "primary@example.com")
+	got, err := RewriteSender([]byte(message), "primary@example.com")
 	want := "From: <primary@example.com>\nSender: <primary@example.com>\n\nbody\n"
 	if err != nil || string(got) != want {
 		t.Fatalf("message=%q err=%v", got, err)

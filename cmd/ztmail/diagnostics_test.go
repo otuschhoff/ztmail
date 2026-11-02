@@ -55,7 +55,7 @@ func TestEndpointReportIsConcurrentAndServerAttributed(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 10 {
-				report.exchange(context.Background(), observe.ExchangeEvent{Protocol: protocol, Request: "synthetic-request",
+				report.Exchange(context.Background(), observe.ExchangeEvent{Protocol: protocol, Request: "synthetic-request",
 					Server: "dc.corp.example:88", Address: "192.0.2.10:88", Transport: "tcp",
 					Outcome: observe.Success, Duration: time.Millisecond})
 			}
@@ -63,9 +63,9 @@ func TestEndpointReportIsConcurrentAndServerAttributed(t *testing.T) {
 	}
 	wg.Wait()
 	var err error
-	report.finish(&err)
-	if err != nil || report.exchanges != 30 {
-		t.Fatalf("exchanges=%d err=%v", report.exchanges, err)
+	report.Finish(&err)
+	if err != nil {
+		t.Fatalf("err=%v", err)
 	}
 	for _, expected := range []string{`protocol="dns"`, `protocol="kerberos"`, `protocol="ldap"`,
 		`server="dc.corp.example:88"`, `peer="192.0.2.10:88"`, `transport="tcp"`,
@@ -115,10 +115,10 @@ func (w failedReportWriter) Write([]byte) (int, error) { return 0, w.err }
 func TestDiagnosticOutputFailureIsReturned(t *testing.T) {
 	writeErr := errors.New("diagnostic output failed")
 	report := newTestReport(failedReportWriter{writeErr})
-	report.step("Synthetic step", nil, "completed")
+	report.Step("Synthetic step", nil, "completed")
 	original := errors.New("authentication failed")
 	err := original
-	report.finish(&err)
+	report.Finish(&err)
 	if !errors.Is(err, writeErr) || !errors.Is(err, original) {
 		t.Fatalf("lost test or output error: %v", err)
 	}

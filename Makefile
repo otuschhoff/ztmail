@@ -19,7 +19,8 @@ build:
 build-one:
 	@test -n "$(BUILD_TIME)" && test -n "$(COMMIT_SHA)" || { echo "Build time and commit SHA are required" >&2; exit 1; }
 	mkdir -p "$(dir $(OUTPUT))"
-	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o "$(OUTPUT)" .
+	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build ./...
+	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o "$(OUTPUT)" ./cmd/ztmail
 
 test:
 	bash .github/scripts/release-notes-test.sh

@@ -1,4 +1,4 @@
-package main
+package mail
 
 import (
 	"bytes"
@@ -56,7 +56,7 @@ func TestSMTPTestAuthenticatesWithoutSendingEmail(t *testing.T) {
 			}()
 			port := listener.Addr().(*net.TCPAddr).Port
 			var output bytes.Buffer
-			o := options{testMode: true, report: newTestReport(&output), relay: "relay.corp.example", port: port,
+			o := options{testMode: true, report: NewTestReport(&output), relay: "relay.corp.example", port: port,
 				hello: "host.corp.example", spn: "smtp/relay.corp.example", tlsMode: "off", timeout: 3 * time.Second}
 			if mode == "starttls-missing" {
 				o.tlsMode = "required"
@@ -202,7 +202,7 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if mode == "untrusted" {
 		tlsMode = "implicit"
 	}
-	report := newTestReport(os.Stdout)
+	report := NewTestReport(os.Stdout)
 	o := options{testMode: true, report: report, relay: "localhost", hello: "host.corp.example", spn: "smtp/localhost",
 		port: port, tlsMode: tlsMode, timeout: 3 * time.Second}
 	backend := &fakeBackend{security: &fakeSecurity{offer: []byte{1, 0, 0, 0}}, address: netip.MustParseAddr("127.0.0.1")}

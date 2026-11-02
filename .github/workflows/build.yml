@@ -41,7 +41,11 @@ jobs:
       - name: Set shared build metadata
         id: metadata
         run: |
-          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' source/version.go)
+          version_file=source/cmd/ztmail/version.go
+          if [[ ! -f "$version_file" ]]; then
+            version_file=source/version.go
+          fi
+          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' "$version_file")
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Could not read the semantic version from version.go."
             exit 1

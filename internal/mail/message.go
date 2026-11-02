@@ -1,4 +1,4 @@
-package main
+package mail
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func envelopeAddress(s, domain string, allowNull bool) (string, error) {
+func EnvelopeAddress(s, domain string, allowNull bool) (string, error) {
 	if strings.ContainsAny(s, "\r\n\x00") {
 		return "", errors.New("address contains a forbidden control character")
 	}
@@ -43,7 +43,7 @@ func invalidMessage(err error) error {
 		"The message was rejected locally; nothing was sent to the mail gateway.", err)
 }
 
-func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
+func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
 	r := bufio.NewReader(in)
 	var raw bytes.Buffer
 	for {
@@ -152,7 +152,7 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 	seen := make(map[string]bool)
 	var envelope []string
 	for _, s := range recipients {
-		a, err := envelopeAddress(s, domain, false)
+		a, err := EnvelopeAddress(s, domain, false)
 		if err != nil {
 			return nil, nil, fmt.Errorf("recipient: %w", err)
 		}
@@ -167,7 +167,7 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 	return clean.Bytes(), envelope, nil
 }
 
-func applySender(message []byte, explicit, canonical, domain string) ([]byte, string, error) {
+func ApplySender(message []byte, explicit, canonical, domain string) ([]byte, string, error) {
 	if explicit == "<>" {
 		return message, "", nil
 	}
@@ -178,15 +178,15 @@ func applySender(message []byte, explicit, canonical, domain string) ([]byte, st
 	if sender == "" {
 		return nil, "", errors.New("authenticated AD identity has no canonical sender; specify -f")
 	}
-	envelope, err := envelopeAddress(sender, domain, false)
+	envelope, err := EnvelopeAddress(sender, domain, false)
 	if err != nil {
 		return nil, "", fmt.Errorf("selected sender: %w", err)
 	}
-	rewritten, err := rewriteSender(message, envelope)
+	rewritten, err := RewriteSender(message, envelope)
 	return rewritten, envelope, err
 }
 
-func rewriteSender(message []byte, sender string) ([]byte, error) {
+func RewriteSender(message []byte, sender string) ([]byte, error) {
 	address, err := mail.ParseAddress(sender)
 	if err != nil || address.Name != "" || address.Address != sender || strings.ContainsAny(sender, "\r\n\x00") {
 		return nil, errors.New("sender rewrite requires a single bare mailbox")

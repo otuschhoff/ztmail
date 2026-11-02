@@ -1,4 +1,4 @@
-package main
+package mail
 
 import (
 	"bufio"
@@ -81,7 +81,7 @@ func TestRelayDNSFailuresDoNotCreateContext(t *testing.T) {
 	}
 }
 
-func (f *fakeBackend) NewSecurityContext(_ context.Context, _ string, state *tls.ConnectionState) (securityContext, error) {
+func (f *fakeBackend) NewSecurityContext(_ context.Context, _ string, state *tls.ConnectionState) (SecurityContext, error) {
 	f.contexts++
 	f.state = state
 	return f.security, nil

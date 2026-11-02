@@ -146,11 +146,11 @@ func validateOptions(o options) error {
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
 	if o.testMode {
 		o.report = newTestReport(log)
-		defer o.report.finish(&err)
-		o.report.line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
+		defer o.report.Finish(&err)
+		o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
 	}
 	host, domain, err := discoverHost(ctx, o.domain)
-	o.report.step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
+	o.report.Step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
 	if err != nil {
 		return err
 	}
@@ -189,7 +189,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.from = sender
 		}
 	}
-	o.report.step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q auth=%q requested principal=%q",
+	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q auth=%q requested principal=%q",
 		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
 	var message []byte
 	if !o.testMode {
@@ -204,7 +204,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		ctx = work
 	}
 	session, err := openAD(ctx, o)
-	o.report.step("AD identity selection", err, "credential source and identity selected")
+	o.report.Step("AD identity selection", err, "credential source and identity selected")
 	if err != nil {
 		return fmt.Errorf("AD identity selection: %w", err)
 	}
@@ -215,19 +215,19 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			} else {
 				fmt.Fprintf(log, "Warning: message accepted, but credential cleanup failed: %v\n", closeErr)
 			}
-			o.report.step("AD credential cleanup", closeErr, "")
+			o.report.Step("AD credential cleanup", closeErr, "")
 		} else {
-			o.report.step("AD credential cleanup", nil, "credential owner closed")
+			o.report.Step("AD credential cleanup", nil, "credential owner closed")
 		}
 	}()
 	for _, failure := range session.failures {
 		if o.report != nil {
-			o.report.line("WARN", "Skipped credential identity", failure.Error())
+			o.report.Line("WARN", "Skipped credential identity", failure.Error())
 		} else {
 			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
 		}
 	}
-	o.report.step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
+	o.report.Step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
 	if !o.testMode {
 		message, o.from, err = applySender(message, o.from, session.mail, domain)

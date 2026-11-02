@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("input failed") }
 
 func TestNormalizeArgs(t *testing.T) {
 	for _, tt := range []struct{ in, want []string }{
