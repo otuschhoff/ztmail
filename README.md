@@ -24,12 +24,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.1.3+20261101-110716.abcdef0
+# 0.1.4+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.1.3**. Every supported build includes UTC build time
+The semantic version is **0.1.4**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.1.3+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.1.4+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 Raw `go build` without linker metadata has no trustworthy build timestamp:
@@ -110,9 +110,10 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to revision `7f5968481ca7`, which includes server-attributed
+The SDK is pinned to revision `1a78ba528554`, which includes server-attributed
 DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
-external credential sources, and OS DNS bootstrap.
+external credential sources, and OS DNS bootstrap. It also handles unpaged
+RootDSE/base-object LDAP responses while preserving strict subtree paging.
 The repository is private: configure GitHub
 access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
 There is no local-path module replacement.

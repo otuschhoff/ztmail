@@ -5,6 +5,14 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-02
+
+### Fixed
+
+- Upgrade the AD SDK to revision `1a78ba528554` to accept valid unpaged
+  RootDSE/base-object LDAP responses during canonical-mail lookup, while
+  preserving strict subtree paging and verified LDAP protection.
+
 ### Changed
 
 - Upgrade the official GitHub Actions to Node.js 24.
