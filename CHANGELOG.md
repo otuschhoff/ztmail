@@ -5,6 +5,19 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-02
+
+### Changed
+
+- Upgrade the AD SDK to `v0.4.0` and simplify `--test` DNS output to one
+  per-question summary with the queried name/type, total race duration,
+  winning server/port/transport, actual distinct server count, outcome, and
+  purpose. Failures remain visible; consensus negatives do not invent a winner.
+- Move low-level DNS operation/exchange details behind `--verbose` and include
+  correlation IDs, attempt counts, and response details in verbose summaries.
+  DNS summaries intentionally reveal query names and topology in test mode;
+  normal submission and application-owned library observation hooks are unchanged.
+
 ## [0.2.2] - 2026-11-02
 
 ### Fixed

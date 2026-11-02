@@ -209,7 +209,7 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	defer cancel()
 	var report *mail.TestReport
 	if test {
-		report = mail.NewTestReport(output)
+		report = mail.NewTestReport(output, false)
 		defer report.Finish(&err)
 		report.Line("INFO", "Target configuration", fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q",
 			c.options.Domain, c.options.Realm, c.options.Relay, c.options.Port, c.options.Hostname, c.options.SPN, c.options.TLS))

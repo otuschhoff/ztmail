@@ -35,8 +35,8 @@ github.com/jcmturner/gokrb5/v8 v8.4.4 h1:x1Sv4HaTpepFkXbt2IkL29DXRf8sOfZXo8eRKh6
 github.com/jcmturner/gokrb5/v8 v8.4.4/go.mod h1:1btQEpgT6k+unzCwX1KdWMEwPPkkgBtP+F6aCACiMrs=
 github.com/jcmturner/rpc/v2 v2.0.3 h1:7FXXj8Ti1IaVFpSAziCZWNzbNuZmnvw/i6CqLNdWfZY=
 github.com/jcmturner/rpc/v2 v2.0.3/go.mod h1:VUJYCIDm3PVOEHw8sgt091/20OJjskO/YJki3ELg/Hc=
-github.com/otuschhoff/adbind/ad v0.3.0 h1:/Mk/Penw1EUBbobhpAPa9Olb+glXT893LLVbv1ciu/s=
-github.com/otuschhoff/adbind/ad v0.3.0/go.mod h1:Jdu0xjVvJdDFAjJFmYXr+wD+Tocr5hQBHjHERXtWJ7A=
+github.com/otuschhoff/adbind/ad v0.4.0 h1:GfIKUf6hJsTGlKgh60+g0V/iN8V4bHnEZ+h533NMGG4=
+github.com/otuschhoff/adbind/ad v0.4.0/go.mod h1:Jdu0xjVvJdDFAjJFmYXr+wD+Tocr5hQBHjHERXtWJ7A=
 github.com/otuschhoff/gokrb5/v8 v8.5.3 h1:L3L81YmukI8Fjv2mXeF0pFXTvoBdVDsty9FQG6uC3nA=
 github.com/otuschhoff/gokrb5/v8 v8.5.3/go.mod h1:A4JXdxHouADmlVRW/WQoz68Woq/7Z6DI3TUzWZG+QPU=
 github.com/pborman/getopt v0.0.0-20180811024354-2b5b3bfb099b/go.mod h1:85jBQOZwpVEaDAr341tbn15RS4fCAsIst0qp7i8ex1o=

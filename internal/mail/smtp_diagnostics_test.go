@@ -53,7 +53,7 @@ func TestSMTPFinalAuthFailureIsNotReportedAsQuitFailure(t *testing.T) {
 		results <- serveSMTPAuthReply(conn, false, false, nil, "535 5.7.8 Authentication rejected")
 	}()
 	var output bytes.Buffer
-	o := options{testMode: true, report: NewTestReport(&output), relay: "relay.example.test",
+	o := options{testMode: true, report: NewTestReport(&output, false), relay: "relay.example.test",
 		port: listener.Addr().(*net.TCPAddr).Port, hello: "host.example.test", tlsMode: "off", timeout: 3 * time.Second}
 	security := &fakeSecurity{offer: []byte{1, 0, 0, 0}}
 	backend := &fakeBackend{security: security, address: netip.MustParseAddr("127.0.0.1")}
@@ -101,7 +101,7 @@ func TestSMTPTestAuthenticatesWithoutSendingEmail(t *testing.T) {
 			}()
 			port := listener.Addr().(*net.TCPAddr).Port
 			var output bytes.Buffer
-			o := options{testMode: true, report: NewTestReport(&output), relay: "relay.corp.example", port: port,
+			o := options{testMode: true, report: NewTestReport(&output, false), relay: "relay.corp.example", port: port,
 				hello: "host.corp.example", spn: "smtp/relay.corp.example", tlsMode: "off", timeout: 3 * time.Second}
 			if mode == "starttls-missing" {
 				o.tlsMode = "required"
@@ -247,7 +247,7 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if mode == "untrusted" {
 		tlsMode = "implicit"
 	}
-	report := NewTestReport(os.Stdout)
+	report := NewTestReport(os.Stdout, false)
 	o := options{testMode: true, report: report, relay: "localhost", hello: "host.corp.example", spn: "smtp/localhost",
 		port: port, tlsMode: tlsMode, timeout: 3 * time.Second}
 	backend := &fakeBackend{security: &fakeSecurity{offer: []byte{1, 0, 0, 0}}, address: netip.MustParseAddr("127.0.0.1")}

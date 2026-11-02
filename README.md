@@ -136,7 +136,9 @@ without sending email; it always leaves `Accepted` false. It returns cleanup
 and report-writing failures as errors. It writes only to the supplied writer.
 For AD exchange-level endpoint diagnostics, configure observation hooks when
 constructing your application's AD client; borrowing a client does not replace
-its hooks. Normal `Send` does not write to stdout/stderr.
+its hooks. For per-question DNS summaries, set `adclient.ADOptions.DNSSummary`
+when constructing that owner. The callback remains application-owned; `Test`
+does not install or replace it. Normal `Send` does not write to stdout/stderr.
 
 ### GitHub Actions
 
@@ -212,7 +214,8 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.3.0`, which includes server-attributed
+The SDK is pinned to `v0.4.0`, which includes opt-in per-question DNS summaries,
+server-attributed
 DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
 external credential sources, and OS DNS bootstrap. It also handles unpaged
 RootDSE/base-object LDAP responses while preserving strict subtree paging, and
@@ -290,10 +293,30 @@ The step report is written to stderr without requiring `--verbose`. It shows:
 - Local host, AD domain, realm, relay hostname/port, EHLO name, and SMTP SPN.
 - Credential attempts, the selected principal and actual keytab/ccache/SSPI/
   password source, and the canonical mail address where applicable.
-- SDK operation results and observed DNS, LDAP, and Kerberos exchanges,
+- One compact summary per DNS question/race: queried name and record type,
+  total question runtime, winning server IP/port and transport, number of
+  distinct servers actually queried, outcome, and purpose (discovery, probe,
+  or application). Failed requests remain visible; negative answers are
+  informational and do not by themselves establish lookup/authentication success.
+- SDK operation results and observed LDAP and Kerberos exchanges,
   including the logical server, actual connected peer, request kind, transport,
   outcome, and duration.
 - Relay DNS addresses, the connected SMTP peer, TLS, GSSAPI, and cleanup results.
+
+For example:
+
+```text
+[OK] DNS: name="mailgw.corp.example." type=A duration=42ms winner=192.0.2.10:53 transport=udp servers_queried=3 outcome=answered purpose=application
+```
+
+Add `--verbose` (or `-v`) to retain low-level DNS SDK operation/exchange
+diagnostics and add correlation IDs, attempt counts, and response peer/status
+details to summaries. Counts exclude unscheduled candidates and deduplicate
+endpoints across retries/UDP-to-TCP fallback. Duration includes budget waits,
+attempts, fallback, and started losing-worker cleanup; it is not the whole
+AD discovery or multi-question lookup duration. A/AAAA and alias questions
+have separate summaries. When there is no unique winner, the summary says
+`winner=none`; consensus negatives list contributing responders instead.
 
 Only real SDK exchanges identify used AD servers; discovered candidates are not
 presented as contacted servers. Cached DNS results/TGTs/service tickets emit no
@@ -302,9 +325,11 @@ cannot report its used KDC endpoint. An exchange marked `SUCCESS` means a
 response was received, not necessarily successful authentication: a KDC
 preauthentication challenge or error reply is still a completed exchange.
 The separate credential and SMTP authentication steps establish success.
-Passwords, security tokens, LDAP filters, DNS query names, and payloads are
-not included in exchange diagnostics. The report does contain account and
-internal routing information; review it before sharing.
+Passwords, security tokens, LDAP filters, and payloads are not included.
+DNS query names are included in summaries, even without `--verbose`.
+The report contains account names, queried internal DNS names, and network
+topology; review it before sharing. Normal submissions do not enable DNS
+summary hooks, even with `--verbose`.
 
 Authentication failures stop the test with a nonzero exit status and retain
 step diagnostics; configured credential/principal fallback may first try other

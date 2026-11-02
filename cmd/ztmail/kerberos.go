@@ -113,6 +113,7 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 	}
 	settings := adclient.ADOptions{DNS: dns, Credentials: credentials, Trust: trust, Protection: "tls"}
 	if o.report != nil {
+		settings.DNSSummary = o.report.DNSSummary
 		hooks := observe.Hooks{Observe: o.report.Operation, Exchange: o.report.Exchange}
 		settings.Hooks = hooks
 		settings.Credentials.Hooks = observe.Hooks{Observe: o.report.Operation}

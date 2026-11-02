@@ -102,7 +102,7 @@ func newCommand() *cobra.Command {
 	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
 	f.BoolVarP(&o.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
 	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
-	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status to stderr, without tokens or message content")
+	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status and detailed --test DNS diagnostics to stderr, without tokens or message content")
 	f.StringVar(&o.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
 	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "AD/SMTP timeout; per stage with --password-prompt (excludes message and credential input)")
 	return cmd
@@ -145,7 +145,7 @@ func validateOptions(o options) error {
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
 	if o.testMode {
-		o.report = newTestReport(log)
+		o.report = newTestReport(log, o.verbose)
 		defer o.report.Finish(&err)
 		o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
 	}
