@@ -47,7 +47,7 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		to = append(to, address.String())
 	}
 	copyReport := &TestReport{values: r.values, started: r.started, rows: r.rows, debug: r.debug, verbose: r.verbose,
-		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory}
+		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory, tlsDetails: r.tlsDetails}
 	var message bytes.Buffer
 	multipartWriter := multipart.NewWriter(&message)
 	subject := "ztmail diagnostic test"

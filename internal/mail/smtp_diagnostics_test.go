@@ -167,8 +167,12 @@ func TestSMTPTestTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: privateKey}}}
-	for _, mode := range []string{"required", "implicit", "untrusted"} {
+	for _, mode := range []string{"required", "required12", "implicit", "untrusted"} {
 		t.Run(mode, func(t *testing.T) {
+			serverTLS := tlsConfig.Clone()
+			if mode == "required12" {
+				serverTLS.MaxVersion = tls.VersionTLS12
+			}
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -182,9 +186,9 @@ func TestSMTPTestTLS(t *testing.T) {
 					return
 				}
 				if mode == "implicit" || mode == "untrusted" {
-					results <- serveSMTP(tls.Server(conn, tlsConfig), false, false)
+					results <- serveSMTP(tls.Server(conn, serverTLS), false, false)
 				} else {
-					results <- serveSMTPWithTLS(conn, false, false, tlsConfig)
+					results <- serveSMTPWithTLS(conn, false, false, serverTLS)
 				}
 			}()
 			// Isolate test trust roots rather than changing the parent process's TLS policy.
@@ -210,7 +214,7 @@ func TestSMTPTestTLS(t *testing.T) {
 						hellos++
 					}
 				}
-				if mode == "required" && hellos != 2 {
+				if (mode == "required" || mode == "required12") && hellos != 2 {
 					t.Fatalf("expected pre/post-TLS EHLO, got %d", hellos)
 				}
 			} else {
@@ -244,6 +248,9 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	tlsMode := mode
+	if mode == "required12" {
+		tlsMode = "required"
+	}
 	if mode == "untrusted" {
 		tlsMode = "implicit"
 	}
@@ -261,9 +268,20 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if err != nil || backend.state == nil || len(backend.state.VerifiedChains) == 0 {
 		t.Fatalf("verified TLS state not passed to GSSAPI: %v", err)
 	}
-	if value := report.values["Transport security"]; !strings.HasPrefix(value, "OK ("+tlsConnectionDetails(*backend.state)+"; CN=localhost; ") ||
-		!strings.HasSuffix(value, " left)") {
-		t.Fatalf("missing verified certificate CN/expiry: %q", value)
+	version := strings.ReplaceAll(tls.VersionName(backend.state.Version), "TLS ", "TLS")
+	if mode == "required12" && backend.state.Version != tls.VersionTLS12 {
+		t.Fatal("TLS 1.2 fixture negotiated another version")
+	}
+	if value := report.values["Transport security"]; !strings.HasPrefix(value, "OK (CN=localhost; ") ||
+		!strings.HasSuffix(value, "; "+version+" ~128bit)") {
+		t.Fatalf("missing verified certificate CN/expiry/strength: %q", value)
+	}
+	report.EnableDebug()
+	for _, want := range []string{"Server TLS certificate / connection", "Ed25519", "Cipher suite",
+		tls.CipherSuiteName(backend.state.CipherSuite), backend.state.CurveID.String(), "128-bit classical equivalent"} {
+		if !strings.Contains(report.renderDebug(reportPlain), want) {
+			t.Errorf("missing verified TLS detail %q", want)
+		}
 	}
 }
 
@@ -273,14 +291,14 @@ func TestCertificateLifetime(t *testing.T) {
 		remaining time.Duration
 		want      string
 	}{
-		{69 * 24 * time.Hour, "69 days left"},
-		{48*time.Hour - time.Second, "1 day left"},
-		{24 * time.Hour, "1 day left"},
-		{24*time.Hour - time.Second, "23 hours left"},
-		{time.Hour, "1 hour left"},
-		{time.Hour - time.Second, "59 minutes left"},
-		{time.Minute, "1 minute left"},
-		{time.Second, "less than 1 minute left"},
+		{69 * 24 * time.Hour, "+69 days"},
+		{48*time.Hour - time.Second, "+1 day"},
+		{24 * time.Hour, "+1 day"},
+		{24*time.Hour - time.Second, "+23 hours"},
+		{time.Hour, "+1 hour"},
+		{time.Hour - time.Second, "+59 minutes"},
+		{time.Minute, "+1 minute"},
+		{time.Second, "+<1 minute"},
 		{0, "expired"},
 		{-time.Second, "expired"},
 	} {
@@ -288,37 +306,20 @@ func TestCertificateLifetime(t *testing.T) {
 			t.Errorf("remaining %s: got %q, want %q", tc.remaining, got, tc.want)
 		}
 	}
-	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "smtp.corp.example"}, NotAfter: now.Add(69 * 24 * time.Hour)}
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "smtp.corp.example"}, NotAfter: now.Add(69 * 24 * time.Hour),
+		PublicKey: ed25519.PublicKey(make([]byte, ed25519.PublicKeySize))}
 	state := tls.ConnectionState{Version: tls.VersionTLS13, CipherSuite: tls.TLS_AES_128_GCM_SHA256,
+		CurveID: tls.X25519, VerifiedChains: [][]*x509.Certificate{{leaf}},
 		PeerCertificates: []*x509.Certificate{leaf, {NotAfter: now.Add(365 * 24 * time.Hour)}}}
-	if got := tlsTransportSummary(state, now); got != "OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)" {
+	if got := tlsTransportSummary(state, now); got != "OK (CN=smtp.corp.example; +69 days; TLS1.3 ~128bit)" {
 		t.Fatalf("wrong leaf certificate summary: %s", got)
 	}
 	leaf.Subject.CommonName = ""
-	if got := tlsTransportSummary(state, now); got != "OK (TLS1.3 AES-128-GCM; CN unavailable; 69 days left)" {
+	if got := tlsTransportSummary(state, now); got != "OK (CN unavailable; +69 days; TLS1.3 ~128bit)" {
 		t.Fatalf("wrong missing-CN summary: %s", got)
 	}
-	if got := tlsTransportSummary(tls.ConnectionState{}, now); got != "OK (TLS unavailable cipher unavailable; CN unavailable; expiry unavailable)" {
+	if got := tlsTransportSummary(tls.ConnectionState{}, now); got != "OK (CN unavailable; expiry unavailable; TLS unavailable strength unavailable)" {
 		t.Fatalf("wrong missing-certificate summary: %s", got)
 	}
 
-}
-
-func TestTLSConnectionDetails(t *testing.T) {
-	for _, tc := range []struct {
-		version, cipher uint16
-		want            string
-	}{
-		{tls.VersionTLS13, tls.TLS_AES_128_GCM_SHA256, "TLS1.3 AES-128-GCM"},
-		{tls.VersionTLS13, tls.TLS_AES_256_GCM_SHA384, "TLS1.3 AES-256-GCM"},
-		{tls.VersionTLS13, tls.TLS_CHACHA20_POLY1305_SHA256, "TLS1.3 ChaCha20-256"},
-		{tls.VersionTLS12, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, "TLS1.2 AES-128-GCM"},
-		{tls.VersionTLS12, tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, "TLS1.2 AES-256-GCM"},
-		{tls.VersionTLS12, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, "TLS1.2 AES-128-CBC"},
-		{tls.VersionTLS12, 0xffff, "TLS1.2 0xFFFF"},
-	} {
-		if got := tlsConnectionDetails(tls.ConnectionState{Version: tc.version, CipherSuite: tc.cipher}); got != tc.want {
-			t.Errorf("version=%x cipher=%x: got %q, want %q", tc.version, tc.cipher, got, tc.want)
-		}
-	}
 }

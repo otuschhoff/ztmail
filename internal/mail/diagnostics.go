@@ -20,20 +20,21 @@ import (
 )
 
 type TestReport struct {
-	mu        sync.Mutex
-	output    io.Writer
-	outputErr error
-	exchanges int
-	verbose   bool
-	color     bool
-	rows      []reportRow
-	values    map[string]string
-	started   time.Time
-	debug     bool
-	traces    []observe.TraceEvent
-	traceEnds []time.Time
-	testMail  bool
-	inventory []discovery.InventoryEvent
+	mu         sync.Mutex
+	output     io.Writer
+	outputErr  error
+	exchanges  int
+	verbose    bool
+	color      bool
+	rows       []reportRow
+	values     map[string]string
+	started    time.Time
+	debug      bool
+	traces     []observe.TraceEvent
+	traceEnds  []time.Time
+	testMail   bool
+	inventory  []discovery.InventoryEvent
+	tlsDetails []table.Row
 }
 
 type reportRow struct {

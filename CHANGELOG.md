@@ -5,6 +5,20 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-11-02
+
+### Changed
+
+- Move TLS version and strength to the end of transport-security details and
+  report a conservative NIST-equivalent classical strength estimate, limited
+  by observable cipher, key exchange and verified certificate-chain metadata.
+  Use compact `~112bit` strength and `+69 days` remaining-validity notation.
+  Show unavailable estimates and document unobservable handshake signatures.
+- Add a debug TLS certificate/connection table with certificate key type,
+  equivalent strength, identity/validity, key exchange and full cipher suite.
+- Right-align numeric/duration columns in terminal and HTML reports, keeping
+  missing-value dashes aligned; sort DC rows by hostname, protocol and port.
+
 ## [0.2.10] - 2026-11-02
 
 ### Changed

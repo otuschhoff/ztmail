@@ -308,11 +308,19 @@ Cred source and SPN are shown only for GSSAPI. This does not enable mTLS
 authentication.
 The table has no redundant column-header row. Successful authentication displays
 `OK`; healthy transport displays
-`OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)`.
-The compact cipher label identifies the negotiated symmetric encryption/key
-size, not the certificate's signing key or an overall security rating.
+`OK (CN=smtp.corp.example; +69 days; TLS1.3 ~112bit)`.
+The trailing rating is a conservative classical key-strength estimate based on
+the weakest observable cipher, key exchange, certificate-chain key or certificate
+signature. For example, RSA-2048 limits the estimate to 112 bits even with
+AES-256. Missing or unsupported required metadata produces `strength unavailable`.
+RSA/ECC tiers follow [NIST SP 800-57 Part 1 Rev. 5, Tables 2-3](https://doi.org/10.6028/NIST.SP.800-57pt1r5);
+intermediate RSA sizes round down to a published tier.
+This is not NIST certification, a post-quantum rating, or a full protocol-security
+assessment. Hybrid key exchange is rated on its classical component only.
+TLS handshake signature schemes are not exposed by Go and are not assessed;
+the estimate is not a bound on per-record authentication or message-volume risks.
 The remaining leaf-certificate lifetime uses whole days, hours or minutes,
-or `less than 1 minute left`. Certificate validation
+with a leading `+`, or `+<1 minute`. Certificate validation
 still uses the relay hostname/SANs, not the displayed CN. Certificates without a
 CN display `CN unavailable`. On colour-enabled terminals only `OK` is bold green;
 the CN retains normal text colour. AD-domain suffixes (including the leading
@@ -327,7 +335,11 @@ Use `--test --debug` for additional tables containing all observed DC
 advertisements (including unresolved/historical entries), observed LDAP/Kerberos
 reachability and average completed-exchange response times, and SDK/application
 runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
-SMTP auth, and other/cleanup. It estimates elapsed time from observed intervals:
+SMTP auth, and other/cleanup. A separate TLS certificate/connection table shows
+the certificate key type/size and equivalent strength, subject/issuer, SANs,
+validity, certificate signature, negotiated key exchange, full cipher suite,
+and strength-estimate limitations. It uses the existing verified connection,
+not a second handshake. The runtime breakdown estimates elapsed time from observed intervals:
 overlapping work is counted once, with DNS then Kerberos then LDAP taking
 precedence. Missing observations remain in other/cleanup; OS-internal SSPI DNS
 and KDC times cannot be separated from their enclosing call. Detailed step
@@ -343,6 +355,9 @@ not prove LDAP/Kerberos reachability, and unmatched resolvers are not attributed
 to a DC. Native SSPI KDC endpoints
 and wire timing are OS-managed/unavailable. Response latency is not authentication
 proof. Nested/concurrent step durations overlap and must not be summed.
+DC rows are sorted case-insensitively by hostname, then protocol, then port.
+Numeric columns (including duration measurements, ignoring missing-value dashes)
+are right-aligned in terminal and HTML tables. Plain-text email remains `Key: Value`.
 `--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
 
 Colours highlight successful checks in green, failures in red, and

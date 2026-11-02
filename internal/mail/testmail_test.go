@@ -111,7 +111,7 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 	report.Value("AD domain", "corp.example")
 	report.Value("Hostname", "worker.CORP.EXAMPLE")
 	report.Value("User", "user@Corp.Example")
-	report.Value("Transport security", "OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)")
+	report.Value("Transport security", "OK (CN=smtp.corp.example; +69 days; TLS1.3 ~128bit)")
 	report.Value("Authentication", "OK")
 	report.Line("WARN", "Certificate", "check certificate")
 	report.Line("FAIL", "Other check", "failed check")
@@ -127,7 +127,7 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 	htmlBody := bodies["text/html"]
 	for _, want := range []string{
 		`<strong style="color:#15803d">OK</strong>`,
-		`<strong style="color:#15803d">OK</strong> (TLS1.3 AES-128-GCM; CN=smtp<span style="color:#6b7280">.corp.example</span>; 69 days left)`,
+		`<strong style="color:#15803d">OK</strong> (CN=smtp<span style="color:#6b7280">.corp.example</span>; +69 days; TLS1.3 ~128bit)`,
 		`worker<span style="color:#6b7280">.CORP.EXAMPLE</span>`,
 		`user<span style="color:#6b7280">@Corp.Example</span>`,
 		`<span style="color:#a16207">[WARN] Certificate</span>`,
@@ -140,7 +140,7 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 	}
 	plain := bodies["text/plain"]
 	for _, want := range []string{"Hostname: worker.CORP.EXAMPLE", "User: user@Corp.Example",
-		"Transport security: OK (TLS1.3 AES-128-GCM; CN=smtp.corp.example; 69 days left)", "Authentication: OK"} {
+		"Transport security: OK (CN=smtp.corp.example; +69 days; TLS1.3 ~128bit)", "Authentication: OK"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing plain value %q:\n%s", want, plain)
 		}

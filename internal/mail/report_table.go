@@ -3,8 +3,11 @@ package mail
 import (
 	"fmt"
 	"html"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -25,6 +28,7 @@ type reportTable struct {
 }
 
 func (t reportTable) render(format reportFormat, color bool, domain string) string {
+	numeric := t.numericColumns()
 	if format == reportTerminal {
 		writer := table.NewWriter()
 		style := table.StyleRounded
@@ -33,7 +37,25 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 			style.Color.Separator = text.Colors{text.FgHiBlack}
 		}
 		writer.SetStyle(style)
-		writer.SetColumnConfigs(t.configs)
+		configs := append([]table.ColumnConfig(nil), t.configs...)
+		for column, right := range numeric {
+			if !right {
+				continue
+			}
+			index := -1
+			for i, config := range configs {
+				if config.Number == column+1 || (config.Number == 0 && column < len(t.header) && config.Name == fmt.Sprint(t.header[column])) {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				configs = append(configs, table.ColumnConfig{Number: column + 1})
+				index = len(configs) - 1
+			}
+			configs[index].Align, configs[index].AlignHeader = text.AlignRight, text.AlignRight
+		}
+		writer.SetColumnConfigs(configs)
 		if t.header != nil {
 			writer.AppendHeader(t.header)
 		}
@@ -52,8 +74,8 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 			`<table style="border-collapse:separate;border-spacing:0;border-radius:10px;width:100%">`)
 		if t.header != nil {
 			result.WriteString("<tr>")
-			for _, label := range t.header {
-				result.WriteString(`<th scope="col" style="text-align:left;padding:8px;border:1px solid #d1d5db;background:#f3f4f6">` +
+			for column, label := range t.header {
+				result.WriteString(`<th scope="col" style="text-align:` + columnAlignment(numeric, column) + `;padding:8px;border:1px solid #d1d5db;background:#f3f4f6">` +
 					html.EscapeString(fmt.Sprint(label)) + "</th>")
 			}
 			result.WriteString("</tr>")
@@ -79,7 +101,7 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 			if t.header == nil && j == 0 {
 				tag, scope = "th", ` scope="row"`
 			}
-			result.WriteString("<" + tag + scope + ` style="text-align:left;vertical-align:top;padding:8px;border:1px solid #d1d5db;white-space:pre-wrap">` +
+			result.WriteString("<" + tag + scope + ` style="text-align:` + columnAlignment(numeric, j) + `;vertical-align:top;padding:8px;border:1px solid #d1d5db;white-space:pre-wrap">` +
 				formatReportCell(fmt.Sprint(cell), t.cellKey(row, j), format, color, domain) + "</" + tag + ">")
 		}
 		result.WriteString("</tr>")
@@ -88,6 +110,47 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 		result.WriteString("</table></div>")
 	}
 	return strings.TrimSuffix(result.String(), "\n")
+}
+
+func (t reportTable) numericColumns() []bool {
+	columns := len(t.header)
+	for _, row := range t.rows {
+		columns = max(columns, len(row))
+	}
+	numeric := make([]bool, columns)
+	for column := range numeric {
+		valid, found := true, false
+		for _, row := range t.rows {
+			if column >= len(row) {
+				valid = false
+				break
+			}
+			value := strings.TrimSpace(fmt.Sprint(row[column]))
+			if value == "" || value == "-" {
+				continue
+			}
+			number, err := strconv.ParseFloat(value, 64)
+			if err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) {
+				found = true
+				continue
+			}
+			if _, err := time.ParseDuration(value); err == nil {
+				found = true
+				continue
+			}
+			valid = false
+			break
+		}
+		numeric[column] = valid && found
+	}
+	return numeric
+}
+
+func columnAlignment(numeric []bool, column int) string {
+	if column < len(numeric) && numeric[column] {
+		return "right"
+	}
+	return "left"
 }
 
 func (t reportTable) cellKey(row table.Row, column int) string {

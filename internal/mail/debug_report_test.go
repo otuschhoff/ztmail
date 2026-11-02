@@ -81,12 +81,12 @@ func TestDomainDimmingAndConciseStatuses(t *testing.T) {
 	report.Value("AD domain", "corp.example")
 	report.Value("Hostname", "worker.CORP.EXAMPLE")
 	report.Value("User", "user@Corp.Example")
-	report.Value("Transport security", "OK (CN=smtp.corp.example; 69 days left)")
+	report.Value("Transport security", "OK (CN=smtp.corp.example; +69 days)")
 	report.Step("SMTP AUTH GSSAPI", nil, "accepted")
 	var err error
 	report.Finish(&err)
 	for _, want := range []string{"\x1b[90m.CORP.EXAMPLE\x1b[0m", "\x1b[90m@Corp.Example\x1b[0m",
-		"\x1b[1m\x1b[32mOK\x1b[0m (CN=smtp\x1b[90m.corp.example\x1b[0m; 69 days left)", "\x1b[90m╭", "Authentication"} {
+		"\x1b[1m\x1b[32mOK\x1b[0m (CN=smtp\x1b[90m.corp.example\x1b[0m; +69 days)", "\x1b[90m╭", "Authentication"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %q:\n%q", want, output.String())
 		}
@@ -210,6 +210,36 @@ func TestDebugSSPIAndObservedDCDNSLatency(t *testing.T) {
 	report.Value("Cred source", "keytab")
 	if !strings.Contains(report.renderDebug(reportPlain), "Protocol: kerberos") {
 		t.Fatal("Kerberos rows hidden for keytab credentials")
+	}
+}
+
+func TestDCInventorySortedByHostThenMethod(t *testing.T) {
+	report := NewTestReport(&bytes.Buffer{}, false)
+	report.EnableDebug()
+	report.Inventory(discovery.InventoryEvent{Advertised: []discovery.Endpoint{
+		{FQDN: "zulu.corp.example", Port: 389, Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.20")}},
+		{FQDN: "Alpha.corp.example", Port: 88, Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10")}},
+		{FQDN: "Alpha.corp.example", Port: 389, Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10")}},
+	}})
+	report.Trace(context.Background(), observe.TraceEvent{Kind: observe.ExchangeTrace, Phase: observe.TraceCompleted,
+		Protocol: "dns", Server: "192.0.2.10:53", Response: true, Duration: time.Millisecond})
+	for _, format := range []reportFormat{reportPlain, reportTerminal, reportHTML} {
+		result := report.renderDebug(format)
+		previous := -1
+		for _, address := range []string{"Alpha.corp.example:53", "Alpha.corp.example:88",
+			"Alpha.corp.example:389", "zulu.corp.example:389"} {
+			index := strings.Index(result, address)
+			if index < 0 || index <= previous {
+				t.Fatalf("format %v: wrong DC order at %q:\n%s", format, address, result)
+			}
+			previous = index
+		}
+	}
+	plain := report.renderDebug(reportPlain)
+	kerberos := strings.Index(plain, "Protocol: kerberos")
+	ldap := strings.Index(plain, "Protocol: ldap")
+	if kerberos < 0 || ldap < kerberos {
+		t.Fatalf("protocols not sorted before port:\n%s", plain)
 	}
 }
 

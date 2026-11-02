@@ -125,6 +125,22 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	if len(keys) == 0 {
 		dcs.rows = append(dcs.rows, table.Row{"No DC advertisements observed", "-", "Not tested", "-", "-"})
 	}
+	sort.SliceStable(dcs.rows, func(i, j int) bool {
+		left, right := fmt.Sprint(dcs.rows[i][0]), fmt.Sprint(dcs.rows[j][0])
+		leftHost, leftPort, _ := net.SplitHostPort(left)
+		rightHost, rightPort, _ := net.SplitHostPort(right)
+		leftHost, rightHost = strings.ToLower(strings.TrimSuffix(leftHost, ".")), strings.ToLower(strings.TrimSuffix(rightHost, "."))
+		if leftHost != rightHost {
+			return leftHost < rightHost
+		}
+		leftMethod, rightMethod := fmt.Sprint(dcs.rows[i][1]), fmt.Sprint(dcs.rows[j][1])
+		if leftMethod != rightMethod {
+			return leftMethod < rightMethod
+		}
+		leftNumber, _ := strconv.Atoi(leftPort)
+		rightNumber, _ := strconv.Atoi(rightPort)
+		return leftNumber < rightNumber
+	})
 	timings := reportTable{header: table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"}}
 	for _, event := range r.traces {
 		timings.rows = append(timings.rows, table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
@@ -137,6 +153,7 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	if r.verbose {
 		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format, r.color, r.values["AD domain"])
 	}
+	result += "\n" + r.renderTLSDetails(format)
 	return result
 }
 
