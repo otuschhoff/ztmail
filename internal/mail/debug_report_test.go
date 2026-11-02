@@ -112,7 +112,7 @@ func TestRuntimeBreakdownDoesNotDoubleCount(t *testing.T) {
 	}
 	report.traceEnds = []time.Time{end, end, end}
 	text := report.runtimeBreakdown()
-	for _, want := range []string{"DNS", "100ms", "200ms", "SMTP auth", "counted once"} {
+	for _, want := range []string{"DNS", "100.0ms", "200.0ms", "SMTP auth", "counted once"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
@@ -149,14 +149,17 @@ func TestDebugObservedInventoryAndTimings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dc1.corp.example:389", "unresolved.corp.example:389",
-		"Not tested", "20ms", "Responded (not authentication proof)",
+	for _, want := range []string{"dc1.corp.example:389",
+		"20.0ms", "Responded",
 		"OS-managed / unavailable", "SMTP test step", "not additive"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %q:\n%s", want, &output)
 		}
+		if strings.Contains(output.String(), "unresolved.corp.example:389") || strings.Contains(output.String(), "Not tested") {
+			t.Fatalf("untested endpoint rendered:\n%s", &output)
+		}
 	}
-	if strings.Contains(output.String(), "Avg response") && !strings.Contains(output.String(), "20ms") {
+	if strings.Contains(output.String(), "Avg response") && !strings.Contains(output.String(), "20.0ms") {
 		t.Fatal("started or elected observations counted as completed response latency")
 	}
 }
@@ -193,9 +196,9 @@ func TestDebugSSPIAndObservedDCDNSLatency(t *testing.T) {
 		t.Fatalf("incorrect SSPI/DNS inventory:\n%s", plain)
 	}
 	for _, want := range []string{
-		"dc1.corp.example:53\nProtocol: dns", "Avg response: 20ms\nReplies: 2",
-		"dc2.corp.example:5353\nProtocol: dns", "Avg response: 5ms\nReplies: 1",
-		"Avg response: 7ms\nReplies: 1", "Avg response: -\nReplies: -",
+		"dc1.corp.example:53\nProtocol: dns", "Avg response: 20.0ms\nReplies: 2",
+		"dc2.corp.example:5353\nProtocol: dns", "Avg response: 5.0ms\nReplies: 1",
+		"Avg response: 7.0ms\nReplies: 1",
 	} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q:\n%s", want, plain)
@@ -203,7 +206,7 @@ func TestDebugSSPIAndObservedDCDNSLatency(t *testing.T) {
 	}
 	for _, format := range []reportFormat{reportTerminal, reportHTML} {
 		result := report.renderDebug(format)
-		if strings.Contains(result, "kerberos") || !strings.Contains(result, "20ms") {
+		if strings.Contains(result, "kerberos") || !strings.Contains(result, "20.0ms") {
 			t.Errorf("incorrect SSPI format %v:\n%s", format, result)
 		}
 	}
@@ -223,6 +226,14 @@ func TestDCInventorySortedByHostThenMethod(t *testing.T) {
 	}})
 	report.Trace(context.Background(), observe.TraceEvent{Kind: observe.ExchangeTrace, Phase: observe.TraceCompleted,
 		Protocol: "dns", Server: "192.0.2.10:53", Response: true, Duration: time.Millisecond})
+	for _, event := range []observe.TraceEvent{
+		{Protocol: "kerberos", Server: "192.0.2.10:88"},
+		{Protocol: "ldap", Server: "192.0.2.10:389"},
+		{Protocol: "ldap", Server: "192.0.2.20:389"},
+	} {
+		event.Kind, event.Phase, event.Response = observe.ExchangeTrace, observe.TraceCompleted, true
+		report.Trace(context.Background(), event)
+	}
 	for _, format := range []reportFormat{reportPlain, reportTerminal, reportHTML} {
 		result := report.renderDebug(format)
 		previous := -1
@@ -251,7 +262,8 @@ func TestDCObservationMissingResponses(t *testing.T) {
 		outcome observe.Outcome
 		want    string
 	}{
-		{observe.ExchangeTrace, observe.Canceled, "Canceled; reachability unknown"},
+		{observe.ExchangeTrace, observe.Canceled, ""},
+		{observe.ConnectionTrace, observe.Canceled, ""},
 		{observe.ExchangeTrace, observe.Failed, "Failed observed attempts"},
 		{observe.ConnectionTrace, observe.Success, "Connected; no complete reply"},
 	} {
@@ -259,6 +271,12 @@ func TestDCObservationMissingResponses(t *testing.T) {
 		report.Trace(context.Background(), observe.TraceEvent{Kind: tc.kind, Phase: observe.TraceCompleted,
 			Protocol: "ldap", Server: endpoint.Address(), Outcome: tc.outcome, Duration: time.Second})
 		row := report.dcObservationRow(endpoint.Address(), "ldap", endpoint)
+		if tc.want == "" {
+			if row != nil {
+				t.Fatalf("canceled-only row must be omitted: %v", row)
+			}
+			continue
+		}
 		if row[2] != tc.want || row[3] != "-" || row[4] != "-" {
 			t.Fatalf("incorrect unavailable response metrics: %v", row)
 		}

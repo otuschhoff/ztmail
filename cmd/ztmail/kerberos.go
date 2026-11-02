@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -149,6 +150,7 @@ func chooseADCredentials(ctx context.Context, o options,
 	if !o.passwordPrompt {
 		return trySource(ctx, o)
 	}
+	issuesStart := o.report.IssueCheckpoint()
 	var sources []string
 	if o.keytab != "" {
 		sources = append(sources, "keytab")
@@ -183,12 +185,27 @@ func chooseADCredentials(ctx context.Context, o options,
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(append(failures, err)...)
 	}
+	issuesEnd := o.report.IssueCheckpoint()
 	session, err := tryPassword(ctx, o)
 	if err != nil {
 		return nil, errors.Join(append(failures, fmt.Errorf("password prompt: %w", err))...)
 	}
+	o.report.RecoverIssues(issuesStart, issuesEnd)
 	session.failures = append(failures, session.failures...)
 	return session, nil
+}
+
+func reportCredentialFailures(o options, session *adSession, log io.Writer) {
+	if o.passwordPrompt && session.identity.Source == kerberos.SourcePassword && !o.verbose {
+		return
+	}
+	for _, failure := range session.failures {
+		if o.report != nil {
+			o.report.Line("WARN", "Skipped credential identity", failure.Error())
+		} else {
+			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
+		}
+	}
 }
 
 func stopCredentialFallback(ctx context.Context, err error) bool {

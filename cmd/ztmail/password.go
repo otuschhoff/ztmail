@@ -98,7 +98,7 @@ func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, gue
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
-	if _, err := fmt.Fprintln(terminal, "Existing credential methods failed. Requesting a Kerberos TGT with a password."); err != nil {
+	if _, err := fmt.Fprintln(terminal, "No usable existing credentials. Signing in with a password."); err != nil {
 		return "", nil, err
 	}
 	principal = guess
@@ -107,7 +107,7 @@ func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, gue
 			return "", nil, err
 		}
 	} else {
-		if _, err := fmt.Fprintf(terminal, "Kerberos principal [%s] (Enter to accept or type a replacement): ", guess); err != nil {
+		if _, err := fmt.Fprintf(terminal, "Kerberos principal [%s] (Enter to accept): ", guess); err != nil {
 			return "", nil, err
 		}
 		input, err := readPrincipalLine(ctx, terminal)

@@ -217,7 +217,7 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.5.0`, which includes read-only discovery inventory,
+The SDK is pinned to `v0.5.1`, which includes read-only discovery inventory,
 correlated attempt/stage observations, optimistic DNS qualification,
 explicit bounded failure diagnostics, opt-in per-question DNS summaries,
 server-attributed
@@ -225,6 +225,13 @@ DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
 external credential sources, and OS DNS bootstrap. It also handles unpaged
 RootDSE/base-object LDAP responses while preserving strict subtree paging, and
 provides explicit per-search naming-context confinement.
+The CLI's `NewAD` path automatically uses bounded, owner-local discovery
+caching: fresh DC lists and address answers are reused across sequential
+operations, with shared DC address questions across LDAP and Kerberos.
+TTL expiry, DNS topology changes and explicit refresh invalidate reuse.
+Cache hits do not replay DNS wire observations, so debug reply counts continue
+to reflect actual traffic. Direct `DNS()` queries, including the SMTP relay
+lookup, remain cache-free. Borrowed library clients retain their owner's policy.
 The repository is private: configure GitHub
 access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
 There is no local-path module replacement.
@@ -331,8 +338,8 @@ Failed checks, skipped protection, supplementary diagnostics, and warnings are
 shown separately. Authentication acceptance does not hide a later cleanup/test
 failure. No email is sent.
 
-Use `--test --debug` for additional tables containing all observed DC
-advertisements (including unresolved/historical entries), observed LDAP/Kerberos
+Use `--test --debug` for additional tables containing observed DC service
+activity matched against discovered advertisements, observed LDAP/Kerberos
 reachability and average completed-exchange response times, and SDK/application
 runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
 SMTP auth, and other/cleanup. A separate TLS certificate/connection table shows
@@ -345,8 +352,13 @@ precedence. Missing observations remain in other/cleanup; OS-internal SSPI DNS
 and KDC times cannot be separated from their enclosing call. Detailed step
 durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
-Untested protocols say `Not tested`; canceled losers do not prove
-unreachability. Missing response times and zero reply counts display a grey `-`
+Untested and canceled-only service rows are omitted; canceled race losers do
+not prove unreachability. Completed connections and failed attempts remain visible.
+Only observed protocol/port combinations appear; no LDAP/Kerberos cross-product
+is displayed for each advertised port. `Responded` means a complete protocol
+reply was received (possibly an error), not successful authentication; the main
+Authentication row reports the authentication result.
+Missing response times and zero reply counts display a grey `-`
 (unstyled when colours are disabled). With SSPI credentials, per-DC Kerberos rows
 are omitted because Windows manages ticket routing. Observed DNS exchange latency
 is included only where resolver endpoints match discovered DC names or addresses,
@@ -358,6 +370,8 @@ proof. Nested/concurrent step durations overlap and must not be summed.
 DC rows are sorted case-insensitively by hostname, then protocol, then port.
 Numeric columns (including duration measurements, ignoring missing-value dashes)
 are right-aligned in terminal and HTML tables. Plain-text email remains `Key: Value`.
+Displayed response times and runtimes use one decimal place: milliseconds below
+one second (for example `12.3ms`), otherwise seconds (for example `1.2s`).
 `--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
 
 Colours highlight successful checks in green, failures in red, and
@@ -557,6 +571,12 @@ Successful earlier methods never prompt. With this flag, both `--keytab` and
 `--ccache` may be provided to try them in that order; without it, the original
 mutually exclusive, no-fallback source policy remains unchanged.
 
+When password fallback succeeds, its introductory notice is sufficient:
+earlier credential-source failures are not repeated as failures/warnings in
+the concise report or normal send output. Use `--verbose` for those details.
+If password fallback fails, the original source errors remain part of the final
+error. Unrelated warnings and later SMTP/cleanup failures are still reported.
+
 The prompt shows a guessed `current-user@REALM` principal. Press Enter to accept
 it or type a replacement account, optionally including `@REALM`. An explicit
 `--principal` is shown and enforced without offering interactive replacement.
@@ -635,6 +655,10 @@ Subject: test
 This is a testmail
 .
 ```
+
+Press Ctrl+C to cancel while waiting for message input, including when started
+without arguments or when a pipe remains open. The CLI exits with an error
+without acquiring credentials or submitting a partially entered message.
 
 Without the blank line, body text is interpreted as another header. A formatting
 error reports the offending line and how to correct it; the message is rejected

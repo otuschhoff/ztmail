@@ -64,6 +64,29 @@ func (r *TestReport) Line(status, step, detail string) {
 	}
 }
 
+func (r *TestReport) IssueCheckpoint() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.rows)
+}
+
+// RecoverIssues removes only the resolved attempt range from concise output.
+// Verbose output, timing evidence and report-writing failures remain intact.
+func (r *TestReport) RecoverIssues(start, end int) {
+	if r == nil || r.verbose {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	length := len(r.rows) - (end - start)
+	copy(r.rows[start:], r.rows[end:])
+	clear(r.rows[length:])
+	r.rows = r.rows[:length]
+}
+
 func importantResult(status, step string) bool {
 	if strings.HasPrefix(step, "AD SDK ") || step == "AD exchange" {
 		return false
@@ -113,7 +136,7 @@ func (r *TestReport) Operation(_ context.Context, event observe.Event) {
 	if !r.verbose && (strings.HasPrefix(event.Operation, "dns.") || strings.HasPrefix(event.Operation, "addns.")) {
 		return
 	}
-	r.Line(strings.ToUpper(string(event.Outcome)), "AD SDK "+event.Operation, event.Duration.String())
+	r.Line(strings.ToUpper(string(event.Outcome)), "AD SDK "+event.Operation, formatDuration(event.Duration))
 }
 
 func (r *TestReport) Exchange(_ context.Context, event observe.ExchangeEvent) {
@@ -125,7 +148,7 @@ func (r *TestReport) Exchange(_ context.Context, event observe.ExchangeEvent) {
 	}
 	r.Line(strings.ToUpper(string(event.Outcome)), "AD exchange", fmt.Sprintf(
 		"protocol=%q request=%q server=%q peer=%q transport=%q duration=%s (exchange result, not authentication proof)",
-		event.Protocol, event.Request, event.Server, event.Address, event.Transport, event.Duration))
+		event.Protocol, event.Request, event.Server, event.Address, event.Transport, formatDuration(event.Duration)))
 }
 
 func (r *TestReport) DNSSummary(event dns.SummaryEvent) {
@@ -141,7 +164,7 @@ func (r *TestReport) DNSSummary(event dns.SummaryEvent) {
 		winner = fmt.Sprintf("%s transport=%s", event.Winner.Server, event.Winner.Transport)
 	}
 	detail := fmt.Sprintf("name=%q type=%s duration=%s winner=%s servers_queried=%d outcome=%s purpose=%s",
-		event.Name, strings.TrimPrefix(event.Type.String(), "Type"), event.Duration, winner,
+		event.Name, strings.TrimPrefix(event.Type.String(), "Type"), formatDuration(event.Duration), winner,
 		event.ServersQueried, event.Outcome, event.Purpose)
 	if !event.Winner.Server.IsValid() && len(event.Responses) > 0 {
 		responders := make([]string, 0, len(event.Responses))
@@ -164,10 +187,10 @@ func (r *TestReport) DNSSummary(event dns.SummaryEvent) {
 func (r *TestReport) DNSDiagnostic(result addns.DiagnosticResult) {
 	detail := fmt.Sprintf("original_failure=%s", result.Failure)
 	if result.Skip != addns.DiagnosticNotSkipped {
-		detail += fmt.Sprintf(" ran=%t skipped=%s duration=%s", result.Ran, result.Skip, result.Duration)
+		detail += fmt.Sprintf(" ran=%t skipped=%s duration=%s", result.Ran, result.Skip, formatDuration(result.Duration))
 	} else {
 		detail += fmt.Sprintf(" ran=%t outcome=%s server=%s transport=%s duration=%s attempts=%d",
-			result.Ran, result.Outcome, result.Server, result.Transport, result.Duration, result.Attempts)
+			result.Ran, result.Outcome, result.Server, result.Transport, formatDuration(result.Duration), result.Attempts)
 	}
 	if r.verbose {
 		detail += fmt.Sprintf(" lookup_id=%d question_id=%d original_question_id=%d peer=%q probe_failure=%s",
@@ -223,7 +246,7 @@ func (r *TestReport) renderFormat(format reportFormat) string {
 			value = "Not reached / unavailable"
 		}
 		if key == "Total runtime" {
-			value = time.Since(r.started).Round(time.Millisecond).String()
+			value = formatDuration(time.Since(r.started))
 		}
 		t.rows = append(t.rows, table.Row{key, value})
 	}

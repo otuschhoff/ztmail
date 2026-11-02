@@ -232,7 +232,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		}
 		o.needOwnMail = true
 	} else if !o.testMode {
-		message, recipients, err = prepareMessage(in, recipients, domain, o.readHeaders, o.ignoreDots)
+		message, recipients, err = prepareMessageContext(ctx, in, recipients, domain, o.readHeaders, o.ignoreDots)
 		if err != nil {
 			return err
 		}
@@ -262,13 +262,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.report.Step("AD credential cleanup", nil, "credential owner closed")
 		}
 	}()
-	for _, failure := range session.failures {
-		if o.report != nil {
-			o.report.Line("WARN", "Skipped credential identity", failure.Error())
-		} else {
-			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
-		}
-	}
+	reportCredentialFailures(o, session, log)
 	o.report.Step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
 	o.report.Value("User", session.identity.Principal)

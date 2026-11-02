@@ -66,6 +66,11 @@ func TestPasswordPromptPrincipalSelection(t *testing.T) {
 			if !strings.Contains(terminal.output.String(), tt.guess) || strings.Contains(terminal.output.String(), "synthetic-secret") {
 				t.Fatal("guessed principal was not shown or password was printed")
 			}
+			if !strings.Contains(terminal.output.String(), "No usable existing credentials. Signing in with a password.") ||
+				strings.Contains(terminal.output.String(), "TGT") ||
+				strings.Contains(terminal.output.String(), "type a replacement") {
+				t.Fatalf("unexpected prompt wording: %s", &terminal.output)
+			}
 			if tt.pinned && terminal.principalReads != 0 {
 				t.Fatal("explicit principal must not allow interactive replacement")
 			}

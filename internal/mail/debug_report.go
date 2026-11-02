@@ -81,7 +81,9 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 			if protocol == "kerberos" && strings.EqualFold(r.values["Cred source"], "sspi") {
 				continue
 			}
-			dcs.rows = append(dcs.rows, r.dcObservationRow(key, protocol, endpoint))
+			if row := r.dcObservationRow(key, protocol, endpoint); row != nil {
+				dcs.rows = append(dcs.rows, row)
+			}
 		}
 	}
 	dnsEndpoints := make(map[string]discovery.Endpoint)
@@ -120,10 +122,9 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	}
 	sort.Strings(dnsKeys)
 	for _, key := range dnsKeys {
-		dcs.rows = append(dcs.rows, r.dcObservationRow(key, "dns", dnsEndpoints[key]))
-	}
-	if len(keys) == 0 {
-		dcs.rows = append(dcs.rows, table.Row{"No DC advertisements observed", "-", "Not tested", "-", "-"})
+		if row := r.dcObservationRow(key, "dns", dnsEndpoints[key]); row != nil {
+			dcs.rows = append(dcs.rows, row)
+		}
 	}
 	sort.SliceStable(dcs.rows, func(i, j int) bool {
 		left, right := fmt.Sprint(dcs.rows[i][0]), fmt.Sprint(dcs.rows[j][0])
@@ -144,11 +145,15 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	timings := reportTable{header: table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"}}
 	for _, event := range r.traces {
 		timings.rows = append(timings.rows, table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
-			event.Duration.Round(time.Microsecond), event.Outcome})
+			formatDuration(event.Duration), event.Outcome})
+	}
+	dcResults := dcs.render(format, r.color, r.values["AD domain"])
+	if len(dcs.rows) == 0 {
+		dcResults = reportNote(format, "No completed DC responses, failures or connections observed.")
 	}
 	result := r.runtimeBreakdownFormat(format) + "\n" +
-		reportNote(format, "DC inventory (advertised during this test; includes historical/unresolved entries)") + "\n" + dcs.render(format, r.color, r.values["AD domain"]) +
-		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs; DNS replies do not prove LDAP/Kerberos reachability.") +
+		reportNote(format, "DC observations (untested and canceled-only endpoints omitted)") + "\n" + dcResults +
+		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs.") +
 		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
 		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format, r.color, r.values["AD domain"])
@@ -177,7 +182,7 @@ func matchesDCEndpoint(event observe.TraceEvent, endpoint discovery.Endpoint) bo
 
 func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.Endpoint) table.Row {
 	var total time.Duration
-	replies, failed, canceled, connected, connectionFailures := 0, 0, 0, 0, 0
+	replies, failed, connected, connectionFailures := 0, 0, 0, 0
 	for _, event := range r.traces {
 		if (event.Kind != observe.ExchangeTrace && event.Kind != observe.ConnectionTrace) ||
 			event.Protocol != protocol || !matchesDCEndpoint(event, endpoint) {
@@ -186,9 +191,7 @@ func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.E
 		if event.Kind == observe.ConnectionTrace {
 			if event.Outcome == observe.Success {
 				connected++
-			} else if event.Outcome == observe.Canceled {
-				canceled++
-			} else {
+			} else if event.Outcome != observe.Canceled {
 				connectionFailures++
 			}
 			continue
@@ -196,23 +199,20 @@ func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.E
 		if event.Response {
 			replies++
 			total += event.Duration
-		} else if event.Outcome == observe.Canceled {
-			canceled++
-		} else {
+		} else if event.Outcome != observe.Canceled {
 			failed++
 		}
 	}
-	status, avg, count := "Not tested", "-", "-"
+	if replies == 0 && failed == 0 && connected == 0 && connectionFailures == 0 {
+		return nil
+	}
+	status, avg, count := "Connected; no complete reply", "-", "-"
 	if replies > 0 {
-		status = "Responded (not authentication proof)"
-		avg = (total / time.Duration(replies)).Round(time.Microsecond).String()
+		status = "Responded"
+		avg = formatDuration(total / time.Duration(replies))
 		count = fmt.Sprint(replies)
 	} else if failed > 0 || connectionFailures > 0 {
 		status = "Failed observed attempts"
-	} else if canceled > 0 {
-		status = "Canceled; reachability unknown"
-	} else if connected > 0 {
-		status = "Connected; no complete reply"
 	}
 	if replies > 0 && failed > 0 {
 		status += fmt.Sprintf("; %d failed attempts", failed)
@@ -277,7 +277,7 @@ func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 	}
 	t := reportTable{header: table.Row{"Runtime breakdown", "Elapsed"}}
 	for i, label := range []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth", "Other / cleanup"} {
-		t.rows = append(t.rows, table.Row{label, durations[i].Round(time.Microsecond)})
+		t.rows = append(t.rows, table.Row{label, formatDuration(durations[i])})
 	}
 	if format == reportPlain {
 		t.header = nil

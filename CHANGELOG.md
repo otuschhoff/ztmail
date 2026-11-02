@@ -5,6 +5,31 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-11-02
+
+### Changed
+
+- Upgrade `github.com/otuschhoff/adbind/ad` to v0.5.1, enabling bounded,
+  TTL-aware discovery and shared DC address caching on the CLI's NewAD path.
+  Preserve actual-wire diagnostic counts and cache-free direct relay DNS
+  lookups; borrowed library clients retain their owner's discovery policy.
+- Simplify password-fallback wording and omit resolved earlier credential
+  failures from concise reports after successful password sign-in. Keep full
+  details with `--verbose` and preserve causes when fallback ultimately fails.
+- Omit untested and canceled-only DC service rows, removing non-applicable
+  LDAP/Kerberos port combinations. Shorten response status to `Responded`
+  without authentication disclaimers in the DC table.
+- Standardize displayed response times and runtimes to one decimal place,
+  using milliseconds below one second and seconds otherwise across reports
+  and verbose diagnostic output.
+
+### Fixed
+
+- Allow Ctrl+C to terminate the CLI while blocked waiting for message stdin,
+  including interactive startup without arguments and open pipes. Cancel
+  before credential acquisition or SMTP submission; preserve message parsing,
+  dot termination and input-error reporting.
+
 ## [0.2.11] - 2026-11-02
 
 ### Changed

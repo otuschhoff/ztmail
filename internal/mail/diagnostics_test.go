@@ -39,7 +39,7 @@ func TestDNSFailureDiagnosticReport(t *testing.T) {
 				}
 				text := output.String()
 				for _, want := range []string{"[INFO] DNS failure diagnostics", "original_failure=servfail",
-					"duration=12ms", "original", "retained"} {
+					"duration=12.0ms", "original", "retained"} {
 					if !strings.Contains(text, want) {
 						t.Errorf("missing %q:\n%s", want, text)
 					}
@@ -167,7 +167,7 @@ func TestDNSReportVerbosity(t *testing.T) {
 				return
 			}
 			text := output.String()
-			want := "[OK] DNS: name=\"_ldap._tcp.corp.example.\" type=SRV duration=42ms " +
+			want := "[OK] DNS: name=\"_ldap._tcp.corp.example.\" type=SRV duration=42.0ms " +
 				"winner=192.0.2.10:5353 transport=udp servers_queried=3 outcome=answered purpose=discovery"
 			if !strings.Contains(text, want) || strings.Count(text, "] DNS:") != 1 {
 				t.Fatalf("missing or duplicate DNS summary:\n%s", text)
@@ -210,7 +210,7 @@ func TestDNSSummaryOutcomesWithoutWinner(t *testing.T) {
 			NewTestReport(&output, true).DNSSummary(event)
 			text := output.String()
 			for _, want := range []string{"[" + test.status + "] DNS:", "winner=none", "servers_queried=0",
-				"outcome=" + string(test.outcome), "duration=42ms"} {
+				"outcome=" + string(test.outcome), "duration=42.0ms"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("missing %q:\n%s", want, text)
 				}
@@ -265,7 +265,7 @@ func TestDNSSummariesAreConcurrentAndQuestionAttributed(t *testing.T) {
 	for index := range 40 {
 		want := fmt.Sprintf("[OK] DNS: name=\"host%d.corp.example.\" type=SRV duration=%s "+
 			"winner=192.0.2.10:5353 transport=udp servers_queried=%d outcome=answered purpose=discovery",
-			index, time.Duration(index+1)*time.Millisecond, index+1)
+			index, formatDuration(time.Duration(index+1)*time.Millisecond), index+1)
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing intact summary %q", want)
 		}
