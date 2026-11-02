@@ -205,9 +205,11 @@ func (r *TestReport) Finish(err *error) {
 }
 
 func (r *TestReport) render() string {
-	t := table.NewWriter()
-	t.SetStyle(table.StyleRounded)
-	t.SetColumnConfigs([]table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}})
+	return r.renderFormat(reportTerminal)
+}
+
+func (r *TestReport) renderFormat(format reportFormat) string {
+	t := reportTable{configs: []table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}}}
 	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)", "Cred source",
 		"Transport security", "Authentication", "Total runtime"} {
 		value := r.values[key]
@@ -231,15 +233,18 @@ func (r *TestReport) render() string {
 				value = color.EscapeSeq() + value + text.Reset.EscapeSeq()
 			}
 		}
-		t.AppendRow(table.Row{key, value})
+		t.rows = append(t.rows, table.Row{key, value})
 	}
-	result := t.Render()
+	result := t.render(format)
 	// Failures and warnings must remain visible even if authentication succeeded.
-	if issues := r.renderIssues(); issues != "" {
+	if issues := r.renderIssues(format); issues != "" {
 		result += "\n" + issues
 	}
 	if r.debug {
-		result += "\n" + r.renderDebug()
+		result += "\n" + r.renderDebug(format)
+	}
+	if format != reportTerminal {
+		return result
 	}
 	if r.testMail {
 		delivery := r.values["Testmail delivery"]
@@ -251,14 +256,14 @@ func (r *TestReport) render() string {
 	return result + "\nNo email sent."
 }
 
-func (r *TestReport) renderIssues() string {
-	t := table.NewWriter()
-	t.SetStyle(table.StyleRounded)
-	t.AppendHeader(table.Row{"Check", "Result / details"})
-	t.SetColumnConfigs([]table.ColumnConfig{
+func (r *TestReport) renderIssues(format reportFormat) string {
+	t := reportTable{header: table.Row{"Check", "Result / details"}, configs: []table.ColumnConfig{
 		{Number: 1, WidthMax: 36, WidthMaxEnforcer: text.WrapSoft},
 		{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft},
-	})
+	}}
+	if format == reportPlain {
+		t.header = nil
+	}
 	count := 0
 	for _, row := range r.rows {
 		if row.status != "FAIL" && row.status != "WARN" && row.status != "SKIP" && row.step != "DNS failure diagnostics" {
@@ -278,10 +283,10 @@ func (r *TestReport) renderIssues() string {
 			}
 			label = color.EscapeSeq() + label + text.Reset.EscapeSeq()
 		}
-		t.AppendRow(table.Row{label, row.detail})
+		t.rows = append(t.rows, table.Row{label, row.detail})
 	}
 	if count == 0 {
 		return ""
 	}
-	return t.Render()
+	return t.render(format)
 }

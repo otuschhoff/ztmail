@@ -57,10 +57,8 @@ func (r *TestReport) Measure(step string) func() {
 	}
 }
 
-func (r *TestReport) renderDebug() string {
-	dcs := table.NewWriter()
-	dcs.SetStyle(table.StyleRounded)
-	dcs.AppendHeader(table.Row{"Discovered DC / service", "Protocol", "Observed reachability", "Avg response", "Replies"})
+func (r *TestReport) renderDebug(format reportFormat) string {
+	dcs := reportTable{header: table.Row{"Discovered DC / service", "Protocol", "Observed reachability", "Avg response", "Replies"}}
 	seen := make(map[string]discovery.Endpoint)
 	for _, event := range r.inventory {
 		for _, group := range [][]discovery.Endpoint{event.Advertised, event.Current.Candidates, event.Retired} {
@@ -129,24 +127,23 @@ func (r *TestReport) renderDebug() string {
 			if replies > 0 && failed > 0 {
 				status += fmt.Sprintf("; %d failed attempts", failed)
 			}
-			dcs.AppendRow(table.Row{key, protocol, status, avg, replies})
+			dcs.rows = append(dcs.rows, table.Row{key, protocol, status, avg, replies})
 		}
 	}
 	if len(keys) == 0 {
-		dcs.AppendRow(table.Row{"No DC advertisements observed", "-", "Not tested", "-", 0})
+		dcs.rows = append(dcs.rows, table.Row{"No DC advertisements observed", "-", "Not tested", "-", 0})
 	}
-	timings := table.NewWriter()
-	timings.SetStyle(table.StyleRounded)
-	timings.AppendHeader(table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"})
+	timings := reportTable{header: table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"}}
 	for _, event := range r.traces {
-		timings.AppendRow(table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
+		timings.rows = append(timings.rows, table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
 			event.Duration.Round(time.Microsecond), event.Outcome})
 	}
-	result := r.runtimeBreakdown() + "\nDC inventory (advertised during this test; includes historical/unresolved entries)\n" + dcs.Render() +
-		"\nSSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS resolver traffic is not DC reachability.\n" +
-		"Detailed step timings require --verbose."
+	result := r.runtimeBreakdownFormat(format) + "\n" +
+		reportNote(format, "DC inventory (advertised during this test; includes historical/unresolved entries)") + "\n" + dcs.render(format) +
+		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS resolver traffic is not DC reachability.") +
+		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
-		result += "\nStep timings (nested/concurrent durations overlap; not additive)\n" + timings.Render()
+		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format)
 	}
 	return result
 }
@@ -191,6 +188,10 @@ func runtimeCategory(event observe.TraceEvent) int {
 }
 
 func (r *TestReport) runtimeBreakdown() string {
+	return r.runtimeBreakdownFormat(reportTerminal)
+}
+
+func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 	type interval struct {
 		start, end time.Time
 		category   int
@@ -222,11 +223,17 @@ func (r *TestReport) runtimeBreakdown() string {
 		}
 		durations[category] += points[i].Sub(points[i-1])
 	}
-	t := table.NewWriter()
-	t.SetStyle(table.StyleRounded)
-	t.AppendHeader(table.Row{"Runtime breakdown", "Elapsed"})
+	t := reportTable{header: table.Row{"Runtime breakdown", "Elapsed"}}
 	for i, label := range []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth", "Other / cleanup"} {
-		t.AppendRow(table.Row{label, durations[i].Round(time.Microsecond)})
+		t.rows = append(t.rows, table.Row{label, durations[i].Round(time.Microsecond)})
 	}
-	return t.Render() + "\nObserved wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence)."
+	if format == reportPlain {
+		t.header = nil
+	}
+	heading := ""
+	if format == reportPlain {
+		heading = "Runtime breakdown\n"
+	}
+	return heading + t.render(format) + "\n" +
+		reportNote(format, "Observed wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence).")
 }

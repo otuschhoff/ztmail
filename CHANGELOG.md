@@ -5,6 +5,14 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-02
+
+### Changed
+
+- Format diagnostic testmail as multipart/alternative with styled HTML tables
+  and a border-free `Key: Value` plain-text fallback, including debug details.
+  Keep terminal tables unchanged and escape all report values in HTML.
+
 ## [0.2.7] - 2026-11-02
 
 ### Added

@@ -405,7 +405,8 @@ The canonical AD address is looked up even with `-f`. Sender overrides still
 apply; with `-f '<>'`, the envelope is null but the generated From header uses
 the canonical address.
 
-The UTF-8 plain-text email contains the uncoloured key/value report as observed
+The UTF-8 multipart email contains styled HTML tables and a plain-text fallback
+using `Key: Value` lines without table borders. Both show the report as observed
 immediately after SMTP authentication. `--debug` adds the DC inventory and
 runtime breakdown; `--verbose` streams local events, and with `--debug` also
 includes detailed timing rows in the email. Passwords, security tokens and
