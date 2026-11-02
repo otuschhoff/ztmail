@@ -297,7 +297,7 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("get SMTP service ticket: %w", err)
 	}
-	if o.from == "" {
+	if o.from == "" || o.needOwnMail {
 		session.mail, err = canonicalMail(ctx, client, session.identity)
 		o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
 		if err != nil {

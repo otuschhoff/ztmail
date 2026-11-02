@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/otuschhoff/adbind/ad/discovery"
 	"github.com/otuschhoff/adbind/ad/observe"
 )
@@ -35,6 +37,7 @@ func (r *TestReport) Trace(_ context.Context, event observe.TraceEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.traces = append(r.traces, event)
+	r.traceEnds = append(r.traceEnds, time.Now())
 }
 
 func (r *TestReport) Inventory(event discovery.InventoryEvent) {
@@ -139,7 +142,91 @@ func (r *TestReport) renderDebug() string {
 		timings.AppendRow(table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
 			event.Duration.Round(time.Microsecond), event.Outcome})
 	}
-	return "DC inventory (advertised during this test; includes historical/unresolved entries)\n" + dcs.Render() +
+	result := r.runtimeBreakdown() + "\nDC inventory (advertised during this test; includes historical/unresolved entries)\n" + dcs.Render() +
 		"\nSSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS resolver traffic is not DC reachability.\n" +
-		"Step timings (nested/concurrent durations overlap; not additive)\n" + timings.Render()
+		"Detailed step timings require --verbose."
+	if r.verbose {
+		result += "\nStep timings (nested/concurrent durations overlap; not additive)\n" + timings.Render()
+	}
+	return result
+}
+
+func (r *TestReport) dimDomain(value string) string {
+	domain := r.values["AD domain"]
+	if !r.color || domain == "" {
+		return value
+	}
+	re := regexp.MustCompile(`(?i)[.@]` + regexp.QuoteMeta(domain) + `\b`)
+	var result strings.Builder
+	last := 0
+	for _, match := range re.FindAllStringIndex(value, -1) {
+		if match[1] < len(value) && (value[match[1]] == '.' || value[match[1]] == '-') {
+			continue
+		}
+		result.WriteString(value[last:match[0]])
+		result.WriteString(text.FgHiBlack.EscapeSeq() + value[match[0]:match[1]] + text.Reset.EscapeSeq())
+		last = match[1]
+	}
+	result.WriteString(value[last:])
+	return result.String()
+}
+
+func runtimeCategory(event observe.TraceEvent) int {
+	op := strings.ToLower(event.Operation)
+	switch {
+	case event.Protocol == "dns" || strings.Contains(op, "dns"):
+		return 0
+	case event.Protocol == "kerberos" || strings.HasPrefix(op, "credential") ||
+		strings.HasPrefix(op, "principal") || op == "service_ticket" || op == "security_context":
+		return 1
+	case event.Protocol == "ldap" || strings.HasPrefix(op, "ldap") || op == "ad_search":
+		return 2
+	case op == "smtp gssapi authentication":
+		return 4
+	case strings.HasPrefix(op, "smtp") && op != "smtp quit":
+		return 3
+	default:
+		return 5
+	}
+}
+
+func (r *TestReport) runtimeBreakdown() string {
+	type interval struct {
+		start, end time.Time
+		category   int
+	}
+	end := time.Now()
+	points := []time.Time{r.started, end}
+	var spans []interval
+	for i, event := range r.traces {
+		category := runtimeCategory(event)
+		if category == 5 {
+			continue
+		}
+		finish := r.traceEnds[i]
+		start := finish.Add(-event.Duration)
+		if start.Before(r.started) {
+			start = r.started
+		}
+		spans = append(spans, interval{start, finish, category})
+		points = append(points, start, finish)
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].Before(points[j]) })
+	durations := make([]time.Duration, 6)
+	for i := 1; i < len(points); i++ {
+		category := 5
+		for _, span := range spans {
+			if !points[i-1].Before(span.start) && !points[i].After(span.end) && span.category < category {
+				category = span.category
+			}
+		}
+		durations[category] += points[i].Sub(points[i-1])
+	}
+	t := table.NewWriter()
+	t.SetStyle(table.StyleRounded)
+	t.AppendHeader(table.Row{"Runtime breakdown", "Elapsed"})
+	for i, label := range []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth", "Other / cleanup"} {
+		t.AppendRow(table.Row{label, durations[i].Round(time.Microsecond)})
+	}
+	return t.Render() + "\nObserved wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence)."
 }

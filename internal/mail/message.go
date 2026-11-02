@@ -109,7 +109,7 @@ func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 		return nil, nil, invalidMessage(err)
 	}
 	recipients := append([]string(nil), args...)
-	if fromHeaders {
+	if fromHeaders || len(args) == 0 {
 		selected := fields
 		resent := false
 		for i, f := range fields {
@@ -161,10 +161,21 @@ func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 			seen[a] = true
 		}
 	}
-	if len(envelope) == 0 {
-		return nil, nil, errors.New("no recipients; specify recipients or use -t")
-	}
 	return clean.Bytes(), envelope, nil
+}
+
+func RecipientFallback(recipients []string, canonical, domain string) ([]string, error) {
+	if len(recipients) > 0 {
+		return recipients, nil
+	}
+	if canonical == "" {
+		return nil, errors.New("no recipients in arguments or headers and authenticated user's canonical mail is unavailable")
+	}
+	address, err := EnvelopeAddress(canonical, domain, false)
+	if err != nil {
+		return nil, fmt.Errorf("self-recipient fallback: %w", err)
+	}
+	return []string{address}, nil
 }
 
 func ApplySender(message []byte, explicit, canonical, domain string) ([]byte, string, error) {

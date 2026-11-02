@@ -31,6 +31,7 @@ type TestReport struct {
 	started   time.Time
 	debug     bool
 	traces    []observe.TraceEvent
+	traceEnds []time.Time
 	inventory []discovery.InventoryEvent
 }
 
@@ -91,11 +92,11 @@ func (r *TestReport) Step(step string, err error, detail string) {
 			}
 			r.Value("Transport security", value)
 		case "SMTP AUTH GSSAPI":
-			value := "GSSAPI accepted by relay"
+			value := "OK"
 			if err != nil {
 				value = "FAILED: " + err.Error()
 			}
-			r.Value("Authentication result", value)
+			r.Value("Authentication", value)
 		}
 	}
 	if err != nil {
@@ -182,8 +183,8 @@ func (r *TestReport) Finish(err *error) {
 	r.Step("Test", *err, fmt.Sprintf("authentication checks completed; %d AD exchanges observed; no email sent", count))
 	if *err != nil {
 		r.mu.Lock()
-		if r.values["Authentication result"] == "" {
-			r.values["Authentication result"] = "Not completed: " + (*err).Error()
+		if r.values["Authentication"] == "" {
+			r.values["Authentication"] = "Not completed: " + (*err).Error()
 		}
 		r.mu.Unlock()
 	}
@@ -201,10 +202,9 @@ func (r *TestReport) Finish(err *error) {
 func (r *TestReport) render() string {
 	t := table.NewWriter()
 	t.SetStyle(table.StyleRounded)
-	t.AppendHeader(table.Row{"Key", "Value"})
 	t.SetColumnConfigs([]table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}})
 	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)", "Cred source",
-		"Transport security", "Authentication result", "Total runtime"} {
+		"Transport security", "Authentication", "Total runtime"} {
 		value := r.values[key]
 		if value == "" {
 			value = "Not reached / unavailable"
@@ -212,14 +212,19 @@ func (r *TestReport) render() string {
 		if key == "Total runtime" {
 			value = time.Since(r.started).Round(time.Millisecond).String()
 		}
-		if r.color && (key == "Authentication result" || key == "Transport security") {
+		value = r.dimDomain(value)
+		if r.color && (key == "Authentication" || key == "Transport security") {
 			color := text.FgCyan
 			if strings.Contains(value, "FAILED") {
 				color = text.FgRed
-			} else if strings.Contains(value, "accepted") || strings.Contains(value, "verified") {
+			} else if strings.HasPrefix(value, "OK") || strings.Contains(value, "verified") {
 				color = text.FgGreen
 			}
-			value = color.EscapeSeq() + value + text.Reset.EscapeSeq()
+			if strings.HasPrefix(value, "OK") {
+				value = color.EscapeSeq() + "OK" + text.Reset.EscapeSeq() + strings.TrimPrefix(value, "OK")
+			} else {
+				value = color.EscapeSeq() + value + text.Reset.EscapeSeq()
+			}
 		}
 		t.AppendRow(table.Row{key, value})
 	}

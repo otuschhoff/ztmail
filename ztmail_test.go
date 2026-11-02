@@ -340,6 +340,40 @@ func TestSendAndOwnership(t *testing.T) {
 	}
 }
 
+func TestRecipientFallbackSend(t *testing.T) {
+	for _, mode := range []string{"headers", "self", "override-self", "null-self"} {
+		t.Run(mode, func(t *testing.T) {
+			s := newSession()
+			client := testClient(t, s)
+			port, wire := server(t, "canonical")
+			client.options.Port = port
+			message := Message{Data: []byte("Subject: self\n\nbody\n")}
+			want := "alice@corp.example"
+			switch mode {
+			case "headers":
+				message.Data = []byte("To: header@corp.example\nBcc: blind@corp.example\n\nbody\n")
+				want = "header@corp.example"
+			case "override-self":
+				message.From = "override@corp.example"
+			case "null-self":
+				message.From = "<>"
+			}
+			result, err := client.Send(context.Background(), message)
+			record := <-wire
+			if err != nil || record.err != nil || !result.Accepted || len(result.Recipients) == 0 || result.Recipients[0] != want {
+				t.Fatalf("fallback delivery: result=%+v err=%v wire=%v", result, err, record.err)
+			}
+			if !strings.Contains(strings.Join(record.commands, "\n"), "RCPT TO:<"+want+">") ||
+				strings.Contains(string(record.message), "Bcc:") {
+				t.Fatalf("incorrect envelope or Bcc disclosure: %+v", record)
+			}
+			if s.canonicalCalls.Load() != 1 {
+				t.Fatal("self fallback must obtain authenticated canonical mail even with sender override")
+			}
+		})
+	}
+}
+
 func TestValidationBeforeCredentialAcquisition(t *testing.T) {
 	client := testClient(t, newSession())
 	client.acquire = func(context.Context) (session, error) {
@@ -348,7 +382,6 @@ func TestValidationBeforeCredentialAcquisition(t *testing.T) {
 	}
 	for _, message := range []Message{
 		{}, {Data: []byte("Subject: malformed\nbody\n"), Recipients: []string{"user@corp.example"}},
-		{Data: []byte("Subject: valid\n\nbody\n")},
 		{Data: []byte("Subject: valid\n\nbody\n"), Recipients: []string{"invalid\r\nrecipient"}},
 		{Data: []byte("Subject: valid\n\nbody\n"), From: "bad\r\nsender"},
 	} {
@@ -448,7 +481,7 @@ func TestLibraryTestNeverSendsEmail(t *testing.T) {
 			t.Fatalf("test sent %q", command)
 		}
 	}
-	if !strings.Contains(report.String(), "GSSAPI accepted by relay") || !strings.Contains(report.String(), "Total runtime") {
+	if !strings.Contains(report.String(), "Authentication") || !strings.Contains(report.String(), "OK") || !strings.Contains(report.String(), "Total runtime") {
 		t.Fatalf("missing report: %s", &report)
 	}
 }

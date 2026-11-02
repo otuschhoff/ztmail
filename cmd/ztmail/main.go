@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/otuschhoff/ztmail/internal/mail"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,7 @@ type options struct {
 	passwordPrompt                   bool
 	testMode                         bool
 	debug                            bool
+	needOwnMail                      bool
 	report                           *testReport
 }
 
@@ -213,6 +215,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		if err != nil {
 			return err
 		}
+		o.needOwnMail = len(recipients) == 0
 	}
 	if !o.passwordPrompt {
 		work, cancel := context.WithTimeout(ctx, o.timeout)
@@ -255,6 +258,10 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	o.report.Value("Mail (from)", from)
 	if !o.testMode {
+		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
+		if err != nil {
+			return err
+		}
 		message, o.from, err = applySender(message, o.from, session.mail, domain)
 		if err != nil {
 			return err

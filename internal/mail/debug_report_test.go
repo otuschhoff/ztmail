@@ -31,7 +31,7 @@ func TestNineKeySummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)",
-		"Cred source", "Transport security", "Authentication result", "Total runtime"} {
+		"Cred source", "Transport security", "Authentication", "Total runtime"} {
 		if strings.Count(output.String(), key) != 1 {
 			t.Errorf("missing/duplicate key %q:\n%s", key, &output)
 		}
@@ -43,9 +43,54 @@ func TestNineKeySummary(t *testing.T) {
 	}
 }
 
-func TestDebugObservedInventoryAndTimings(t *testing.T) {
+func TestDomainDimmingAndConciseStatuses(t *testing.T) {
 	var output bytes.Buffer
 	report := NewTestReport(&output, false)
+	report.color = true
+	report.Value("AD domain", "corp.example")
+	report.Value("Hostname", "worker.CORP.EXAMPLE")
+	report.Value("User", "user@Corp.Example")
+	report.Value("Transport security", "OK (smtp.corp.example)")
+	report.Step("SMTP AUTH GSSAPI", nil, "accepted")
+	var err error
+	report.Finish(&err)
+	for _, want := range []string{"\x1b[90m.CORP.EXAMPLE\x1b[0m", "\x1b[90m@Corp.Example\x1b[0m",
+		"\x1b[32mOK\x1b[0m (smtp\x1b[90m.corp.example", "Authentication"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("missing %q:\n%q", want, output.String())
+		}
+	}
+	for _, unwanted := range []string{"│ KEY", "│ VALUE", "Authentication result", "GSSAPI accepted"} {
+		if strings.Contains(output.String(), unwanted) {
+			t.Errorf("unexpected %q", unwanted)
+		}
+	}
+	if got := report.dimDomain("relay.corp.example.attacker.test"); strings.Contains(got, "\x1b[90m") {
+		t.Fatal("domain prefix in external hostname dimmed")
+	}
+}
+
+func TestRuntimeBreakdownDoesNotDoubleCount(t *testing.T) {
+	report := NewTestReport(&bytes.Buffer{}, false)
+	report.started = time.Now().Add(-time.Second)
+	end := report.started.Add(500 * time.Millisecond)
+	report.traces = []observe.TraceEvent{
+		{Protocol: "dns", Duration: 100 * time.Millisecond},
+		{Operation: "credential_acquire", Duration: 300 * time.Millisecond},
+		{Operation: "SMTP GSSAPI authentication", Duration: 50 * time.Millisecond},
+	}
+	report.traceEnds = []time.Time{end, end, end}
+	text := report.runtimeBreakdown()
+	for _, want := range []string{"DNS", "100ms", "200ms", "SMTP auth", "counted once"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestDebugObservedInventoryAndTimings(t *testing.T) {
+	var output bytes.Buffer
+	report := NewTestReport(&output, true)
 	report.EnableDebug()
 	report.Inventory(discovery.InventoryEvent{Advertised: []discovery.Endpoint{
 		{FQDN: "dc1.corp.example", Port: 389, Addresses: []netip.Addr{netip.MustParseAddr("192.0.2.10")}},
@@ -79,7 +124,7 @@ func TestDebugObservedInventoryAndTimings(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, &output)
 		}
 	}
-	if strings.Contains(output.String(), "1h") {
+	if strings.Contains(output.String(), "Avg response") && !strings.Contains(output.String(), "20ms") {
 		t.Fatal("started or elected observations counted as completed response latency")
 	}
 }

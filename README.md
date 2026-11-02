@@ -113,6 +113,9 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
 
 `Message.Data` is a complete RFC 5322 message, not a dot-terminated SMTP stream.
 Dot-only body lines are preserved. `Recipients` supplies envelope recipients;
+when empty, recipients are read from headers automatically. If headers provide
+none, delivery uses the authenticated user's canonical AD mail address. This
+fallback requires canonical lookup even when `From` is overridden or null.
 `ReadRecipients: true` also reads To/Cc/Bcc (or the latest Resent block).
 Bcc/Resent-Bcc headers are always stripped, and duplicate recipients are
 deduplicated. Message structure and envelope addresses are validated before
@@ -299,7 +302,13 @@ failure, not as a QUIT failure.
 
 The report is written to stderr as a rounded go-pretty key/value table:
 Hostname, Target relay (including port), AD domain, User, Mail (from),
-Cred source, Transport security, Authentication result, and Total runtime.
+Cred source, Transport security, Authentication, and Total runtime.
+The table has no redundant column-header row. Successful authentication displays
+`OK`; healthy transport displays `OK (certificate CN)`. Certificate validation
+still uses the relay hostname/SANs, not the displayed CN. Certificates without a
+CN display `CN unavailable`. On colour-enabled terminals only `OK` is green;
+the CN retains normal text colour. AD-domain suffixes (including the leading
+`.` or `@`, case-insensitive) in hostnames, UPNs, and mail addresses are grey.
 Unreached values are marked unavailable rather than guessed. Total runtime is
 elapsed wall-clock time through test/credential cleanup, before report rendering.
 Failed checks, skipped protection, supplementary diagnostics, and warnings are
@@ -309,7 +318,12 @@ failure. No email is sent.
 Use `--test --debug` for additional tables containing all observed DC
 advertisements (including unresolved/historical entries), observed LDAP/Kerberos
 reachability and average completed-exchange response times, and SDK/application
-step durations. This collects existing observations only: no extra discovery,
+runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
+SMTP auth, and other/cleanup. It estimates elapsed time from observed intervals:
+overlapping work is counted once, with DNS then Kerberos then LDAP taking
+precedence. Missing observations remain in other/cleanup; OS-internal SSPI DNS
+and KDC times cannot be separated from their enclosing call. Detailed step
+durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
 Untested protocols say `Not tested`; canceled losers do not prove
 unreachability. Resolver traffic is not DC reachability. Native SSPI KDC endpoints
@@ -569,7 +583,11 @@ printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject:
   removed from the transmitted message even without `-t`. Other header bytes
   (except From/Sender) and body content are preserved, apart from SMTP
   line-ending normalization.
-- CLI and header recipients are combined and exact duplicates are removed.
+- Without positional recipients, headers are read automatically as with `-t`.
+  If neither supplies recipients, the authenticated user's canonical AD mail
+  becomes the recipient, independently of any sender override. A missing or
+  invalid canonical address fails explicitly. Test mode still sends no mail.
+- With `-t`, CLI and header recipients are combined; exact duplicates are removed.
 - `-f address` overrides both the envelope sender and message From/Sender.
   `-f '<>'` sends a null envelope sender without rewriting sender headers.
 - `-i` or legacy `-oi` preserves lone-dot lines; otherwise a line containing

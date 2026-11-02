@@ -103,9 +103,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Backend, log io.Writer) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	dialDone := o.report.Measure("Relay DNS and TCP connection")
 	conn, err := dialRelay(ctx, o, backend)
-	dialDone()
 	if err != nil {
 		return fmt.Errorf("connect to relay: %w", err)
 	}
@@ -164,6 +162,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	var state *tls.ConnectionState
 	if tlsState, ok := c.TLSConnectionState(); ok {
 		state = &tlsState
+		cn := "CN unavailable"
+		if len(tlsState.PeerCertificates) > 0 && tlsState.PeerCertificates[0].Subject.CommonName != "" {
+			cn = tlsState.PeerCertificates[0].Subject.CommonName
+		}
+		o.report.Value("Transport security", "OK ("+cn+")")
 	}
 	security, err := backend.NewSecurityContext(ctx, o.spn, state)
 	o.report.Step("SMTP GSSAPI security context", err, fmt.Sprintf("SPN=%q TLS channel binding available=%t", o.spn, state != nil))
@@ -229,7 +232,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 }
 
 func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error) {
+	dnsDone := o.report.Measure("DNS relay lookup")
 	addresses, err := backend.Resolve(ctx, o.relay)
+	dnsDone()
 	if err != nil {
 		o.report.Step("Relay DNS lookup", err, "")
 		return nil, fmt.Errorf("AD DNS relay lookup: %w", err)
@@ -241,6 +246,8 @@ func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error
 	}
 	o.report.Step("Relay DNS lookup", nil, fmt.Sprintf("host=%q addresses=%v", o.relay, addresses))
 	var failures []error
+	tcpDone := o.report.Measure("SMTP TCP connection")
+	defer tcpDone()
 	for i, address := range addresses {
 		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
 			err := errors.New("AD DNS relay lookup returned an invalid unicast IP")

@@ -259,7 +259,7 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		return result, fmt.Errorf("SMTP service ticket: %w", err)
 	}
 	canonical := ""
-	if from == "" {
+	if from == "" || (!test && len(result.Recipients) == 0) {
 		canonical, err = credentials.canonical(ctx, result.Identity)
 		report.Step("Canonical AD mail lookup", err, fmt.Sprintf("mail=%q", canonical))
 		if err != nil {
@@ -267,13 +267,17 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		}
 	}
 	if !test {
+		result.Recipients, err = mail.RecipientFallback(result.Recipients, canonical, c.options.Domain)
+		if err != nil {
+			return result, err
+		}
 		data, result.From, err = mail.ApplySender(data, from, canonical, c.options.Domain)
 		if err != nil {
 			return result, err
 		}
-		if test {
-			report.Value("Mail (from)", canonical)
-		}
+	}
+	if test {
+		report.Value("Mail (from)", canonical)
 	}
 	err = mail.Deliver(ctx, mail.Config{Relay: c.options.Relay, Hello: c.options.Hostname, SPN: c.options.SPN,
 		Port: c.options.Port, TLSMode: string(c.options.TLS), Timeout: c.options.Timeout,

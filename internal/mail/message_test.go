@@ -16,6 +16,7 @@ func TestPrepareMessage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			want := []string{"alice@example.com", "local@example.com", "bob@example.com", "hidden@example.com", "other@example.com"}
 			if !reflect.DeepEqual(recipients, want) {
 				t.Fatalf("recipients = %v; want %v", recipients, want)
@@ -29,6 +30,25 @@ func TestPrepareMessage(t *testing.T) {
 				t.Fatalf("message = %q; want %q", data, expected)
 			}
 		})
+	}
+}
+
+func TestAutomaticHeaderRecipientsAndSelfFallback(t *testing.T) {
+	input := "To: to@example.com\nCc: cc@example.com\nBcc: blind@example.com\n\nbody\n"
+	data, recipients, err := PrepareMessage(strings.NewReader(input), nil, "example.com", false, true)
+	if err != nil || len(recipients) != 3 || strings.Contains(string(data), "Bcc:") {
+		t.Fatalf("header fallback: recipients=%v err=%v data=%s", recipients, err, data)
+	}
+	_, recipients, err = PrepareMessage(strings.NewReader(input), []string{"arg@example.com"}, "example.com", false, true)
+	if err != nil || len(recipients) != 1 || recipients[0] != "arg@example.com" {
+		t.Fatalf("explicit recipient precedence: %v %v", recipients, err)
+	}
+	recipients, err = RecipientFallback(nil, "self@example.com", "example.com")
+	if err != nil || len(recipients) != 1 || recipients[0] != "self@example.com" {
+		t.Fatalf("self fallback: %v %v", recipients, err)
+	}
+	if _, err := RecipientFallback(nil, "", "example.com"); err == nil {
+		t.Fatal("missing canonical self address must fail")
 	}
 }
 
@@ -69,7 +89,6 @@ func TestPrepareMessageFailures(t *testing.T) {
 		headers       bool
 	}{
 		{"empty", "", nil, true},
-		{"no-recipients", "Subject: test\n\nbody\n", nil, false},
 		{"no-separator", "Subject: test\n", []string{"user@example.com"}, false},
 		{"bad-to", "To: bad <\n\nbody\n", nil, true},
 		{"injection", "Subject: test\n\nbody\n", []string{"user@example.com\r\nRCPT TO:<bad@example.com>"}, false},

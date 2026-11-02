@@ -5,6 +5,20 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-02
+
+### Changed
+
+- When recipients are omitted, read header recipients automatically, then
+  fall back to the authenticated user's canonical AD mail. Apply the same
+  behavior to CLI and library, including with sender overrides/null senders.
+- Remove redundant test-table column headers, shorten authentication success
+  to `OK`, and show healthy TLS as `OK (certificate CN)`. On interactive colour
+  output, grey AD-domain suffixes in names/addresses and colour only the success
+  marker green. Preserve full TLS validation and uncoloured redirected output.
+- Show a concise observed runtime breakdown with `--debug`, counting overlapping
+  work once; move individual trace timings behind `--debug --verbose`.
+
 ## [0.2.5] - 2026-11-02
 
 ### Changed

@@ -261,4 +261,7 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if err != nil || backend.state == nil || len(backend.state.VerifiedChains) == 0 {
 		t.Fatalf("verified TLS state not passed to GSSAPI: %v", err)
 	}
+	if report.values["Transport security"] != "OK (localhost)" {
+		t.Fatalf("missing verified certificate CN: %q", report.values["Transport security"])
+	}
 }
