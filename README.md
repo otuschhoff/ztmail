@@ -301,12 +301,17 @@ must not terminate AUTH early. A final `535` is reported as an authentication
 failure, not as a QUIT failure.
 
 The report is written to stderr as a rounded go-pretty key/value table:
-Hostname, Target relay (including port), AD domain, User, Mail (from),
-Cred source, Transport security, Authentication, and Total runtime.
+Hostname, Target relay (including port), AD domain, Mail (from),
+Authentication method, User, Cred source, SPN, Transport security,
+Authentication, and Total runtime. The method is currently `GSSAPI`; User,
+Cred source and SPN are shown only for GSSAPI. This does not enable mTLS
+authentication.
 The table has no redundant column-header row. Successful authentication displays
-`OK`; healthy transport displays `OK (certificate CN)`. Certificate validation
+`OK`; healthy transport displays `OK (CN=smtp.corp.example; 69 days left)`.
+The remaining leaf-certificate lifetime uses whole days, hours or minutes,
+or `less than 1 minute left`. Certificate validation
 still uses the relay hostname/SANs, not the displayed CN. Certificates without a
-CN display `CN unavailable`. On colour-enabled terminals only `OK` is green;
+CN display `CN unavailable`. On colour-enabled terminals only `OK` is bold green;
 the CN retains normal text colour. AD-domain suffixes (including the leading
 `.` or `@`, case-insensitive) in hostnames, UPNs, and mail addresses are grey.
 Unreached values are marked unavailable rather than guessed. Total runtime is
@@ -412,6 +417,11 @@ runtime breakdown; `--verbose` streams local events, and with `--debug` also
 includes detailed timing rows in the email. Passwords, security tokens and
 message payloads from other submissions are never included. The report does
 contain account names and internal topology: choose recipients accordingly.
+
+HTML uses the same bold green `OK`, grey AD-domain suffixes and status colours
+as the CLI, regardless of terminal colour settings. Tables have grey borders
+and rounded corners where supported by the email client; other clients may
+show square corners. Colour-enabled CLI tables also use grey borders.
 
 The email cannot include its own DATA acceptance, subsequent QUIT or final
 cleanup outcomes. These are reported locally after submission. Relay acceptance

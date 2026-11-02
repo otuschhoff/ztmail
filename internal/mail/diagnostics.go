@@ -45,7 +45,8 @@ func NewTestReport(output io.Writer, verbose bool) *TestReport {
 	if file, ok := output.(*os.File); ok {
 		color = term.IsTerminal(int(file.Fd())) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	}
-	return &TestReport{output: output, verbose: verbose, color: color, started: time.Now(), values: make(map[string]string)}
+	return &TestReport{output: output, verbose: verbose, color: color, started: time.Now(),
+		values: map[string]string{"Authentication method": "GSSAPI"}}
 }
 
 func (r *TestReport) Line(status, step, detail string) {
@@ -210,8 +211,12 @@ func (r *TestReport) render() string {
 
 func (r *TestReport) renderFormat(format reportFormat) string {
 	t := reportTable{configs: []table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}}}
-	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)", "Cred source",
-		"Transport security", "Authentication", "Total runtime"} {
+	keys := []string{"Hostname", "Target relay", "AD domain", "Mail (from)", "Authentication method"}
+	if strings.EqualFold(r.values["Authentication method"], "GSSAPI") {
+		keys = append(keys, "User", "Cred source", "SPN")
+	}
+	keys = append(keys, "Transport security", "Authentication", "Total runtime")
+	for _, key := range keys {
 		value := r.values[key]
 		if value == "" {
 			value = "Not reached / unavailable"
@@ -219,23 +224,9 @@ func (r *TestReport) renderFormat(format reportFormat) string {
 		if key == "Total runtime" {
 			value = time.Since(r.started).Round(time.Millisecond).String()
 		}
-		value = r.dimDomain(value)
-		if r.color && (key == "Authentication" || key == "Transport security") {
-			color := text.FgCyan
-			if strings.Contains(value, "FAILED") {
-				color = text.FgRed
-			} else if strings.HasPrefix(value, "OK") || strings.Contains(value, "verified") {
-				color = text.FgGreen
-			}
-			if strings.HasPrefix(value, "OK") {
-				value = color.EscapeSeq() + "OK" + text.Reset.EscapeSeq() + strings.TrimPrefix(value, "OK")
-			} else {
-				value = color.EscapeSeq() + value + text.Reset.EscapeSeq()
-			}
-		}
 		t.rows = append(t.rows, table.Row{key, value})
 	}
-	result := t.render(format)
+	result := t.render(format, r.color, r.values["AD domain"])
 	// Failures and warnings must remain visible even if authentication succeeded.
 	if issues := r.renderIssues(format); issues != "" {
 		result += "\n" + issues
@@ -271,22 +262,10 @@ func (r *TestReport) renderIssues(format reportFormat) string {
 		}
 		count++
 		label := "[" + row.status + "] " + row.step
-		if r.color {
-			color := text.FgCyan
-			switch row.status {
-			case "OK":
-				color = text.FgGreen
-			case "FAIL":
-				color = text.FgRed
-			case "WARN", "SKIP":
-				color = text.FgYellow
-			}
-			label = color.EscapeSeq() + label + text.Reset.EscapeSeq()
-		}
 		t.rows = append(t.rows, table.Row{label, row.detail})
 	}
 	if count == 0 {
 		return ""
 	}
-	return t.render(format)
+	return t.render(format, r.color, r.values["AD domain"])
 }

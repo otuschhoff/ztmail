@@ -5,6 +5,20 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-02
+
+### Changed
+
+- Move Mail (from) above User in test reports, show the authentication method
+  (currently GSSAPI), and include User, Cred source and SPN only for GSSAPI.
+  Prefix the verified TLS certificate CN with `CN=` and show its remaining
+  lifetime in short human-readable form across CLI and testmail reports.
+- Match testmail HTML styling to the CLI with bold green success markers,
+  grey AD-domain suffixes and coloured status labels. Add grey table borders
+  and rounded HTML corners where supported by the email client.
+- Render colour-enabled CLI table borders in grey and successful `OK` markers
+  in bold. Keep plain-text email and non-colour terminal reports unstyled.
+
 ## [0.2.8] - 2026-11-02
 
 ### Changed

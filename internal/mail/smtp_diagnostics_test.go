@@ -261,7 +261,43 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	if err != nil || backend.state == nil || len(backend.state.VerifiedChains) == 0 {
 		t.Fatalf("verified TLS state not passed to GSSAPI: %v", err)
 	}
-	if report.values["Transport security"] != "OK (localhost)" {
-		t.Fatalf("missing verified certificate CN: %q", report.values["Transport security"])
+	if value := report.values["Transport security"]; !strings.HasPrefix(value, "OK (CN=localhost; ") ||
+		!strings.HasSuffix(value, " left)") {
+		t.Fatalf("missing verified certificate CN/expiry: %q", value)
+	}
+}
+
+func TestCertificateLifetime(t *testing.T) {
+	now := time.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		remaining time.Duration
+		want      string
+	}{
+		{69 * 24 * time.Hour, "69 days left"},
+		{48*time.Hour - time.Second, "1 day left"},
+		{24 * time.Hour, "1 day left"},
+		{24*time.Hour - time.Second, "23 hours left"},
+		{time.Hour, "1 hour left"},
+		{time.Hour - time.Second, "59 minutes left"},
+		{time.Minute, "1 minute left"},
+		{time.Second, "less than 1 minute left"},
+		{0, "expired"},
+		{-time.Second, "expired"},
+	} {
+		if got := certificateLifetime(now.Add(tc.remaining), now); got != tc.want {
+			t.Errorf("remaining %s: got %q, want %q", tc.remaining, got, tc.want)
+		}
+	}
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "smtp.corp.example"}, NotAfter: now.Add(69 * 24 * time.Hour)}
+	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, {NotAfter: now.Add(365 * 24 * time.Hour)}}}
+	if got := tlsTransportSummary(state, now); got != "OK (CN=smtp.corp.example; 69 days left)" {
+		t.Fatalf("wrong leaf certificate summary: %s", got)
+	}
+	leaf.Subject.CommonName = ""
+	if got := tlsTransportSummary(state, now); got != "OK (CN unavailable; 69 days left)" {
+		t.Fatalf("wrong missing-CN summary: %s", got)
+	}
+	if got := tlsTransportSummary(tls.ConnectionState{}, now); got != "OK (CN unavailable; expiry unavailable)" {
+		t.Fatalf("wrong missing-certificate summary: %s", got)
 	}
 }

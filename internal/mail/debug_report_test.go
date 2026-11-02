@@ -13,13 +13,13 @@ import (
 	"github.com/otuschhoff/adbind/ad/observe"
 )
 
-func TestNineKeySummary(t *testing.T) {
+func TestGSSAPISummary(t *testing.T) {
 	var output bytes.Buffer
 	report := NewTestReport(&output, false)
 	for key, value := range map[string]string{
 		"Hostname": "worker.corp.example", "Target relay": "relay.corp.example:25",
 		"AD domain": "corp.example", "User": "user@CORP.EXAMPLE",
-		"Mail (from)": "sender@corp.example", "Cred source": "sspi",
+		"Mail (from)": "sender@corp.example", "Cred source": "sspi", "SPN": "smtp/relay.corp.example",
 	} {
 		report.Value(key, value)
 	}
@@ -30,15 +30,46 @@ func TestNineKeySummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)",
-		"Cred source", "Transport security", "Authentication", "Total runtime"} {
-		if strings.Count(output.String(), key) != 1 {
+	plain := report.renderFormat(reportPlain)
+	previous := -1
+	for _, key := range []string{"Hostname", "Target relay", "AD domain", "Mail (from)", "Authentication method", "User",
+		"Cred source", "SPN", "Transport security", "Authentication", "Total runtime"} {
+		if strings.Count(plain, "\n"+key+":") != 1 && !strings.HasPrefix(plain, key+":") {
 			t.Errorf("missing/duplicate key %q:\n%s", key, &output)
+		}
+		index := strings.Index(plain, key+":")
+		if index <= previous {
+			t.Errorf("incorrect key order at %q:\n%s", key, plain)
+		}
+		previous = index
+	}
+	for _, want := range []string{"Authentication method: GSSAPI", "SPN: smtp/relay.corp.example"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
 		}
 	}
 	for _, unwanted := range []string{"DC inventory", "Step timings", "[OK] Test", "CHECK"} {
 		if strings.Contains(output.String(), unwanted) {
 			t.Errorf("unexpected detail %q:\n%s", unwanted, &output)
+		}
+	}
+}
+
+func TestSummaryHidesGSSAPIFieldsForOtherMethods(t *testing.T) {
+	report := NewTestReport(&bytes.Buffer{}, false)
+	report.Value("Authentication method", "mTLS")
+	report.Value("User", "user@corp.example")
+	report.Value("Cred source", "keytab")
+	report.Value("SPN", "smtp/relay.corp.example")
+	for _, format := range []reportFormat{reportTerminal, reportPlain, reportHTML} {
+		result := report.renderFormat(format)
+		if !strings.Contains(result, "mTLS") || !strings.Contains(result, "Mail (from)") {
+			t.Errorf("missing common fields:\n%s", result)
+		}
+		for _, unwanted := range []string{"User", "Cred source", "SPN", "user@corp.example", "keytab", "smtp/relay.corp.example"} {
+			if strings.Contains(result, unwanted) {
+				t.Errorf("non-GSSAPI report contains %q:\n%s", unwanted, result)
+			}
 		}
 	}
 }
@@ -50,12 +81,12 @@ func TestDomainDimmingAndConciseStatuses(t *testing.T) {
 	report.Value("AD domain", "corp.example")
 	report.Value("Hostname", "worker.CORP.EXAMPLE")
 	report.Value("User", "user@Corp.Example")
-	report.Value("Transport security", "OK (smtp.corp.example)")
+	report.Value("Transport security", "OK (CN=smtp.corp.example; 69 days left)")
 	report.Step("SMTP AUTH GSSAPI", nil, "accepted")
 	var err error
 	report.Finish(&err)
 	for _, want := range []string{"\x1b[90m.CORP.EXAMPLE\x1b[0m", "\x1b[90m@Corp.Example\x1b[0m",
-		"\x1b[32mOK\x1b[0m (smtp\x1b[90m.corp.example", "Authentication"} {
+		"\x1b[1m\x1b[32mOK\x1b[0m (CN=smtp\x1b[90m.corp.example\x1b[0m; 69 days left)", "\x1b[90m╭", "Authentication"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %q:\n%q", want, output.String())
 		}
@@ -65,7 +96,7 @@ func TestDomainDimmingAndConciseStatuses(t *testing.T) {
 			t.Errorf("unexpected %q", unwanted)
 		}
 	}
-	if got := report.dimDomain("relay.corp.example.attacker.test"); strings.Contains(got, "\x1b[90m") {
+	if got := formatDomain("relay.corp.example.attacker.test", reportTerminal, true, "corp.example"); strings.Contains(got, "\x1b[90m") {
 		t.Fatal("domain prefix in external hostname dimmed")
 	}
 }

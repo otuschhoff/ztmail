@@ -50,7 +50,7 @@ func TestGeneratedTestmailDelivery(t *testing.T) {
 			backend := &fakeBackend{security: security, address: netip.MustParseAddr("127.0.0.1")}
 			err = Deliver(context.Background(), Config{Relay: "relay.corp.example", Hello: "worker.corp.example",
 				Port: listener.Addr().(*net.TCPAddr).Port, Timeout: 3 * time.Second, TLSMode: "off",
-				From: "self@corp.example", TestMail: true, Report: report},
+				SPN: "smtp/relay.corp.example", From: "self@corp.example", TestMail: true, Report: report},
 				[]string{"recipient@corp.example"}, nil, backend, &output)
 			wire := <-results
 			report.Finish(&err)
@@ -69,7 +69,11 @@ func TestGeneratedTestmailDelivery(t *testing.T) {
 			}
 			bodies := testmailBodies(t, message)
 			for contentType, body := range bodies {
-				for _, want := range []string{"worker.corp.example", "Authentication", "OK", "before sending this message",
+				hostname := "worker.corp.example"
+				if contentType == "text/html" {
+					hostname = `worker<span style="color:#6b7280">.corp.example</span>`
+				}
+				for _, want := range []string{hostname, "Authentication", "OK", "before sending this message",
 					"DATA acceptance, QUIT and final cleanup are not included"} {
 					if !strings.Contains(body, want) {
 						t.Errorf("%s missing %q:\n%s", contentType, want, body)
@@ -82,6 +86,8 @@ func TestGeneratedTestmailDelivery(t *testing.T) {
 				}
 			}
 			if !strings.Contains(bodies["text/plain"], "Hostname: worker.corp.example") ||
+				!strings.Contains(bodies["text/plain"], "Authentication method: GSSAPI") ||
+				!strings.Contains(bodies["text/plain"], "SPN: smtp/relay.corp.example") ||
 				!strings.Contains(bodies["text/plain"], "Authentication: OK") ||
 				!strings.Contains(bodies["text/html"], `<th scope="row"`) ||
 				!strings.Contains(bodies["text/html"], "<table ") {
@@ -96,6 +102,51 @@ func TestGeneratedTestmailDelivery(t *testing.T) {
 				t.Fatalf("missing actual delivery outcome: %s", &output)
 			}
 		})
+	}
+}
+
+func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	report := NewTestReport(io.Discard, false)
+	report.Value("AD domain", "corp.example")
+	report.Value("Hostname", "worker.CORP.EXAMPLE")
+	report.Value("User", "user@Corp.Example")
+	report.Value("Transport security", "OK (CN=smtp.corp.example; 69 days left)")
+	report.Value("Authentication", "OK")
+	report.Line("WARN", "Certificate", "check certificate")
+	report.Line("FAIL", "Other check", "failed check")
+	data, err := report.TestMessage("self@corp.example", []string{"recipient@corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := netmail.ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := testmailBodies(t, message)
+	htmlBody := bodies["text/html"]
+	for _, want := range []string{
+		`<strong style="color:#15803d">OK</strong>`,
+		`<strong style="color:#15803d">OK</strong> (CN=smtp<span style="color:#6b7280">.corp.example</span>; 69 days left)`,
+		`worker<span style="color:#6b7280">.CORP.EXAMPLE</span>`,
+		`user<span style="color:#6b7280">@Corp.Example</span>`,
+		`<span style="color:#a16207">[WARN] Certificate</span>`,
+		`<span style="color:#b91c1c">[FAIL] Other check</span>`,
+		"border-radius:10px", "border-collapse:separate", "overflow:hidden",
+	} {
+		if !strings.Contains(htmlBody, want) {
+			t.Errorf("missing HTML style %q:\n%s", want, htmlBody)
+		}
+	}
+	plain := bodies["text/plain"]
+	for _, want := range []string{"Hostname: worker.CORP.EXAMPLE", "User: user@Corp.Example",
+		"Transport security: OK (CN=smtp.corp.example; 69 days left)", "Authentication: OK"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing plain value %q:\n%s", want, plain)
+		}
+	}
+	if strings.ContainsAny(plain, "\x1b<>") || strings.Contains(htmlBody, "\x1b") {
+		t.Fatal("presentation markup leaked between formats")
 	}
 }
 

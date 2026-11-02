@@ -213,6 +213,7 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		report.Value("Hostname", c.options.Hostname)
 		report.Value("AD domain", c.options.Domain)
 		report.Value("Target relay", fmt.Sprintf("%s:%d", c.options.Relay, c.options.Port))
+		report.Value("SPN", c.options.SPN)
 		if c.options.TLS == TLSOff {
 			report.Value("Transport security", "Disabled; no confidentiality")
 		}

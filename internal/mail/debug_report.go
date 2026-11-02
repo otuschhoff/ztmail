@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/otuschhoff/adbind/ad/discovery"
 	"github.com/otuschhoff/adbind/ad/observe"
 )
@@ -139,33 +137,13 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 			event.Duration.Round(time.Microsecond), event.Outcome})
 	}
 	result := r.runtimeBreakdownFormat(format) + "\n" +
-		reportNote(format, "DC inventory (advertised during this test; includes historical/unresolved entries)") + "\n" + dcs.render(format) +
+		reportNote(format, "DC inventory (advertised during this test; includes historical/unresolved entries)") + "\n" + dcs.render(format, r.color, r.values["AD domain"]) +
 		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS resolver traffic is not DC reachability.") +
 		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
-		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format)
+		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format, r.color, r.values["AD domain"])
 	}
 	return result
-}
-
-func (r *TestReport) dimDomain(value string) string {
-	domain := r.values["AD domain"]
-	if !r.color || domain == "" {
-		return value
-	}
-	re := regexp.MustCompile(`(?i)[.@]` + regexp.QuoteMeta(domain) + `\b`)
-	var result strings.Builder
-	last := 0
-	for _, match := range re.FindAllStringIndex(value, -1) {
-		if match[1] < len(value) && (value[match[1]] == '.' || value[match[1]] == '-') {
-			continue
-		}
-		result.WriteString(value[last:match[0]])
-		result.WriteString(text.FgHiBlack.EscapeSeq() + value[match[0]:match[1]] + text.Reset.EscapeSeq())
-		last = match[1]
-	}
-	result.WriteString(value[last:])
-	return result.String()
 }
 
 func runtimeCategory(event observe.TraceEvent) int {
@@ -234,6 +212,6 @@ func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 	if format == reportPlain {
 		heading = "Runtime breakdown\n"
 	}
-	return heading + t.render(format) + "\n" +
+	return heading + t.render(format, r.color, r.values["AD domain"]) + "\n" +
 		reportNote(format, "Observed wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence).")
 }

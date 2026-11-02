@@ -206,6 +206,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if strings.ContainsAny(o.spn, "\r\n\x00") {
 		return errors.New("invalid service principal")
 	}
+	o.report.Value("SPN", o.spn)
 	if o.from != "" {
 		sender, err := envelopeAddress(o.from, domain, true)
 		if err != nil {

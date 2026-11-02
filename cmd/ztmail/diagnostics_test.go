@@ -32,6 +32,7 @@ func TestTestFlagDoesNotReadStdin(t *testing.T) {
 		"[OK] Host/domain discovery", `AD domain="corp.example"`, `realm="CORP.EXAMPLE"`,
 		`relay="mailgw.corp.example"`, `SPN="smtp/mailgw.corp.example"`, `source="keytab"`,
 		"[FAIL] Keytab inspection", "[FAIL] Test", "stdin is not read",
+		"Authentication method", "GSSAPI", "smtp/mailgw.corp.example",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("missing %q in %s", expected, &output)

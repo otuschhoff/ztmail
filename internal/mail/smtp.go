@@ -101,6 +101,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 }
 
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Backend, log io.Writer) (err error) {
+	o.report.Value("SPN", o.spn)
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	conn, err := dialRelay(ctx, o, backend)
@@ -162,11 +163,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	var state *tls.ConnectionState
 	if tlsState, ok := c.TLSConnectionState(); ok {
 		state = &tlsState
-		cn := "CN unavailable"
-		if len(tlsState.PeerCertificates) > 0 && tlsState.PeerCertificates[0].Subject.CommonName != "" {
-			cn = tlsState.PeerCertificates[0].Subject.CommonName
-		}
-		o.report.Value("Transport security", "OK ("+cn+")")
+		o.report.Value("Transport security", tlsTransportSummary(tlsState, time.Now()))
 	}
 	security, err := backend.NewSecurityContext(ctx, o.spn, state)
 	o.report.Step("SMTP GSSAPI security context", err, fmt.Sprintf("SPN=%q TLS channel binding available=%t", o.spn, state != nil))
@@ -244,6 +241,39 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		o.report.Step("SMTP QUIT", nil, "testmail accepted; disconnected")
 	}
 	return nil
+}
+
+func tlsTransportSummary(state tls.ConnectionState, now time.Time) string {
+	cn, expiry := "CN unavailable", "expiry unavailable"
+	if len(state.PeerCertificates) > 0 {
+		cert := state.PeerCertificates[0]
+		if cert.Subject.CommonName != "" {
+			cn = "CN=" + cert.Subject.CommonName
+		}
+		expiry = certificateLifetime(cert.NotAfter, now)
+	}
+	return "OK (" + cn + "; " + expiry + ")"
+}
+
+func certificateLifetime(notAfter, now time.Time) string {
+	remaining := notAfter.Sub(now)
+	if remaining <= 0 {
+		return "expired"
+	}
+	for _, unit := range []struct {
+		duration time.Duration
+		name     string
+	}{{24 * time.Hour, "day"}, {time.Hour, "hour"}, {time.Minute, "minute"}} {
+		if remaining >= unit.duration {
+			count := int64(remaining / unit.duration)
+			name := unit.name
+			if count != 1 {
+				name += "s"
+			}
+			return fmt.Sprintf("%d %s left", count, name)
+		}
+	}
+	return "less than 1 minute left"
 }
 
 func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error) {

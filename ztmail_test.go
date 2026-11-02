@@ -484,6 +484,11 @@ func TestLibraryTestNeverSendsEmail(t *testing.T) {
 	if !strings.Contains(report.String(), "Authentication") || !strings.Contains(report.String(), "OK") || !strings.Contains(report.String(), "Total runtime") {
 		t.Fatalf("missing report: %s", &report)
 	}
+	for _, value := range []string{"Authentication method", "GSSAPI", "SPN", client.options.SPN} {
+		if !strings.Contains(report.String(), value) {
+			t.Errorf("missing library report value %q:\n%s", value, &report)
+		}
+	}
 }
 
 func TestConcurrentCallsUseIndependentLeasesAndContexts(t *testing.T) {
