@@ -17,6 +17,7 @@ import (
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
 	"github.com/otuschhoff/adbind/ad/observe"
+	"github.com/otuschhoff/ztmail/internal/mail"
 )
 
 type adSession struct {
@@ -330,7 +331,11 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		}
 	}
 	if o.from == "" || o.needOwnMail {
-		session.mail, err = canonicalMail(ctx, client, session.identity)
+		candidates := o.ldapRaceCandidates
+		if o.noLDAPRace {
+			candidates = 0
+		}
+		session.mail, err = mail.LookupCanonicalMail(ctx, client, session.identity, candidates)
 		o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
 		if err != nil {
 			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w: %w", session.identity.Principal, errADNonCredentialFailure, err)

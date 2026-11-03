@@ -5,9 +5,10 @@ go 1.26.0
 toolchain go1.26.9
 
 require (
+	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667
 	github.com/go-ldap/ldap/v3 v3.4.13-0.20260212000640-570560be831a
 	github.com/jedib0t/go-pretty/v6 v6.8.3
-	github.com/otuschhoff/adbind/ad v0.7.0
+	github.com/otuschhoff/adbind/ad v0.8.1
 	github.com/otuschhoff/gokrb5/v8 v8.5.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.60.0
@@ -17,7 +18,6 @@ require (
 require (
 	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
 	github.com/github/smimesign v0.2.0 // indirect
-	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

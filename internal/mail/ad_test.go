@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,35 +15,31 @@ import (
 	adldap "github.com/otuschhoff/adbind/ad/ldap"
 )
 
-type directoryFixture struct {
-	root      func(*ldap.SearchRequest) ([]adclient.Entry, error)
-	user      func(*ldap.SearchRequest, adclient.SearchOptions) ([]adclient.Entry, error)
-	rootCalls int
-	userCalls int
+type uniqueFixture struct {
+	rows     []adclient.Entry
+	err      error
+	calls    int
+	requests []*ldap.SearchRequest
 }
 
-func (f *directoryFixture) Search(_ context.Context, request *ldap.SearchRequest) ([]adclient.Entry, error) {
-	f.rootCalls++
-	return f.root(request)
+func (f *uniqueFixture) FindUnique(ctx context.Context, selector directory.Selector, attributes []string) (*adclient.Entry, error) {
+	f.calls++
+	return directory.FindUnique(ctx, f, "DC=example,DC=test", selector, attributes)
 }
 
-func (f *directoryFixture) SearchWithOptions(_ context.Context, request *ldap.SearchRequest, options adclient.SearchOptions) ([]adclient.Entry, error) {
-	f.userCalls++
-	return f.user(request, options)
+func (f *uniqueFixture) Search(_ context.Context, request *ldap.SearchRequest) ([]adclient.Entry, error) {
+	f.requests = append(f.requests, request)
+	return f.rows, f.err
 }
 
-func rootEntry(base string) []adclient.Entry {
-	return []adclient.Entry{{Attributes: []adldap.Attribute{{Name: "defaultNamingContext", Values: [][]byte{[]byte(base)}}}}}
-}
-
-func TestCanonicalLookupScopesOnlyUserSearch(t *testing.T) {
+func TestCanonicalLookupUsesSDKUniquePrincipalSelector(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		rows []adclient.Entry
 		err  error
 		want error
 	}{
-		{name: "success", rows: []adclient.Entry{{Attributes: []adldap.Attribute{{Name: "mail", Values: [][]byte{[]byte("alice@example.test")}}}}}},
+		{name: "success", rows: []adclient.Entry{{DN: "CN=Alice,DC=example,DC=test", Attributes: []adldap.Attribute{{Name: "mail", Values: [][]byte{[]byte("alice@example.test")}}}}}},
 		{name: "not-found", want: directory.ErrNotFound},
 		{name: "ambiguous", rows: []adclient.Entry{{}, {}}, want: directory.ErrAmbiguous},
 		{name: "referral", err: adclient.ErrReferralRejected, want: adclient.ErrReferralRejected},
@@ -50,63 +47,38 @@ func TestCanonicalLookupScopesOnlyUserSearch(t *testing.T) {
 		{name: "canceled", err: context.Canceled, want: context.Canceled},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := &directoryFixture{
-				root: func(r *ldap.SearchRequest) ([]adclient.Entry, error) {
-					if r.BaseDN != "" || r.Scope != ldap.ScopeBaseObject || len(r.Controls) != 0 {
-						t.Fatalf("RootDSE must stay unscoped: %+v", r)
-					}
-					return rootEntry("DC=example,DC=test"), nil
-				},
-				user: func(r *ldap.SearchRequest, o adclient.SearchOptions) ([]adclient.Entry, error) {
-					if o != (adclient.SearchOptions{SingleNamingContext: true}) || r.BaseDN != "DC=example,DC=test" ||
-						r.Scope != ldap.ScopeWholeSubtree || r.SizeLimit != 2 || len(r.Controls) != 0 ||
-						!reflect.DeepEqual(r.Attributes, []string{"mail", "proxyAddresses"}) {
-						t.Fatalf("user lookup must use verified base and SDK-managed policy/paging: %+v %+v", r, o)
-					}
-					return tt.rows, tt.err
-				},
-			}
+			fixture := &uniqueFixture{rows: tt.rows, err: tt.err}
 			address, err := CanonicalMail(context.Background(), fixture, kerberos.Identity{
 				Principal: "alice@EXAMPLE.TEST", Realm: "EXAMPLE.TEST"})
 			if (tt.want == nil && (err != nil || address != "alice@example.test")) ||
 				(tt.want != nil && (!errors.Is(err, tt.want) || address != "")) {
 				t.Fatalf("mail=%q err=%v want=%v", address, err, tt.want)
 			}
-			if fixture.rootCalls != 1 || fixture.userCalls != 1 {
-				t.Fatalf("lookup retried or bypassed scope: root=%d user=%d", fixture.rootCalls, fixture.userCalls)
+			if fixture.calls != 1 || len(fixture.requests) != 1 {
+				t.Fatalf("lookup retried: calls=%d requests=%d", fixture.calls, len(fixture.requests))
+			}
+			request := fixture.requests[0]
+			if request.Filter != "(&(objectClass=user)(|(userPrincipalName=alice@EXAMPLE.TEST)(sAMAccountName=alice)))" ||
+				request.SizeLimit != 2 || !reflect.DeepEqual(request.Attributes, []string{"mail", "proxyAddresses"}) {
+				t.Fatalf("principal lookup policy changed: %+v", request)
 			}
 		})
 	}
 }
 
-func TestCanonicalLookupRejectsInvalidMetadataBeforeUserSearch(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		rows []adclient.Entry
-		err  error
-	}{
-		{name: "root-failure", err: errors.New("RootDSE unavailable")},
-		{name: "missing-context", rows: []adclient.Entry{{}}},
-		{name: "invalid-context", rows: rootEntry("not a DN")},
-		{name: "ambiguous-root", rows: []adclient.Entry{{}, {}}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			fixture := &directoryFixture{
-				root: func(*ldap.SearchRequest) ([]adclient.Entry, error) { return tt.rows, tt.err },
-				user: func(*ldap.SearchRequest, adclient.SearchOptions) ([]adclient.Entry, error) {
-					t.Fatal("invalid metadata must not trigger a user lookup")
-					return nil, nil
-				},
-			}
-			_, err := CanonicalMail(context.Background(), fixture, kerberos.Identity{Principal: "alice@EXAMPLE.TEST", Realm: "EXAMPLE.TEST"})
-			if err == nil || (tt.err != nil && !errors.Is(err, tt.err)) || fixture.rootCalls != 1 || fixture.userCalls != 0 {
-				t.Fatalf("root=%d user=%d err=%v", fixture.rootCalls, fixture.userCalls, err)
-			}
-		})
+func TestCanonicalLookupRejectsInvalidIdentityBeforeLDAP(t *testing.T) {
+	for _, principal := range []string{"missing-realm", "alice@OTHER.TEST", "alice @EXAMPLE.TEST",
+		"svc//host@EXAMPLE.TEST", "alice\n@EXAMPLE.TEST", "alice\\name@EXAMPLE.TEST",
+		"alice\xff@EXAMPLE.TEST", strings.Repeat("a", 1025) + "@EXAMPLE.TEST"} {
+		fixture := &uniqueFixture{}
+		_, err := CanonicalMail(context.Background(), fixture, kerberos.Identity{Principal: principal, Realm: "EXAMPLE.TEST"})
+		if err == nil || fixture.calls != 0 {
+			t.Fatalf("invalid identity performed LDAP work: %q calls=%d err=%v", principal, fixture.calls, err)
+		}
 	}
 }
 
-var _ ADSearcher = (*adclient.Client)(nil)
+var _ directory.UniqueFinder = (*adclient.SearchView)(nil)
 
 type fakeADContext struct {
 	kerberos.SecurityContext

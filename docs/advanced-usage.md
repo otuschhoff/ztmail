@@ -17,6 +17,7 @@ For a machine named `worker.corp.example.com`:
 | Envelope sender and From | Explicit `-f`, saved default, then canonical AD mail |
 | DNS bootstrap | OS DNS servers, discovered by adclient |
 | DNS diagnostic probe zone | `example.com` (outside the AD domain; used only for eligible `--test` failures) |
+| Canonical LDAP read | Immediate racing across up to 8 discovered DCs |
 
 Domain inference uses local host configuration, without ambient DNS queries.
 Discovery uses the host FQDN. Linux and macOS additionally
@@ -48,6 +49,38 @@ not for normal sends or server admission. Such probes can generate upstream
 external DNS traffic. Bootstrap servers are discovery hints, not automatically
 trusted AD data servers. Library clients retain the qualification policy and
 diagnostic configuration of their application-owned AD client.
+
+## LDAP read racing
+
+The CLI uses the SDK's complete, single-use read racing for canonical mail
+lookup by default. Up to eight eligible LDAP DCs are started immediately,
+including numeric-address connection, verified TLS, GSSAPI bind, RootDSE and
+user search. Each candidate obtains its own verified `defaultNamingContext`;
+its scoped user lookup stays on that same DC. Fewer candidates are used when
+discovery/admission supplies fewer servers.
+
+```sh
+# Reduce the maximum concurrent DC candidates (accepted range: 1-8):
+ztmail --ldap-race-candidates 3 -oi -t < message.eml
+
+# Keep ordinary SDK LDAP selection and session reuse instead:
+ztmail --no-ldap-race -oi -t < message.eml
+```
+
+The first complete lookup wins, including a complete "not found" or ambiguous
+result. ztmail does not hunt for a favorable replica, merge entries, chase
+referrals, or accept partial pages. Unsupported critical naming-context controls
+remain errors; protection is never silently removed. Losers are canceled and
+drained, and the racing view is closed before lookup returns. Cleanup failures
+are returned explicitly. Racing increases cold connection/authentication
+fan-out, not the number of SMTP submissions or the existing Kerberos race limit.
+
+This applies to normal sends, `--test`, `--testmail`, and
+`--set-default-from-ad` whenever canonical mail is needed. An explicit/saved
+sender skips LDAP only when the authenticated user's own recipient address is
+not needed. There is no race or LDAP network I/O for a skipped lookup.
+The Go library is opt-in: `Options.LDAPRaceCandidates: 0` preserves ordinary
+reads; values 1-8 enable the same helper. See [library ownership](library.md#ownership-defaults-and-concurrency).
 
 ## Credentials
 

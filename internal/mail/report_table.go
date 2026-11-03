@@ -177,14 +177,28 @@ func columnAlignment(numeric []bool, column int) string {
 }
 
 func (t reportTable) cellKey(row table.Row, column int) string {
-	if t.header == nil && column == 1 {
+	if t.header == nil && column == 0 {
+		return "Property"
+	}
+	if column == 1 && (t.header == nil || (len(t.header) > 0 && fmt.Sprint(t.header[0]) == "Property")) {
 		return fmt.Sprint(row[0])
+	}
+	if column < len(t.header) {
+		return fmt.Sprint(t.header[column])
 	}
 	return ""
 }
 
-func formatReportCell(value, key string, format reportFormat, color bool, domain string) string {
+func formatReportCell(value, key string, format reportFormat, color bool, domain string) (result string) {
+	technical := format == reportHTML && technicalReportCell(key) &&
+		value != "-" && value != "" && !strings.HasPrefix(value, "Unavailable") && !strings.HasPrefix(value, "Not reached")
+	if technical {
+		defer func() { result = htmlMonospace(result) }()
+	}
 	styled := formatDomain(value, format, color, domain)
+	if format == reportHTML && !technical && key != "Property" && key != "Runtime breakdown" && key != "Step" && key != "Check" {
+		styled = formatHTMLTechnical(value, domain)
+	}
 	if format == reportPlain || (format == reportTerminal && !color) {
 		return styled
 	}
@@ -215,6 +229,8 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 			shade, ansi = "#15803d", text.FgGreen
 			ok = strings.HasPrefix(value, "OK")
 		}
+	} else if key == "Cred source" && strings.EqualFold(value, "password") {
+		shade, ansi = "#a16207", text.FgYellow
 	} else if strings.HasPrefix(value, "[FAIL] ") {
 		shade, ansi = "#b91c1c", text.FgRed
 	} else if strings.HasPrefix(value, "[WARN] ") || strings.HasPrefix(value, "[SKIP] ") {
@@ -235,6 +251,46 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 		return `<span style="color:` + shade + `">` + styled + "</span>"
 	}
 	return ansi.EscapeSeq() + styled + text.Reset.EscapeSeq()
+}
+
+func technicalReportCell(key string) bool {
+	switch key {
+	case "AD domain", "Realm", "User", "Mail (from)", "Mail", "SPN", "Hostname", "Relay", "Target relay", "Port",
+		"Cred source", "Discovered DC / service", "Protocol", "TLS version", "Subject", "Issuer",
+		"Subject alternative names", "Cipher suite", "Key exchange", "Certificate key",
+		"Certificate signature", "Kerberos ticket encryption", "Kerberos ticket session key",
+		"SSPI context protection", "Start (UTC)", "End (UTC)", "Start source", "Scope / parent":
+		return true
+	default:
+		return false
+	}
+}
+
+var reportTechnicalName = regexp.MustCompile(
+	`CN=(?:"[^"]*"|[^,;()\n]+)` +
+		`|[\p{L}\p{N}_.$+-]+(?:/[\p{L}\p{N}_.$+-]+)*@[[:alnum:]_.-]+` +
+		`|\[[0-9a-fA-F:]+\](?::[0-9]+)?` +
+		`|(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?` +
+		`|[[:alnum:]_+-]+(?:\.[[:alnum:]_+-]+)*\.[a-zA-Z][[:alnum:]_-]*(?::[0-9]+)?` +
+		`|(?i:smtp|ldap|host|HTTP|cifs|krbtgt|MSSQLSvc)/[[:alnum:]_.+-]+` +
+		`|\b(?:TLS[ _]?v?1\.[23]|TLS_[A-Z0-9_]+|AES[0-9][A-Za-z0-9_-]*|` +
+		`(?:RSA|ECDSA|Ed25519|X25519|SecP|P-)[A-Za-z0-9_-]*|SHA[0-9][A-Za-z0-9_-]*)\b`,
+)
+
+func htmlMonospace(styled string) string {
+	return `<code style="font-family:Consolas,&#39;Liberation Mono&#39;,monospace;font-size:inherit">` + styled + "</code>"
+}
+
+func formatHTMLTechnical(value, domain string) string {
+	var result strings.Builder
+	last := 0
+	for _, match := range reportTechnicalName.FindAllStringIndex(value, -1) {
+		result.WriteString(formatDomain(value[last:match[0]], reportHTML, false, domain))
+		result.WriteString(htmlMonospace(formatDomain(value[match[0]:match[1]], reportHTML, false, domain)))
+		last = match[1]
+	}
+	result.WriteString(formatDomain(value[last:], reportHTML, false, domain))
+	return result.String()
 }
 
 func formatDomain(value string, format reportFormat, color bool, domain string) string {
@@ -269,7 +325,7 @@ func formatDomain(value string, format reportFormat, color bool, domain string) 
 
 func reportNote(format reportFormat, value string) string {
 	if format == reportHTML {
-		return "<p>" + html.EscapeString(value) + "</p>"
+		return "<p>" + formatHTMLTechnical(value, "") + "</p>"
 	}
 	return value
 }

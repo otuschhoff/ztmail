@@ -55,6 +55,8 @@ still uses the relay hostname/SANs, not the displayed CN. Certificates without a
 CN display `CN unavailable`. On colour-enabled terminals only `OK` is bold green;
 the CN retains normal text colour. AD-domain suffixes (including the leading
 `.` or `@`, case-insensitive) in hostnames, UPNs, and mail addresses are grey.
+The `password` credential source is yellow in colour-enabled terminal reports
+and HTML testmail; plain-text reports and JSON retain the raw source value.
 Unreached values are marked unavailable rather than guessed. Total runtime is
 elapsed wall-clock time through test/credential cleanup, before report rendering.
 If the CLI actually prompted for a password, **Execution runtime** appears
@@ -74,6 +76,11 @@ runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
 SMTP auth, SMTP QUIT, cleanup, host/domain discovery, local user lookup,
 credential prompting, report preparation/output, AD setup/orchestration, and
 other/untracked. Runtime breakdown rows below 0.1 ms are omitted.
+SDK `ad_find_unique`, `ad_race_find_unique`, `ad_race_search`, and
+`ad_race_candidate` operation scopes are attributed to LDAP. They are not
+additional wire attempts: DC observations continue to come from actual
+endpoint exchanges, including canceled losers where observed. Concurrent
+candidate durations overlap and must not be added together.
 When visible, **Credential prompting** is the first runtime category, followed
 by **AD setup / orchestration**.
 Cleanup measures security-context,
@@ -247,6 +254,12 @@ HTML uses the same bold green `OK`, grey AD-domain suffixes and status colours
 as the CLI, regardless of terminal colour settings. Tables have grey borders
 and rounded corners where supported by the email client; other clients may
 show square corners. Colour-enabled CLI tables also use grey borders.
+Technical values such as FQDNs, UPNs, SPNs, mail addresses, domains, ports,
+certificate distinguished names (`CN=...`), cipher suites and key algorithms
+use monospace in HTML. Embedded technical names in status/details and notes
+also use monospace without losing their surrounding status or domain colours.
+Labels and ordinary explanatory text retain the normal body font. This styling
+does not change plain-text or JSON attachment contents.
 
 The email cannot include its own DATA acceptance, subsequent QUIT or final
 cleanup outcomes. These are reported locally after submission. Relay acceptance

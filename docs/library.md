@@ -4,7 +4,8 @@
 
 Import `github.com/otuschhoff/ztmail`. The application supplies an existing
 `*adclient.Client` created with `adclient.NewAD`; ztmail does not create another
-AD owner or duplicate its DNS, discovery, credential, or LDAP state.
+AD owner or duplicate its DNS, discovery, or credential state. Ordinary LDAP
+sessions remain owner-managed; opt-in racing uses temporary child sessions.
 
 ```go
 import (
@@ -61,6 +62,16 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
   resolution, and creates a fresh SMTP connection and TLS-bound GSSAPI context.
   The lease is released on every outcome and the security context is closed.
   Shared tickets and LDAP sessions remain managed by the application's SDK.
+- `LDAPRaceCandidates` defaults to zero, preserving ordinary SDK LDAP reads.
+  Values 1-8 opt into immediate complete canonical-mail racing across up to
+  that many discovered/admitted DCs; other values are rejected by `New`.
+  For example, add `LDAPRaceCandidates: 8` to `Options` above to match the CLI
+  default. Each candidate keeps RootDSE and its scoped principal search on the
+  same DC. A complete absent or ambiguous result can win, without trying to
+  find a favorable replica. Every lookup closes its own single-use racing
+  view, including on cancellation, without closing the application-owned AD
+  client or changing its policy/hooks. Cleanup errors are surfaced. No view
+  is created when a sender override makes LDAP unnecessary.
 - A mailer supports concurrent calls, subject to SDK credential/LDAP capacity
   limits. Do not modify message slices until the call returns. There is no
   mailer `Close`: the application closes the shared AD client only after all

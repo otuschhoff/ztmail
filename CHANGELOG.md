@@ -5,8 +5,33 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-11-03
+
+### Added
+
+- Enable complete single-use canonical LDAP read racing across up to eight
+  discovered/admitted DCs by default in the CLI. Add
+  `--ldap-race-candidates` (1-8) and `--no-ldap-race`; expose opt-in
+  `Options.LDAPRaceCandidates` (0-8) in the Go library without changing its
+  ordinary-read default or borrowed AD ownership.
+- Keep verified RootDSE and scoped user search on the same candidate DC.
+  Elect the first complete result, including absent/ambiguous outcomes;
+  cancel/drain losers and explicitly surface racing-view cleanup failures.
+  Apply the shared lookup to sending, diagnostics and AD-based saved-sender
+  management, retaining sender-override skip behavior.
+
 ### Changed
 
+- Render technical names and values in HTML testmail with monospace fonts while
+  retaining status and domain colours. Highlight the password credential source
+  in yellow in HTML and colour-enabled terminal test/testmail tables; keep plain
+  text and JSON unstyled.
+- Upgrade `github.com/otuschhoff/adbind/ad` to `v0.8.1`. Use
+  `directory.UserByPrincipal` and SDK `FindUnique` instead of local LDAP
+  identity filters. Preserve UPN/SAM/SPN matching and escaping while adopting
+  stricter SDK identity and entry-DN validation.
+- Attribute complete ordinary/raced LDAP operation scopes to LDAP runtime
+  without treating scope events as extra endpoint wire attempts.
 - Reorganize the README around objective, use cases, typical usage and advanced
   usage. Move detailed operational, diagnostic, library, implementation and
   build/release documentation into linked topic guides.

@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"strings"
+	"time"
 
-	"github.com/go-ldap/ldap/v3"
 	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/directory"
 	"github.com/otuschhoff/adbind/ad/kerberos"
@@ -19,54 +18,39 @@ type ADBackend struct {
 	Client *adclient.Client
 	Lease  *kerberos.Lease
 }
-type ADSearcher interface {
-	Search(context.Context, *ldap.SearchRequest) ([]adclient.Entry, error)
-	SearchWithOptions(context.Context, *ldap.SearchRequest, adclient.SearchOptions) ([]adclient.Entry, error)
+
+func CanonicalMail(ctx context.Context, client directory.UniqueFinder, identity kerberos.Identity) (string, error) {
+	selector, err := directory.UserByPrincipal(identity.Principal, identity.Realm)
+	if err != nil {
+		return "", err
+	}
+	entry, err := client.FindUnique(ctx, selector, []string{"mail", "proxyAddresses"})
+	if err != nil {
+		return "", err
+	}
+	return directory.CanonicalMail(entry)
 }
 
-func CanonicalMail(ctx context.Context, client ADSearcher, identity kerberos.Identity) (string, error) {
-	root, err := directory.RootDSE(ctx, client)
+func LookupCanonicalMail(ctx context.Context, client *adclient.Client, identity kerberos.Identity, raceCandidates int) (address string, err error) {
+	policy := adclient.SearchOptions{SingleNamingContext: true}
+	if raceCandidates == 0 {
+		return CanonicalMail(ctx, client.WithSearchOptions(policy), identity)
+	}
+	racer, err := client.WithRacing(adclient.RaceOptions{
+		Mode: adclient.RaceSingleUse, MaxCandidates: raceCandidates, MaxConcurrentOperations: 1,
+	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create LDAP racing view: %w", err)
 	}
-	base, err := directory.SingleValue(root, "defaultNamingContext")
-	if err != nil {
-		return "", err
-	}
-	if _, err := ldap.ParseDN(base); err != nil {
-		return "", fmt.Errorf("invalid AD naming context: %w", err)
-	}
-	filter, err := IdentityFilter(identity)
-	if err != nil {
-		return "", err
-	}
-	request := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 0, false,
-		filter, []string{"mail", "proxyAddresses"}, nil)
-	entries, err := client.SearchWithOptions(ctx, request, adclient.SearchOptions{SingleNamingContext: true})
-	if err != nil {
-		return "", err
-	}
-	if len(entries) == 0 {
-		return "", directory.ErrNotFound
-	}
-	if len(entries) != 1 {
-		return "", directory.ErrAmbiguous
-	}
-	return directory.CanonicalMail(&entries[0])
-}
-
-func IdentityFilter(identity kerberos.Identity) (string, error) {
-	name, realm, found := strings.Cut(identity.Principal, "@")
-	if !found || name == "" || realm == "" || strings.Contains(realm, "@") || !strings.EqualFold(realm, identity.Realm) || strings.ContainsAny(identity.Principal, "\r\n\x00") {
-		return "", errors.New("invalid authenticated AD identity")
-	}
-	alternatives := "(userPrincipalName=" + ldap.EscapeFilter(identity.Principal) + ")"
-	if strings.Contains(name, "/") {
-		alternatives += "(servicePrincipalName=" + ldap.EscapeFilter(name) + ")"
-	} else {
-		alternatives += "(sAMAccountName=" + ldap.EscapeFilter(name) + ")"
-	}
-	return "(&(objectClass=user)(|" + alternatives + "))", nil
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if closeErr := racer.Close(cleanup); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close LDAP racing view: %w", closeErr))
+			address = ""
+		}
+	}()
+	return CanonicalMail(ctx, racer.WithSearchOptions(policy), identity)
 }
 
 func (s *ADBackend) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {

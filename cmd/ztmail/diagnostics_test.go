@@ -80,7 +80,7 @@ func TestTestFlagRejectsRecipients(t *testing.T) {
 }
 
 func TestDebugRequiresTestAndWiresObservations(t *testing.T) {
-	if err := validateOptions(options{debug: true}); err == nil || !strings.Contains(err.Error(), "--debug requires --test") {
+	if err := validateOptions(options{debug: true, ldapRaceCandidates: 8}); err == nil || !strings.Contains(err.Error(), "--debug requires --test") {
 		t.Fatalf("expected debug scope error: %v", err)
 	}
 	var output bytes.Buffer

@@ -287,7 +287,8 @@ func runtimeCategory(event observe.TraceEvent) int {
 	case event.Protocol == "kerberos" || strings.HasPrefix(op, "credential") ||
 		strings.HasPrefix(op, "principal") || op == "service_ticket" || op == "security_context":
 		return runtimeKerberos
-	case event.Protocol == "ldap" || strings.HasPrefix(op, "ldap") || op == "ad_search":
+	case event.Protocol == "ldap" || strings.HasPrefix(op, "ldap") || op == "ad_search" ||
+		op == "ad_find_unique" || strings.HasPrefix(op, "ad_race_"):
 		return runtimeLDAP
 	case op == "smtp gssapi authentication":
 		return runtimeSMTPAuth

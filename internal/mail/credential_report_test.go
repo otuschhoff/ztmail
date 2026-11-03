@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ func TestCredentialPathFormattingAndReportOrder(t *testing.T) {
 			}
 			want := source + " (" + path + ")"
 			if format == reportHTML {
-				want = source + ` <span style="color:#6b7280">(` + path + ")</span>"
+				want = htmlMonospace(source + ` <span style="color:#6b7280">(` + path + ")</span>")
 			}
 			if !strings.Contains(result, want) {
 				t.Errorf("format=%v source=%s missing path:\n%s", format, source, result)
@@ -40,6 +41,54 @@ func TestCredentialPathFormattingAndReportOrder(t *testing.T) {
 			t.Fatal("rendering changed raw credential source")
 		}
 	}
+}
+
+func TestPasswordCredentialSourceYellow(t *testing.T) {
+	for _, value := range []string{"password", "PASSWORD"} {
+		for _, color := range []bool{false, true} {
+			got := formatReportCell(value, "Cred source", reportTerminal, color, "")
+			want := value
+			if color {
+				want = text.FgYellow.EscapeSeq() + value + text.Reset.EscapeSeq()
+			}
+			if got != want {
+				t.Errorf("color=%t password source=%q, want %q", color, got, want)
+			}
+			want = htmlMonospace(`<span style="color:#a16207">` + value + "</span>")
+			if got := formatReportCell(value, "Cred source", reportHTML, color, ""); got != want {
+				t.Errorf("HTML color=%t: got %s, want %s", color, got, want)
+			}
+			if got := formatReportCell(value, "Cred source", reportPlain, color, ""); got != value {
+				t.Errorf("plain credential source changed: %q", got)
+			}
+		}
+	}
+}
+
+func TestPasswordCredentialFormattingPreservesRawSnapshot(t *testing.T) {
+	report := NewTestReport(io.Discard, false)
+	report.color = true
+	report.Value("Cred source", "password")
+	for _, format := range []reportFormat{reportTerminal, reportHTML, reportPlain} {
+		report.renderFormat(format)
+	}
+	data, err := report.jsonSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot jsonTestReport
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range snapshot.Tables[0].Rows {
+		if row[0] == "Cred source" {
+			if row[1] != "password" || report.values["Cred source"] != "password" {
+				t.Fatalf("credential formatting changed the raw source: %v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("JSON summary omitted the credential source")
 }
 
 func TestCredentialPathColor(t *testing.T) {

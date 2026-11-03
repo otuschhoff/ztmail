@@ -222,6 +222,16 @@ STARTTLS is required by default and never silently downgraded. `--tls off`
 deliberately exposes the envelope and message in plaintext; use it only on a
 suitably protected network. There is no TLS certificate-verification bypass.
 
+### Control LDAP lookup fan-out
+
+Canonical LDAP mail lookup races up to eight discovered DCs by default,
+including connection, authentication, RootDSE and the user search. Limit fan-out
+with `--ldap-race-candidates 3`, or use `--no-ldap-race` for ordinary SDK server
+selection. The Go library preserves ordinary reads unless
+`Options.LDAPRaceCandidates` is set. See
+[LDAP read racing](docs/advanced-usage.md#ldap-read-racing) for result and
+lifetime semantics.
+
 ### Detailed documentation
 
 | Guide | Contents |

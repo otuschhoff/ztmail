@@ -123,6 +123,7 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 	report.Value("AD domain", "corp.example")
 	report.Value("Hostname", "worker.CORP.EXAMPLE")
 	report.Value("User", "user@Corp.Example")
+	report.Value("Cred source", "password")
 	report.Value("Transport security", "OK (CN=smtp.corp.example; +69 days; TLS1.3 ~128bit)")
 	report.Value("Authentication", "OK")
 	report.Line("WARN", "Certificate", "check certificate")
@@ -139,7 +140,9 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 	htmlBody := bodies["text/html"]
 	for _, want := range []string{
 		`<strong style="color:#15803d">OK</strong>`,
-		`<strong style="color:#15803d">OK</strong> (CN=smtp<span style="color:#6b7280">.corp.example</span>; +69 days; TLS1.3 ~128bit)`,
+		`<strong style="color:#15803d">OK</strong> (` + htmlMonospace(`CN=smtp<span style="color:#6b7280">.corp.example</span>`) +
+			`; +69 days; ` + htmlMonospace("TLS1.3") + ` ~128bit)`,
+		htmlMonospace(`<span style="color:#a16207">password</span>`),
 		`worker<span style="color:#6b7280">.CORP.EXAMPLE</span>`,
 		`user<span style="color:#6b7280">@Corp.Example</span>`,
 		`<span style="color:#a16207">[WARN] Certificate</span>`,

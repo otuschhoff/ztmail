@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const semver = "0.2.14"
+const semver = "0.2.15"
 const buildTimeLayout = "20060102-150405"
 
 // These are injected by the Makefile and GitHub Actions build.

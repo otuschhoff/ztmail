@@ -42,6 +42,10 @@ func TestCommandFlagValidation(t *testing.T) {
 		{"--cred-source", "keytab", "--keytab", "a", "--ccache", "b"},
 		{"--krb5-config", "/tmp/krb5.conf"},
 		{"--unsupported"},
+		{"--ldap-race-candidates", "0"},
+		{"--ldap-race-candidates", "-1"},
+		{"--ldap-race-candidates", "9"},
+		{"--no-ldap-race", "--ldap-race-candidates", "0"},
 	}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -99,15 +103,46 @@ func TestCredentialSourceFlag(t *testing.T) {
 	}
 }
 
+func TestLDAPRaceFlags(t *testing.T) {
+	for _, tt := range []struct {
+		args       []string
+		candidates int
+		disabled   bool
+	}{
+		{nil, 8, false},
+		{[]string{"--ldap-race-candidates", "1"}, 1, false},
+		{[]string{"--ldap-race-candidates", "8"}, 8, false},
+		{[]string{"--no-ldap-race"}, 8, true},
+		{[]string{"--no-ldap-race", "--ldap-race-candidates", "1"}, 1, true},
+	} {
+		cmd := newCommand()
+		if err := cmd.ParseFlags(tt.args); err != nil {
+			t.Fatal(err)
+		}
+		candidates, err := cmd.Flags().GetInt("ldap-race-candidates")
+		if err != nil || candidates != tt.candidates {
+			t.Fatalf("%v: candidates=%d err=%v", tt.args, candidates, err)
+		}
+		disabled, err := cmd.Flags().GetBool("no-ldap-race")
+		if err != nil || disabled != tt.disabled {
+			t.Fatalf("%v: disabled=%t err=%v", tt.args, disabled, err)
+		}
+		if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto",
+			tlsMode: "required", ldapRaceCandidates: candidates, noLDAPRace: disabled}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestValidOptions(t *testing.T) {
-	if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required"}); err != nil {
+	if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8}); err != nil {
 		t.Fatal(err)
 	}
 
 }
 
 func TestPasswordFallbackAllowsConfiguredKeytabAndCache(t *testing.T) {
-	o := options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required",
+	o := options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8,
 		keytab: "keytab", ccache: "cache", passwordPrompt: true}
 	if err := validateOptions(o); err != nil {
 		t.Fatal(err)

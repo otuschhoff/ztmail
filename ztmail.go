@@ -47,6 +47,10 @@ type Options struct {
 	TLS TLSMode
 	// Timeout defaults to 60 seconds and bounds the complete Send or Test call.
 	Timeout time.Duration
+	// LDAPRaceCandidates opts into immediate complete canonical-mail reads
+	// across 1-8 DCs. Zero preserves ordinary LDAP selection. Each lookup owns
+	// and closes a single-use racing view without changing the AD owner.
+	LDAPRaceCandidates int
 }
 
 // Message contains a complete RFC 5322 message, not an SMTP DATA stream.
@@ -55,7 +59,8 @@ type Message struct {
 	Recipients []string
 	Data       []byte
 	// From overrides both envelope sender and From/Sender headers and skips
-	// canonical-mail lookup. Empty uses canonical AD mail. "<>" preserves
+	// canonical-mail lookup unless own-recipient fallback needs it.
+	// Empty uses canonical AD mail. "<>" preserves
 	// original headers and uses the null envelope sender.
 	From string
 	// ReadRecipients adds To/Cc/Bcc recipients, using the latest Resent block.
@@ -94,6 +99,7 @@ type session interface {
 
 type borrowedSession struct {
 	mail.ADBackend
+	ldapRaceCandidates int
 }
 
 func (s *borrowedSession) identity() (kerberos.Identity, error) { return s.Lease.Identity() }
@@ -102,7 +108,7 @@ func (s *borrowedSession) ticket(ctx context.Context, spn string) error {
 	return err
 }
 func (s *borrowedSession) canonical(ctx context.Context, identity kerberos.Identity) (string, error) {
-	return mail.CanonicalMail(ctx, s.Client, identity)
+	return mail.LookupCanonicalMail(ctx, s.Client, identity, s.ldapRaceCandidates)
 }
 func (s *borrowedSession) release() { s.Lease.Release() }
 
@@ -166,13 +172,17 @@ func New(o Options) (*Client, error) {
 	if o.Timeout < 0 {
 		return nil, errors.New("timeout must be positive")
 	}
+	if o.LDAPRaceCandidates < 0 || o.LDAPRaceCandidates > 8 {
+		return nil, errors.New("LDAPRaceCandidates must be between 0 and 8")
+	}
 	client := &Client{options: o}
 	client.acquire = func(ctx context.Context) (session, error) {
 		lease, err := o.AD.Credentials().Acquire(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &borrowedSession{ADBackend: mail.ADBackend{Client: o.AD, Lease: lease}}, nil
+		return &borrowedSession{ADBackend: mail.ADBackend{Client: o.AD, Lease: lease},
+			ldapRaceCandidates: o.LDAPRaceCandidates}, nil
 	}
 	return client, nil
 }

@@ -218,7 +218,10 @@ func attribute(name string, values ...string) adldap.Attribute {
 	return a
 }
 
-func (f *fakeDirectory) Search(_ context.Context, request *ldap.SearchRequest) ([]adclient.Entry, error) {
+func (f *fakeDirectory) Search(ctx context.Context, request *ldap.SearchRequest) ([]adclient.Entry, error) {
+	if request.BaseDN != "" {
+		return f.SearchWithOptions(ctx, request, adclient.SearchOptions{SingleNamingContext: true})
+	}
 	f.requests = append(f.requests, request)
 	if request.BaseDN != "" || request.Scope != ldap.ScopeBaseObject || len(request.Controls) != 0 {
 		f.t.Fatal("only unscoped RootDSE may use Search")
@@ -235,6 +238,18 @@ func (f *fakeDirectory) SearchWithOptions(_ context.Context, request *ldap.Searc
 		f.t.Fatalf("unbounded or guessed LDAP search: %+v", request)
 	}
 	return f.entries, f.err
+}
+
+func (f *fakeDirectory) FindUnique(ctx context.Context, selector directory.Selector, attributes []string) (*adclient.Entry, error) {
+	root, err := directory.RootDSE(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	base, err := directory.SingleValue(root, "defaultNamingContext")
+	if err != nil {
+		return nil, err
+	}
+	return directory.FindUnique(ctx, f, base, selector, attributes)
 }
 
 func TestCanonicalMailUsesAuthenticatedIdentity(t *testing.T) {
@@ -257,6 +272,9 @@ func TestCanonicalMailUsesAuthenticatedIdentity(t *testing.T) {
 		{"unsupported-control", nil, ldap.NewError(ldap.LDAPResultUnavailableCriticalExtension, errors.New("critical control unsupported")), "", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			for i := range tt.entries {
+				tt.entries[i].DN = "CN=Mailer,DC=corp,DC=example"
+			}
 			client := &fakeDirectory{t: t, entries: tt.entries, err: tt.err}
 			got, err := canonicalMail(context.Background(), client, identity)
 			if got != tt.want || (err != nil) != tt.fail {
@@ -278,12 +296,14 @@ func TestIdentityFilter(t *testing.T) {
 		{"smtp/mailgw.example.com@EXAMPLE.COM", "(servicePrincipalName=smtp/mailgw.example.com)"},
 		{"user*)(x@EXAMPLE.COM", `(sAMAccountName=user\2a\29\28x)`},
 	} {
-		got, err := identityFilter(kerberos.Identity{Principal: tt.principal, Realm: "EXAMPLE.COM"})
-		if err != nil || !strings.Contains(got, tt.want) {
-			t.Fatalf("filter=%s err=%v", got, err)
+		fixture := &fakeDirectory{t: t}
+		_, err := canonicalMail(context.Background(), fixture, kerberos.Identity{Principal: tt.principal, Realm: "EXAMPLE.COM"})
+		if !errors.Is(err, directory.ErrNotFound) || len(fixture.requests) != 2 ||
+			!strings.Contains(fixture.requests[1].Filter, tt.want) {
+			t.Fatalf("requests=%v err=%v", fixture.requests, err)
 		}
 	}
-	if _, err := identityFilter(kerberos.Identity{Principal: "missing-realm", Realm: "EXAMPLE.COM"}); err == nil {
+	if _, err := canonicalMail(context.Background(), &fakeDirectory{t: t}, kerberos.Identity{Principal: "missing-realm", Realm: "EXAMPLE.COM"}); err == nil {
 		t.Fatal("invalid identity accepted")
 	}
 }

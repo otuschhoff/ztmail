@@ -33,9 +33,9 @@ func TestReportCellStyles(t *testing.T) {
 		{"Authentication", "OK", `<strong style="color:#15803d">OK</strong>`},
 		{"Transport security", "FAILED: rejected", `<span style="color:#b91c1c">FAILED: rejected</span>`},
 		{"Transport security", "TLS off", `<span style="color:#0891b2">TLS off</span>`},
-		{"User", `a<&@CORP.EXAMPLE`, `a&lt;&amp;<span style="color:#6b7280">@CORP.EXAMPLE</span>`},
-		{"Hostname", "relay.corp.example.attacker.test", "relay.corp.example.attacker.test"},
-		{"Hostname", "relay.corp.example-other.test", "relay.corp.example-other.test"},
+		{"User", `a<&@CORP.EXAMPLE`, htmlMonospace(`a&lt;&amp;<span style="color:#6b7280">@CORP.EXAMPLE</span>`)},
+		{"Hostname", "relay.corp.example.attacker.test", htmlMonospace("relay.corp.example.attacker.test")},
+		{"Hostname", "relay.corp.example-other.test", htmlMonospace("relay.corp.example-other.test")},
 		{"Replies", "-", `<span style="color:#6b7280">-</span>`},
 		{"Avg response", "-", `<span style="color:#6b7280">-</span>`},
 	} {
@@ -53,6 +53,47 @@ func TestReportCellStyles(t *testing.T) {
 		}
 	}
 
+}
+
+func TestTechnicalHTMLCellsAndEmbeddedNames(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"AD domain", "corp.example"}, {"User", "alice@CORP.EXAMPLE"}, {"SPN", "smtp/relay"},
+		{"Mail (from)", "alice@corp.example"}, {"Port", "587"}, {"Subject", "CN=AD CA, O=Example"},
+		{"Cipher suite", "TLS_AES_256_GCM_SHA384"}, {"Key exchange", "X25519MLKEM768"},
+		{"Certificate signature", "SHA256-RSA"}, {"Kerberos ticket encryption", "AES256-CTS-HMAC-SHA1-96; enctype=18"},
+	} {
+		got := formatReportCell(tc.value, tc.key, reportHTML, false, "corp.example")
+		if !strings.HasPrefix(got, `<code style="font-family:`) || !strings.HasSuffix(got, "</code>") {
+			t.Errorf("%q not monospace: %s", tc.key, got)
+		}
+		if got := formatReportCell(tc.value, tc.key, reportPlain, true, "corp.example"); got != tc.value {
+			t.Errorf("plain value changed: %q", got)
+		}
+	}
+	value := "[WARN] Use smtp/relay.corp.example for alice@corp.example on 192.0.2.1:587; TLS_AES_256_GCM_SHA384"
+	got := formatReportCell(value, "", reportHTML, false, "corp.example")
+	for _, want := range []string{`<span style="color:#a16207">[WARN] Use `,
+		htmlMonospace(`smtp/relay<span style="color:#6b7280">.corp.example</span>`),
+		htmlMonospace(`alice<span style="color:#6b7280">@corp.example</span>`),
+		htmlMonospace("192.0.2.1:587"), htmlMonospace("TLS_AES_256_GCM_SHA384")} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing coloured technical content %q: %s", want, got)
+		}
+	}
+	got = formatReportCell("Mail Jörg$@corp.example", "", reportHTML, false, "corp.example")
+	if !strings.Contains(got, htmlMonospace(`Jörg$<span style="color:#6b7280">@corp.example</span>`)) {
+		t.Fatalf("Unicode or machine-account principal was not monospace: %s", got)
+	}
+	got = formatReportCell("OK (CN=<smtp>; verified; TLS1.3)", "Transport security", reportHTML, false, "")
+	if !strings.HasPrefix(got, `<strong style="color:#15803d">OK</strong> (`) ||
+		!strings.Contains(got, htmlMonospace("CN=&lt;smtp&gt;")) ||
+		!strings.Contains(got, htmlMonospace("TLS1.3")) || strings.Contains(got, "<smtp>") {
+		t.Fatalf("CN, TLS escaping or green OK lost: %s", got)
+	}
+	report := reportTable{header: table.Row{"Property", "Cryptography"}, rows: []table.Row{{"Cipher suite", "TLS_AES_128_GCM_SHA256"}}}
+	if !strings.Contains(report.render(reportHTML, false, ""), htmlMonospace("TLS_AES_128_GCM_SHA256")) {
+		t.Fatal("technical property metadata was not propagated by table rendering")
+	}
 }
 
 func TestNumericColumnAlignment(t *testing.T) {

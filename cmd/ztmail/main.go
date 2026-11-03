@@ -33,6 +33,8 @@ type options struct {
 	setDefaultFromRequested              bool
 	setDefaultFromAD, showDefaultFrom    bool
 	unsetDefaultFrom, noSendmailFallback bool
+	ldapRaceCandidates                   int
+	noLDAPRace                           bool
 }
 
 func main() {
@@ -121,6 +123,8 @@ func newCommand() *cobra.Command {
 	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
 	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
 	f.StringVar(&o.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
+	f.IntVar(&o.ldapRaceCandidates, "ldap-race-candidates", 8, "Maximum DCs raced immediately for canonical LDAP mail lookup (1-8)")
+	f.BoolVar(&o.noLDAPRace, "no-ldap-race", false, "Disable LDAP read racing; use ordinary AD server selection")
 	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: saved sender, then canonical AD mail); <> keeps null envelope and original headers")
 	f.StringVar(&o.setDefaultFrom, "set-default-from", "", "Save a fully qualified default sender in the user OS config directory; do not send mail")
 	f.BoolVar(&o.setDefaultFromAD, "set-default-from-ad", false, "Look up and save canonical AD mail once; prompt for a password if existing credentials fail; do not send mail")
@@ -138,6 +142,9 @@ func newCommand() *cobra.Command {
 }
 
 func validateOptions(o options) error {
+	if o.ldapRaceCandidates < 1 || o.ldapRaceCandidates > 8 {
+		return errors.New("--ldap-race-candidates must be between 1 and 8")
+	}
 	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
 		return errors.New("invalid Kerberos realm")
 	}

@@ -60,7 +60,8 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.7.0`, which includes read-only discovery inventory,
+The SDK is pinned to `v0.8.1`, which includes complete LDAP read racing,
+authenticated-principal directory selectors, read-only discovery inventory,
 correlated attempt/stage observations, optimistic DNS qualification,
 explicit bounded failure diagnostics, opt-in per-question DNS summaries,
 server-attributed
@@ -91,17 +92,38 @@ the selected principal's canonical AD address. Without a configured override,
 the selected principal is looked up through authenticated,
 certificate-verified LDAP TLS. The base comes from
 verified RootDSE `defaultNamingContext`, never from an assumed DN.
-RootDSE is read without a scope policy; the subsequent canonical-user search
-uses `adclient.SearchWithOptions` with `SingleNamingContext: true`. This asks
+The shared helper builds `directory.UserByPrincipal` and calls the SDK's
+`FindUnique` through an immutable `SingleNamingContext: true` search view.
+RootDSE is read without that scope policy; the subsequent canonical-user search
+uses the critical naming-context control. This asks
 AD to suppress continuation referrals and confines the search to that naming
 context without changing the shared client's policy or observation hooks.
 It is not referral chasing or forest-wide lookup: "not found" means absent in
 the selected naming context. An unsupported critical control or an unexpected
 referral remains an error; ztmail never retries without the policy or accepts
 partial results. The same shared helper serves the CLI and Go library.
+The CLI creates a single-use `RaceClient` for each required lookup, with a
+maximum of eight candidate DCs by default and one concurrent operation per
+view. The Go library opts in with `Options.LDAPRaceCandidates`; zero uses
+ordinary SDK reads. Both paths keep RootDSE and user search on one candidate
+connection, rather than independently racing the two queries. The first
+complete positive, absent or ambiguous result wins; negative results are not
+retried to find a favorable replica. SDK cancellation drains losing work.
+Each racing view is explicitly closed with a live, five-second cleanup context,
+including after caller cancellation. Cleanup errors are joined with the
+lookup error, and no mailbox is returned if view cleanup fails. The view does
+not close the borrowed AD owner, mutate its hooks or change its ordinary
+LDAP routing/session policy. There is no retained racing pool or new public
+mailer lifetime requirement.
+
 The search matches `userPrincipalName` plus `sAMAccountName` for simple
 principals, or `servicePrincipalName` for service principals. LDAP filter values
-are escaped; absent, ambiguous, incomplete, or failed searches are errors.
+are escaped; supplied identity casing is preserved. The SDK selector now
+validates fully qualified principals, matching realms, UTF-8, length limits
+(1024 principal bytes and 254 realm bytes), controls and Kerberos component
+syntax before LDAP I/O. This intentionally rejects malformed identities that
+the former local filter accepted. SDK `FindUnique` also validates entry DN
+metadata. Absent, ambiguous, incomplete, or failed searches are errors.
 
 The SDK's `directory.CanonicalMail` selects exactly one uppercase `SMTP:`
 primary from `proxyAddresses`, falling back to the single `mail` value if no

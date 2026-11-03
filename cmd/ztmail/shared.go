@@ -18,7 +18,6 @@ var prepareMessage = mail.PrepareMessage
 var applySender = mail.ApplySender
 var envelopeAddress = mail.EnvelopeAddress
 var canonicalMail = mail.CanonicalMail
-var identityFilter = mail.IdentityFilter
 var dnsName = mail.DNSName
 
 func (s *adSession) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {

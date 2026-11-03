@@ -59,7 +59,8 @@ func TestNewDefaultsAndValidation(t *testing.T) {
 	}
 	o := client.options
 	if o.Domain != "corp.example" || o.Realm != "CORP.EXAMPLE" || o.Relay != "mailgw.corp.example" ||
-		o.Hostname != "localhost" || o.SPN != "smtp/mailgw.corp.example" || o.Port != 25 || o.Timeout != time.Minute || o.TLS != TLSRequired {
+		o.Hostname != "localhost" || o.SPN != "smtp/mailgw.corp.example" || o.Port != 25 || o.Timeout != time.Minute || o.TLS != TLSRequired ||
+		o.LDAPRaceCandidates != 0 {
 		t.Fatalf("unexpected defaults: %+v", o)
 	}
 	for _, invalid := range []func(*Options){
@@ -75,6 +76,8 @@ func TestNewDefaultsAndValidation(t *testing.T) {
 		func(o *Options) { o.Port = 65536 },
 		func(o *Options) { o.TLS = "invalid" },
 		func(o *Options) { o.Timeout = -time.Second },
+		func(o *Options) { o.LDAPRaceCandidates = -1 },
+		func(o *Options) { o.LDAPRaceCandidates = 9 },
 	} {
 		o := base
 		invalid(&o)
@@ -85,6 +88,25 @@ func TestNewDefaultsAndValidation(t *testing.T) {
 	dns, err := ad.DNS()
 	if err != nil || dns.Snapshot().Closed {
 		t.Fatal("New closed the borrowed AD client")
+	}
+}
+
+func TestNewLDAPRaceOptIn(t *testing.T) {
+	ad := testAD(t)
+	for _, count := range []int{0, 1, 8} {
+		options := Options{AD: ad, Domain: "corp.example", LDAPRaceCandidates: count}
+		client, err := New(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		options.LDAPRaceCandidates = 9
+		if client.options.LDAPRaceCandidates != count {
+			t.Fatal("New did not preserve the independently copied LDAP policy")
+		}
+		dns, err := ad.DNS()
+		if err != nil || dns.Snapshot().Closed {
+			t.Fatal("LDAP policy configuration closed the borrowed owner")
+		}
 	}
 }
 
@@ -255,10 +277,14 @@ func server(t *testing.T, mode string) (int, <-chan wireResult) {
 }
 
 func TestSendAndOwnership(t *testing.T) {
-	for _, mode := range []string{"canonical", "override", "null", "quit", "cleanup", "auth", "recipient", "uncertain", "security"} {
+	for _, mode := range []string{"canonical", "override", "null", "override-racing", "null-racing", "quit", "cleanup", "auth", "recipient", "uncertain", "security"} {
 		t.Run(mode, func(t *testing.T) {
 			s := newSession()
 			client := testClient(t, s)
+			if strings.HasSuffix(mode, "-racing") {
+				client.options.LDAPRaceCandidates = 8
+				mode = strings.TrimSuffix(mode, "-racing")
+			}
 			port, wire := server(t, mode)
 			client.options.Port = port
 			message := Message{Recipients: []string{"recipient@corp.example"},
