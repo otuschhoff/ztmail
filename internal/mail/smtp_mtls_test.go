@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -28,9 +29,12 @@ func (r certificateResolver) Resolve(context.Context, string) ([]netip.Addr, err
 }
 
 type certificateSMTPFixture struct {
-	client *tls.Certificate
-	ca     *x509.Certificate
-	server *tls.Config
+	client                *tls.Certificate
+	ca                    *x509.Certificate
+	caKey                 *ecdsa.PrivateKey
+	server                *tls.Config
+	beforeAuth            func()
+	externalBeforeTLSOnly bool
 }
 
 func newCertificateSMTPFixture(t *testing.T) certificateSMTPFixture {
@@ -56,6 +60,7 @@ func newCertificateSMTPFixture(t *testing.T) certificateSMTPFixture {
 	return certificateSMTPFixture{
 		client: &tls.Certificate{Certificate: [][]byte{client.Raw}, PrivateKey: clientKey, Leaf: client},
 		ca:     ca,
+		caKey:  key,
 		server: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots,
 			Certificates: []tls.Certificate{{Certificate: [][]byte{server.Raw, ca.Raw}, PrivateKey: serverKey}}},
 	}
@@ -97,7 +102,7 @@ func serveCertificateSMTP(conn net.Conn, fixture certificateSMTPFixture, implici
 			if !implicit {
 				capabilities += "250-STARTTLS\r\n"
 			}
-			if external {
+			if external && (!fixture.externalBeforeTLSOnly || !implicit) {
 				capabilities += "250-AUTH EXTERNAL\r\n"
 			}
 			if !reply(capabilities + "250 SIZE 1048576") {
@@ -114,6 +119,9 @@ func serveCertificateSMTP(conn net.Conn, fixture certificateSMTPFixture, implici
 			}
 			conn, reader, implicit = secure, bufio.NewReader(secure), true
 		case command == "AUTH EXTERNAL =":
+			if fixture.beforeAuth != nil {
+				fixture.beforeAuth()
+			}
 			response := "235 2.7.0 OK"
 			if rejectAuth {
 				response = "535 5.7.8 rejected"
@@ -190,9 +198,13 @@ func TestCertificateSMTPModesAndRejections(t *testing.T) {
 			}
 		}
 	}
-	for _, failure := range []string{"no-request", "untrusted-client", "auth-reject", "missing-external", "wrong-host", "denied-ca"} {
+	for _, failure := range []string{"no-request", "untrusted-client", "auth-reject", "missing-external", "pre-tls-external-only", "wrong-host", "denied-ca"} {
 		t.Run(failure, func(t *testing.T) {
 			fixture := newCertificateSMTPFixture(t)
+			implicit, mode := true, "implicit"
+			if failure == "pre-tls-external-only" {
+				implicit, mode, fixture.externalBeforeTLSOnly = false, "required", true
+			}
 			if failure == "no-request" {
 				fixture.server.ClientAuth = tls.NoClientCert
 			}
@@ -211,10 +223,10 @@ func TestCertificateSMTPModesAndRejections(t *testing.T) {
 					results <- smtpResult{err: err}
 					return
 				}
-				results <- serveCertificateSMTP(conn, fixture, true, failure != "missing-external", failure == "auth-reject")
+				results <- serveCertificateSMTP(conn, fixture, implicit, failure != "missing-external", failure == "auth-reject")
 			}()
 			config := Config{Relay: "relay.example.test", Hello: "host.example.test", Port: listener.Addr().(*net.TCPAddr).Port,
-				Timeout: 3 * time.Second, TLSMode: "implicit", Auth: AuthMTLSExternal, ClientCertificate: fixture.client,
+				Timeout: 3 * time.Second, TLSMode: mode, Auth: AuthMTLSExternal, ClientCertificate: fixture.client,
 				ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{fixture.ca.Raw}}, From: "sender@example.test"}
 			if failure == "wrong-host" {
 				config.Relay = "wrong.example.test"

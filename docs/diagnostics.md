@@ -297,8 +297,9 @@ Existing table IDs and columns remain where applicable; debug adds
 `authentication`. The top-level `authentication` object is present even without
 debug: `method`, `tls_established`, `client_certificate_requested`,
 `client_certificate_presented`, `smtp_auth_confirmed`, optional safe
-`client_certificate`, and `server_verification`. Expiry grace is an integer
-`expiry_grace_nanoseconds`; times are UTC RFC 3339 JSON timestamps. Fingerprints
+`client_certificate`, and `server_verification`. Expiry grace and exercised
+expired-leaf age use integer `expiry_grace_nanoseconds` and
+`expired_leaf_age_nanoseconds`; times are UTC RFC 3339 JSON timestamps. Fingerprints
 are lowercase SHA-256 hex. No values contain ANSI or rendered HTML.
 
 `mtls` confirms only requested/selected client-certificate presentation over

@@ -2,9 +2,8 @@
 
 [README](../README.md) | [Advanced usage](advanced-usage.md) | [Diagnostics](diagnostics.md) | [Implementation](implementation.md) | [Go library](library.md) | [Build and release](build.md)
 
-The [proposed mTLS design](mtls-design.md) describes adding certificate-based
-authentication without changing the current GSSAPI defaults. It is a future
-implementation plan, not a description of currently supported flags.
+The [mTLS design](mtls-design.md) records the certificate-authentication contract,
+phases and approved platform/validation limits. GSSAPI remains the default.
 
 ## Package layout
 
@@ -20,7 +19,36 @@ client. CLI-local configuration and process execution stay out of the public
 library API. See [library ownership](library.md#ownership-defaults-and-concurrency)
 for the concurrency and lifetime contract.
 
-## CLI submission flow
+## Certificate branch and shared TLS policy
+
+Cobra validates explicit mode conflicts before input/network work. The CLI
+loads/copies certificate material and SMTP trust configuration once. Both
+certificate modes branch before credential selection, configure an inert
+DNS-only SDK owner with explicitly empty source/principal methods and use
+`ADResolver`, which implements only `Resolve`. The library borrows that same DNS
+capability without acquiring a lease, reconfiguring or closing its owner.
+Sender/recipient validation and shared message rewriting/privacy remain active;
+certificate modes never execute native sendmail.
+
+`tls_credentials.go` validates immutable copies and signer matching;
+`tls_policy.go` constructs system/append/replace roots, selects acceptable
+chains and enforces anchor allow/chain-CA deny policy. Scoped expiry and issuer
+exceptions use the same verifier at actual time, never a global bypass.
+Native-root expiry limitations explicitly fail configuration.
+`tls_auth.go` builds a fresh TLS config/evidence per operation, records
+compatible certificate requests/selection and implements exact
+`AUTH EXTERNAL =` / optional empty `=` continuation / mandatory 235 behavior
+using the existing SMTP client's sequenced command interface.
+
+The shared SMTP transport handles STARTTLS with post-TLS EHLO or implicit TLS.
+TLS completion, certificate presentation, SMTP AUTH and DATA acceptance remain
+independent. TLS-only mode sends no AUTH; EXTERNAL never runs GSSAPI.
+Operation deadlines/cancellation close the connection; no mechanism fallback,
+automatic replay or DATA-uncertainty changes are introduced.
+JSON v2 and MIME reports freeze method-aware evidence before DATA, exclude
+private material and final acceptance, and use local-client validity provenance.
+
+## Default GSSAPI CLI submission flow
 
 1. Validate options, load the saved sender unless `-f` overrides it, and derive
    the host domain, realm, relay and SPN. Host-domain inference uses local
@@ -49,7 +77,7 @@ for the concurrency and lifetime contract.
    closes its owner; the library releases only its borrowed lease. Confirmed
    acceptance is not undone by a later QUIT/cleanup warning.
 
-On eligible Linux pre-submission failure, the CLI can delegate prepared bytes
+On eligible GSSAPI Linux pre-submission failure, the CLI can delegate prepared bytes
 to native sendmail. An acquired AD owner must close successfully before relay
 fallback. This path does not replay SMTP DATA and does not guess an AD sender
 when credentials are unavailable. See

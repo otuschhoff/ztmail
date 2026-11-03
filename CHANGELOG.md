@@ -5,6 +5,32 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+### Added
+
+- Explicit certificate-only `--auth mtls` and certificate-backed SMTP
+  `--auth mtls-external`, with CLI PEM loading and typed library configuration,
+  credential-independent SDK DNS, operation-local certificate evidence and
+  fail-closed authentication. GSSAPI remains the default; certificate modes
+  never acquire Kerberos/SSPI/password credentials, query LDAP or use native
+  sendmail fallback.
+- SMTP system/append/replace server-root policies, certificate/SPKI SHA-256
+  anchor allow and chain-CA deny selectors, bounded server-leaf expiry grace
+  and a separately scoped unverifiable-issuer exception. Preserve all
+  non-exempt checks and disclose configured/used exceptions. Native
+  Windows/macOS system-root expiry grace is explicitly unsupported; replacement
+  roots are supported.
+- Method-aware certificate identity/validity/crypto diagnostics and testmail
+  JSON schema v2, with separate TLS/presentation/SMTP evidence, explicit
+  not-applicable Kerberos fields and a method-neutral pre-DATA snapshot.
+
+### Changed
+
+- Require configured sender and explicit/header recipients for certificate
+  submissions; testmail additionally requires a non-null sender and explicit
+  recipients. Preserve message privacy, null envelopes, DATA uncertainty and
+  post-acceptance warnings without retries. Document relay prerequisites,
+  trust risks, schema migration and unperformed operator-only checks.
+
 ## [0.2.17] - 2026-11-03
 
 ### Changed

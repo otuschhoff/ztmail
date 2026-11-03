@@ -14,6 +14,9 @@ import (
 )
 
 func validateAuthenticationFlags(cmd *cobra.Command, o options) error {
+	if cmd.Flags().Changed("insecure-tls-allow-expired-server-cert-for") && o.tlsTrust.ExpiredServerCertificateGrace <= 0 {
+		return errors.New("--insecure-tls-allow-expired-server-cert-for requires a positive duration; omit it to disable")
+	}
 	mode := o.authMethod
 	if mode == "" {
 		mode = "gssapi"

@@ -50,6 +50,100 @@ external DNS traffic. Bootstrap servers are discovery hints, not automatically
 trusted AD data servers. Library clients retain the qualification policy and
 diagnostic configuration of their application-owned AD client.
 
+## Certificate authentication and server trust
+
+`--auth gssapi` is the unchanged default; `--cred-source` selects only the
+Kerberos credential source. Select `--auth mtls` for certificate-only TLS,
+or `--auth mtls-external` for TLS plus a mandatory SMTP AUTH EXTERNAL 235.
+The relay must request the certificate and configure client-CA validation,
+identity mapping and submission authorization. `mtls` cannot independently
+observe the latter policies. A GSSAPI-only relay does not support EXTERNAL;
+there is no combined mTLS-GSSAPI mode or cross-mechanism fallback.
+
+Both certificate modes require `--client-cert` (PEM leaf then intermediates)
+and `--client-key` (matching unencrypted signing key). Unix keys must be
+owner-private regular files; on Windows use restrictive filesystem ACLs.
+No ambient certificate-store discovery, decryption prompt, key export or
+hidden reload is performed. New invocations load rotations; library users
+construct a new mailer with an immutable concurrency-safe signer.
+
+Sender precedence is `-f` then the saved default; missing sender or known
+argument/header recipients is an error. No certificate-derived or canonical AD
+mailbox is inferred. `-f '<>'` preserves original sender headers and the null
+envelope. `--test` needs no sender/recipients and sends no envelope;
+`--testmail` needs a non-null configured sender and explicit recipients.
+Neither reads stdin. The SDK still discovers/qualifies AD DNS and resolves the
+relay, but no credentials, SSPI, password prompt, tickets or LDAP are used.
+Explicit source/keytab/cache/principal/realm/SPN, LDAP-only and native
+sendmail-path flags conflict, including explicitly supplied default values.
+Native fallback never applies.
+
+### Server root stores and CA policy
+
+These settings affect SMTP server verification in **all** authentication modes,
+not LDAP or the relay's client-CA trust:
+
+| Options | Effective roots |
+| --- | --- |
+| No bundle/mode, or `--tls-ca-mode system` | System roots only; a bundle with explicit system mode is rejected |
+| `--tls-ca roots.pem` (default append), or explicit `--tls-ca-mode append` | System roots plus the required PEM CA bundle |
+| `--tls-ca roots.pem --tls-ca-mode replace` | Only the required nonempty PEM CA bundle; no system fallback |
+
+Malformed PEM, invalid CAs, empty bundles and unavailable root stores are errors.
+TLS remains at least 1.2 with relay-hostname/SNI verification, even when dialing
+SDK-resolved numeric addresses. `--tls off` rejects certificate/trust options.
+
+Repeat the following flags to allow/deny certificate-DER or SubjectPublicKeyInfo
+SHA-256 digests (32 bytes, hex, case-insensitive, optional colons):
+
+- `--tls-ca-allow-cert-sha256 DIGEST`
+- `--tls-ca-allow-spki-sha256 DIGEST`
+- `--tls-ca-deny-cert-sha256 DIGEST`
+- `--tls-ca-deny-spki-sha256 DIGEST`
+
+Allow-lists restrict the selected **trust anchor**; selectors never add trust.
+Deny-lists reject any participating CA/anchor, even an allowed anchor. A valid
+alternative path can win; unrelated peer certificates are not policy inputs.
+SPKI selectors survive renewal with the same key; certificate selectors do not.
+There is no subject-name substring policy or CRL/OCSP revocation claim.
+
+### Deliberately insecure exceptions
+
+Strict verification is the default. Neither option is a blanket bypass:
+
+```sh
+# Seven-day maximum server-leaf expiry grace, never an unlimited waiver:
+ztmail --tls-ca roots.pem --tls-ca-mode replace \
+  --insecure-tls-allow-expired-server-cert-for 168h --test
+
+# Explicitly allow a valid supplied path to an untrusted anchor:
+ztmail --tls-ca roots.pem --tls-ca-mode replace \
+  --insecure-tls-allow-server-certificate-with-unverifiable-issuer --test
+```
+
+The examples use the default GSSAPI mechanism; add the certificate-mode flags
+above when appropriate. The CLI duration must be positive; omit it to disable
+(library zero disables). Exactly the grace limit is allowed; one nanosecond
+beyond fails. Hostname, NotBefore, CA/intermediate validity, signatures,
+constraints, EKU and CA allow/deny checks remain required. The issuer exception
+requires a signature-valid supplied path/provisional anchor or a genuinely
+self-signed leaf; missing necessary issuer material and forged paths fail.
+Both exceptions compose only these two named waivers.
+
+Expiry grace supports system/append/replace roots on Linux. With native
+Windows/macOS/iOS root verification it requires `replace`; system/append
+returns an explicit unsupported-feature error. No clock rewind or process-wide
+trust override is used. Configuring an exception always warns; actual use
+records a separate warning, fingerprint, expiry age/limit and untrusted-anchor
+status. An issuer-untrusted server can learn the client certificate:
+this is an explicit reduction in server identity assurance. Key strength
+cannot restore that trust.
+
+See [diagnostics/schema v2](diagnostics.md#schema-v2-migration-and-certificate-evidence)
+and the [design's approved validation limitations](mtls-design.md#approved-platform-scope-amendment).
+Real relay authorization, native Windows/macOS execution and the privileged
+CLI DNS fixture were not verified in the development environment.
+
 ## LDAP read racing
 
 The CLI uses the SDK's complete, single-use read racing for canonical mail

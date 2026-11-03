@@ -25,6 +25,8 @@ func TestMTLSCLIExplicitFlagConflictsBeforeInput(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"--auth=invalid"},
+		{"--insecure-tls-allow-expired-server-cert-for=0s"},
+		{"--insecure-tls-allow-expired-server-cert-for=-1h"},
 		{"--auth=mtls"},
 		{"--auth=mtls", "--client-cert=missing"},
 		{"--auth=gssapi", "--client-cert=missing", "--client-key=missing"},
@@ -46,6 +48,26 @@ func TestMTLSNeverUsesNativeFallback(t *testing.T) {
 			if shouldFallbackToSendmail(context.Background(), options{authMethod: method}, failure) {
 				t.Fatalf("%s credential/relay failure enabled native fallback: %v", method, failure)
 			}
+		}
+	}
+}
+
+func TestMTLSSenderRecipientErrorsBeforeDNS(t *testing.T) {
+	for _, tt := range []struct {
+		from       string
+		recipients []string
+		testmail   bool
+		want       string
+	}{
+		{"", []string{"recipient@example.test"}, false, "requires -f"},
+		{"sender@example.test", nil, false, "requires explicit/header recipients"},
+		{"sender@example.test", nil, true, "requires explicit/header recipients"},
+		{"<>", []string{"recipient@example.test"}, true, "non-null sender"},
+	} {
+		err := runCertificateSubmission(context.Background(), options{authMethod: "mtls-external", from: tt.from, testMail: tt.testmail},
+			tt.recipients, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("invalid input reached DNS/credentials: %v", err)
 		}
 	}
 }

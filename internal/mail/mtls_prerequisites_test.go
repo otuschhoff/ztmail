@@ -180,6 +180,8 @@ func TestMTLSPrerequisiteExternalWire(t *testing.T) {
 		{"rejection", "535 5.7.8 rejected", "", true, false},
 		{"nonempty-challenge", "334 YQ==", "", true, false},
 		{"repeated-challenge", "334 ", "334 ", true, true},
+		{"malformed-reply", "invalid SMTP reply", "", true, false},
+		{"unexpected-success-code", "250 not authentication", "", true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client, server := net.Pipe()

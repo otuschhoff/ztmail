@@ -109,7 +109,7 @@ func LoadClientCertificate(certPath, keyPath string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read client certificate: %w", err)
 	}
-	keyFile, err := os.Open(keyPath)
+	keyFile, err := openClientKey(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("open client private key: %w", err)
 	}

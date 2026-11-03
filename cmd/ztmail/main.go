@@ -75,7 +75,7 @@ func newCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ztmail [flags] [recipient ...]",
 		Short:         "Send an RFC 5322 message from stdin using SMTP and Kerberos GSSAPI",
-		Long:          "A sendmail-style submission client. Defaults: mailgw.<host-domain>:25,\nAD realm <HOST-DOMAIN>, SMTP service principal smtp/<relay>, required STARTTLS.\nOn Linux, unavailable credentials or relay DNS/TCP failures can use host sendmail.\nztmail has no queue of its own; never blindly retry uncertain submissions.",
+		Long:          "A sendmail-style submission client. Defaults: mailgw.<host-domain>:25,\nAD realm <HOST-DOMAIN>, SMTP service principal smtp/<relay>, required STARTTLS.\n		On Linux, eligible GSSAPI credential or relay DNS/TCP failures can use host sendmail.\nztmail has no queue of its own; never blindly retry uncertain submissions.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
@@ -126,8 +126,8 @@ func newCommand() *cobra.Command {
 	f.DurationVar(&o.tlsTrust.ExpiredServerCertificateGrace, "insecure-tls-allow-expired-server-cert-for", 0, "INSECURE: server leaf expiry grace, e.g. 168h; requires replace roots on Windows/macOS")
 	f.BoolVar(&o.tlsTrust.InsecureAllowUnverifiableIssuer, "insecure-tls-allow-server-certificate-with-unverifiable-issuer", false, "INSECURE: permit a signature-valid supplied server path to an untrusted anchor; other checks remain required")
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
-	f.BoolVar(&o.testMode, "test", false, "Report AD/DNS/TLS/GSSAPI checks and authenticate to the relay without reading stdin or sending email")
-	f.BoolVar(&o.testMail, "testmail", false, "Run authentication diagnostics and send a generated report (default recipient: own canonical AD mail); never read stdin")
+	f.BoolVar(&o.testMode, "test", false, "Report DNS/TLS and selected authentication checks; no stdin, envelope or email")
+	f.BoolVar(&o.testMail, "testmail", false, "Send a generated report; GSSAPI defaults to own AD mail, mTLS needs sender/recipients; never read stdin")
 	f.BoolVar(&o.debug, "debug", false, "Include observed DC reachability and runtime tables with --test or --testmail")
 	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
 	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
@@ -309,8 +309,12 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		}
 	}
 	configuredFrom := o.from
-	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q cred-source=%q requested principal=%q",
-		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
+	targetDetail := fmt.Sprintf("AD domain=%q relay=%q port=%d EHLO=%q TLS=%q auth=%q",
+		o.domain, o.relay, o.port, o.hello, o.tlsMode, o.authMethod)
+	if o.authMethod == "gssapi" {
+		targetDetail += fmt.Sprintf(" realm=%q SPN=%q cred-source=%q requested principal=%q", o.realm, o.spn, o.auth, o.principal)
+	}
+	o.report.Step("Target configuration", nil, targetDetail)
 	o.report.Value("Target relay", fmt.Sprintf("%s:%d", o.relay, o.port))
 	if o.tlsMode == "off" {
 		o.report.Value("Transport security", "Disabled; no confidentiality")

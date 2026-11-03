@@ -2,10 +2,11 @@
 
 [README](../README.md) | [Implementation](implementation.md) | [Go library](library.md) | [Diagnostics](diagnostics.md) | [Build](build.md)
 
-**Status:** Phases 0–4 complete: prerequisites, configuration and shared mTLS/
-EXTERNAL transport and end-to-end CLI/library certificate dispatch established.
-Method-aware diagnostics and JSON v2 are established; final documentation and
-platform/regression matrix (Phase 5) remain.
+**Status:** Phases 0–5 complete within the explicitly approved platform and
+validation scope below. Prerequisites, typed configuration, shared mTLS/EXTERNAL
+transport, CLI/library dispatch, method-aware diagnostics, JSON v2, offline
+regressions and six-target builds are implemented. Native runtime, privileged
+CLI DNS and authorized relay pilots remain separate operator checks.
 Baseline: ztmail v0.2.17.
 This document defines a bounded implementation plan for an LLM coding agent.
 The authentication/trust flags and API fields below are implemented.
@@ -415,7 +416,8 @@ load paths, environment variables or OS stores. Do not accept an unrestricted
 `tls.Config` that could bypass validation.
 
 `New` remains network-free. Copy certificate DER slices, parse independent leaf
-metadata, clone supplied root pools and copy CA selector slices. Represent
+metadata, copy supplied CA DER and CA selector slices (not opaque caller root
+pools; see the approved amendment). Represent
 system/append/replace explicitly so a replacement pool cannot accidentally be
 treated as an append operation. Use a duration-valued leaf-expiry grace and a
 separate explicitly named issuer-exception boolean, both strict by default.
@@ -598,7 +600,56 @@ separately, with no claim that loopback tests prove production AD/relay policy.
 | Ownership | Network-free New; copied mutable TLS inputs; immutable concurrent signer contract; fresh connection evidence; concurrent Send/Test; cancellation; borrowed AD owner not closed or reconfigured |
 | Diagnostics | Method-correct identity/authentication evidence; root mode/anchor/policy outcome; configured versus used insecure exceptions; untrusted anchor never labelled trusted; schema v2 migration; no PEM/key/token leak; escaped monospace values; certificate validity provenance; strict 48-hour/5-second boundaries; UTC date prefix greying; raw JSON/plain text |
 
-## Proposed usage after implementation
+## Offline validation evidence and operator checks
+
+The completed implementation is covered by these deterministic regression
+groups (in addition to the pre-existing GSSAPI/message/diagnostic suites):
+
+| Contract | Evidence |
+| --- | --- |
+| Credential-independent SDK DNS / exact EXTERNAL wire | `TestMTLSPrerequisiteDNSWithoutCredentialMethods`, `TestMTLSPrerequisiteExternalWire` |
+| Typed input copies, PEM/key errors, nonblocking Unix FIFO rejection, restrictive key usage, local lifetime/request boundaries | `TestAuthenticationConfigCopiesAndRejectsConflicts`, `TestTLSPEMLoadingAndPermissions`, `TestPrivateKeyFIFORejectedWithoutWaitingForWriter`, `TestClientCertificateValidityUsageAndRequest` |
+| STARTTLS/implicit TLS 1.2/1.3, both certificate modes, rejection before envelope, post-TLS-only EXTERNAL | `TestCertificateSMTPModesAndRejections` |
+| Named expiry/issuer exceptions and non-exempt checks, exact grace boundary | `TestServerVerificationNamedExceptions` |
+| CA policy, alternate cross-signed paths, intermediate deny, same-key renewal, irrelevant peer certificates, malformed selectors, optional CA key usage | `TestServerCAPolicyAndRootModes`, `TestCAPolicyAlternatePathsAndRenewal`, `TestIssuerExceptionSuppliedPathAndPolicy`, `TestCASelectorNormalizationAndFailures`, `TestCAKeyUsageOptionalButRestrictiveUsageEnforced` |
+| Actual system/append/replace isolation | `TestSystemAppendReplaceRootIsolation` (Linux subprocess with synthetic system roots) |
+| Configured versus used exceptions, expiry age, untrusted anchor, permissive relay client policy | `TestTransportExceptionsAndPermissiveClientPolicy` |
+| Cancellation during EXTERNAL, no envelope, fresh subsequent request/presentation evidence | `TestCertificateExternalCancellationAndFreshEvidence` |
+| Public Send/Test, null headers, Bcc, recipient failure, uncertain DATA, QUIT warning, concurrent calls, borrowed DNS/credential ownership | `TestLibraryMTLSEndToEnd`, `TestLibraryMTLSConfigurationAndNoFallthrough` |
+| Early CLI conflict/input failures and no native fallback | `TestMTLSCLIExplicitFlagConflictsBeforeInput`, `TestMTLSSenderRecipientErrorsBeforeDNS`, `TestMTLSNeverUsesNativeFallback`, `TestMTLSClientFileFailureDoesNotProbeCredentialsOrReadInput` |
+| Actual testmail MIME/JSON pre-DATA evidence, escaping, raw values, warning colours and local validity provenance | `TestCertificateTestmailEvidenceSnapshot`, `TestCertificateReportTrustExceptionsAndEscaping`, existing snapshot/date-prefix/48-hour/5-second regressions |
+
+Validation commands: `make test` (release-note tests, full `go test -race ./...`,
+`go vet ./...`), Windows and Darwin amd64 `CGO_ENABLED=0 go vet ./...`
+cross-checks, and `make build` for Linux/Windows/Darwin amd64/arm64. The Linux
+binary's `--version` retains semantic version 0.2.17 with UTC build time and
+seven-character commit metadata. Cross-build/vet is not native execution.
+
+The real-CLI `TestLibraryMTLSEndToEnd/cli` subtest cannot bind its isolated
+Linux DNS port 53 here and explicitly skips that permission failure. Its
+construction/validation, underlying SDK DNS, public library and shared transport
+remain tested; do not describe this as a successful real-CLI delivery.
+
+Before rollout an operator must provide working AD-qualified DNS, an authorized
+relay hostname/port, a synthetic or provisioned client certificate/key and the
+intended server CA policy. Arrange separate authorized pilots for:
+
+1. `mtls-external`: verify post-TLS EXTERNAL advertisement, certificate mapping
+   and SMTP 235; use `--test --debug` first, then an explicitly authorized
+   testmail sender/recipient and verify relay-side DATA acceptance.
+2. `mtls`, only if deployed: independently inspect relay client-certificate
+   validation and authorization policy. Client presentation alone does not
+   prove these settings. Confirm an authorized submission separately.
+3. Native Windows/macOS: exercise their actual root stores/ACLs and supported
+   replacement-root expiry grace, rather than inferring runtime behavior from
+   cross-compilation.
+
+Record actual relay configuration, observed results and failures in the
+operator's rollout record. No production AD/relay, native runtime or pilot
+success was fabricated or required for offline completion under the approved
+scope amendment.
+
+## Usage
 
 ```sh
 # Certificate plus explicit SMTP AUTH EXTERNAL confirmation:

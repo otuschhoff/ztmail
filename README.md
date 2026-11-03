@@ -3,7 +3,8 @@
 ## Objective
 
 Submit email to an Active Directory mail gateway using **Kerberos SASL GSSAPI**
-with a sendmail-style command-line interface.
+by default, or explicit **mTLS / SMTP AUTH EXTERNAL**, with a sendmail-style
+command-line interface.
 
 ztmail discovers the host's AD domain, authenticates with a keytab, an existing
 FILE credential cache, or Windows SSPI, and normally rewrites the sender to the
@@ -14,6 +15,10 @@ The application builds for Linux, Windows and macOS without CGO. On Linux,
 eligible pre-submission failures can use the host's own sendmail. It is not a
 complete MTA and has no queue of its own; it does not use NTLM or anonymous
 SMTP fallback.
+
+Certificate modes use the same SDK DNS and SMTP transport but never acquire
+Kerberos credentials, prompt, query LDAP, or fall back to another mechanism or
+native sendmail. They require a configured sender and known recipients.
 
 [Get a release binary](https://github.com/otuschhoff/ztmail/releases) or follow
 the [build guide](docs/build.md).
@@ -107,6 +112,36 @@ Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe -oi -t
 
 The Windows logon must be suitable for Kerberos authentication to the AD
 domain. SSPI does not fall back to NTLM.
+
+### Submit using a client certificate
+
+The relay must request and trust the client certificate. For
+`mtls-external`, it must also advertise AUTH EXTERNAL after TLS and map the
+certificate to an authorized SMTP identity. A GSSAPI-only relay does not
+automatically support this.
+
+```sh
+ztmail --auth mtls-external --domain corp.example.com \
+  --client-cert /etc/ztmail/client-chain.pem --client-key /etc/ztmail/client.key \
+  -f automation@example.com -oi recipient@example.com < message.eml
+
+# No message input or envelope:
+ztmail --auth mtls-external --domain corp.example.com \
+  --client-cert /etc/ztmail/client-chain.pem --client-key /etc/ztmail/client.key \
+  --test --debug
+```
+
+`--auth mtls` is certificate-only TLS: presentation is observed, but relay
+authorization is not independently confirmed and no SMTP AUTH is sent.
+Neither mode invents a sender/recipient from a certificate identity. Testmail
+requires a non-null configured sender and explicit recipients. Combined
+mTLS-GSSAPI is not implemented.
+
+Use owner-private Unix key files (for example mode `0600`) or restrictive
+Windows ACLs. The key must be unencrypted PEM. Server trust is separate:
+`--tls-ca roots.pem` appends server CAs; `--tls-ca-mode replace` uses only that
+bundle. See [trust policies and narrowly scoped exceptions](docs/advanced-usage.md#certificate-authentication-and-server-trust)
+and the [library API](docs/library.md). Testmail JSON uses schema v2.
 
 ### Test authentication or send a diagnostic report
 

@@ -34,7 +34,7 @@ func (libraryResolver) Resolve(context.Context, string) ([]netip.Addr, error) {
 }
 
 func TestLibraryMTLSEndToEnd(t *testing.T) {
-	for _, mode := range []string{"send", "null", "test", "recipient", "uncertain", "quit", "cli"} {
+	for _, mode := range []string{"send", "null", "test", "tls-only", "tls-only-test", "recipient", "uncertain", "quit", "tls-warning", "concurrent", "cli"} {
 		t.Run(mode, func(t *testing.T) {
 			ad := testAD(t)
 			clientCert := libraryClientCertificate(t)
@@ -61,20 +61,34 @@ func TestLibraryMTLSEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer listener.Close()
-			wire := make(chan wireResult, 1)
+			calls := 1
+			if mode == "concurrent" {
+				calls = 6
+			}
+			wire := make(chan wireResult, calls)
 			go func() {
-				conn, err := listener.Accept()
-				if err != nil {
-					wire <- wireResult{err: err}
-					return
+				for range calls {
+					conn, err := listener.Accept()
+					if err != nil {
+						wire <- wireResult{err: err}
+						return
+					}
+					go func() {
+						wire <- smtpPeer(tls.Server(conn, &tls.Config{MinVersion: tls.VersionTLS12,
+							ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientRoots,
+							Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}), mode)
+					}()
 				}
-				wire <- smtpPeer(tls.Server(conn, &tls.Config{MinVersion: tls.VersionTLS12,
-					ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientRoots,
-					Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}), mode)
 			}()
+			method := AuthMTLSExternal
+			testOnly := mode == "test" || mode == "tls-only-test"
+			if strings.HasPrefix(mode, "tls-only") {
+				method = AuthMTLS
+			}
 			client, err := New(Options{AD: ad, Domain: "corp.example", Relay: "relay.corp.example",
-				Port: listener.Addr().(*net.TCPAddr).Port, TLS: TLSImplicit, Auth: AuthMTLSExternal,
-				ClientCertificate: clientCert, ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{der}}})
+				Port: listener.Addr().(*net.TCPAddr).Port, TLS: TLSImplicit, Auth: method,
+				ClientCertificate: clientCert, ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{der},
+					InsecureAllowUnverifiableIssuer: mode == "tls-warning"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,6 +103,40 @@ func TestLibraryMTLSEndToEnd(t *testing.T) {
 			if mode == "null" {
 				message.From = "<>"
 			}
+			if mode == "concurrent" {
+				results := make(chan error, calls)
+				for i := range calls {
+					go func() {
+						var result Result
+						var err error
+						if i%2 == 0 {
+							result, err = client.Test(context.Background(), io.Discard)
+						} else {
+							result, err = client.Send(context.Background(), message)
+						}
+						if err == nil && (!result.Authentication.ClientCertificatePresented || !result.Authentication.SMTPAuthConfirmed ||
+							result.Accepted != (i%2 != 0) || result.Identity.Principal != "") {
+							err = fmt.Errorf("independent concurrent authentication/acceptance evidence lost: %+v", result)
+						}
+						results <- err
+					}()
+				}
+				for range calls {
+					if err := <-results; err != nil {
+						t.Error(err)
+					}
+					if peer := <-wire; peer.err != nil {
+						t.Error(peer.err)
+					}
+				}
+				if status := ad.Credentials().SourceStatus(); status.Pinned || len(status.Attempts) != 0 {
+					t.Fatalf("concurrent certificate calls changed borrowed credentials: %+v", status)
+				}
+				if dns, err := ad.DNS(); err != nil || dns.Snapshot().Closed {
+					t.Fatal("concurrent Send/Test closed the borrowed DNS owner")
+				}
+				return
+			}
 			var result Result
 			if mode == "cli" {
 				err = cliCertificateSubmission(t, client, clientCert, der, data)
@@ -96,7 +144,7 @@ func TestLibraryMTLSEndToEnd(t *testing.T) {
 					listener.Close()
 					t.Fatal(err)
 				}
-			} else if mode == "test" {
+			} else if testOnly {
 				result, err = client.Test(context.Background(), io.Discard)
 			} else {
 				result, err = client.Send(context.Background(), message)
@@ -120,15 +168,23 @@ func TestLibraryMTLSEndToEnd(t *testing.T) {
 					t.Fatalf("uncertain acceptance lost: %+v %v", result, err)
 				}
 			default:
-				if err != nil || result.Accepted != (mode != "test") || !result.Authentication.SMTPAuthConfirmed ||
+				if err != nil || result.Accepted == testOnly || result.Authentication.SMTPAuthConfirmed != (method == AuthMTLSExternal) ||
 					!result.Authentication.ClientCertificatePresented || result.Identity.Principal != "" {
 					t.Fatalf("result=%+v err=%v peer=%v", result, err, peer.err)
 				}
 				if mode == "quit" && len(result.Warnings) == 0 {
 					t.Fatal("accepted QUIT failure lost warning")
 				}
+				if mode == "tls-warning" && (len(result.Warnings) == 0 ||
+					!strings.Contains(result.Warnings[0].Error(), "explicit insecure server TLS options")) {
+					t.Fatal("library discarded configured TLS policy warning")
+				}
+				if method == AuthMTLS && (len(result.Warnings) == 0 ||
+					!strings.Contains(result.Warnings[0].Error(), "authorization not independently confirmed")) {
+					t.Fatal("library discarded certificate-only authorization limitation")
+				}
 			}
-			if mode == "test" {
+			if testOnly {
 				for _, command := range peer.commands {
 					if strings.HasPrefix(command, "MAIL ") || strings.HasPrefix(command, "RCPT ") || command == "DATA" {
 						t.Fatalf("Test sent an envelope: %v", peer.commands)
@@ -144,6 +200,9 @@ func TestLibraryMTLSEndToEnd(t *testing.T) {
 			}
 			if status := ad.Credentials().SourceStatus(); status.Pinned || len(status.Attempts) != 0 {
 				t.Fatalf("borrowed owner credentials mutated: %+v", status)
+			}
+			if dns, err := ad.DNS(); err != nil || dns.Snapshot().Closed {
+				t.Fatal("certificate Send/Test closed the borrowed DNS owner")
 			}
 		})
 	}

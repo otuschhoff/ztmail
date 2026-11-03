@@ -35,6 +35,7 @@ type ServerVerificationInfo struct {
 	AllowConfigured           bool          `json:"ca_allow_configured"`
 	DenyConfigured            bool          `json:"ca_deny_configured"`
 	ExpiryGrace               time.Duration `json:"expiry_grace_nanoseconds"`
+	ExpiredLeafAge            time.Duration `json:"expired_leaf_age_nanoseconds"`
 	IssuerExceptionConfigured bool          `json:"issuer_exception_configured"`
 	ExpiryExceptionUsed       bool          `json:"expiry_exception_used"`
 	IssuerExceptionUsed       bool          `json:"issuer_exception_used"`
@@ -82,11 +83,7 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 	if relaxed {
 		detail := fmt.Sprintf("explicit insecure server TLS options: expiry grace=%s; unverifiable issuer=%t; hostname and non-exempt checks remain required",
 			o.serverTrust.ExpiredServerCertificateGrace, o.serverTrust.InsecureAllowUnverifiableIssuer)
-		if o.report != nil {
-			o.report.Line("WARN", "Server TLS policy", detail)
-		} else {
-			fmt.Fprintln(log, "Warning:", detail)
-		}
+		authenticationWarning(o, log, "Server TLS policy", detail)
 		// The paired callback below enforces every non-exempt check.
 		config.InsecureSkipVerify = true
 	}
@@ -110,15 +107,15 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 		evidence.ServerVerification.PolicyPassed = true
 		evidence.ServerVerification.Trusted = !verification.issuerUsed
 		evidence.ServerVerification.ExpiryExceptionUsed = verification.expiryUsed
+		if verification.expiryUsed {
+			evidence.ServerVerification.ExpiredLeafAge = now.Sub(state.PeerCertificates[0].NotAfter)
+		}
 		evidence.ServerVerification.IssuerExceptionUsed = verification.issuerUsed
 		if verification.expiryUsed || verification.issuerUsed {
-			detail := fmt.Sprintf("server verification relaxed: expired leaf=%t; untrusted issuer=%t; server SHA256=%s",
-				verification.expiryUsed, verification.issuerUsed, certificateInfo(state.PeerCertificates[0]).SHA256)
-			if o.report != nil {
-				o.report.Line("WARN", "Server TLS verification exception", detail)
-			} else {
-				fmt.Fprintln(log, "Warning:", detail)
-			}
+			detail := fmt.Sprintf("server verification relaxed: expired leaf=%t; expiry age=%s; grace limit=%s; untrusted issuer=%t; server SHA256=%s",
+				verification.expiryUsed, evidence.ServerVerification.ExpiredLeafAge, o.serverTrust.ExpiredServerCertificateGrace,
+				verification.issuerUsed, certificateInfo(state.PeerCertificates[0]).SHA256)
+			authenticationWarning(o, log, "Server TLS verification exception", detail)
 		}
 		return nil
 	}
@@ -140,6 +137,13 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 		}
 	}
 	return config, evidence, nil
+}
+
+func authenticationWarning(o options, log io.Writer, step, detail string) {
+	o.report.Line("WARN", step, detail)
+	if o.warning != nil || o.report == nil || !o.report.verbose {
+		warn(o, log, fmt.Errorf("%s: %s", step, detail))
+	}
 }
 
 func externalAuthentication(c *smtp.Client) error {

@@ -38,7 +38,8 @@ func (r *TestReport) authenticationTable() reportTable {
 		{"CA policy", fmt.Sprintf("allow configured=%t; deny configured=%t; policy passed=%t",
 			policy.AllowConfigured, policy.DenyConfigured, policy.PolicyPassed)},
 		{"Configured insecure options", fmt.Sprintf("expiry grace=%s; unverifiable issuer=%t", policy.ExpiryGrace, policy.IssuerExceptionConfigured)},
-		{"Used verification exceptions", fmt.Sprintf("expired leaf=%t; untrusted issuer=%t", policy.ExpiryExceptionUsed, policy.IssuerExceptionUsed)},
+		{"Used verification exceptions", fmt.Sprintf("expired leaf=%t; expiry age=%s; untrusted issuer=%t",
+			policy.ExpiryExceptionUsed, policy.ExpiredLeafAge, policy.IssuerExceptionUsed)},
 	}
 	if cert := auth.ClientCertificate; cert != nil {
 		rows = append(rows,

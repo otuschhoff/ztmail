@@ -271,7 +271,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			}
 			evidence.SMTPAuthConfirmed = true
 		} else {
-			o.report.Line("WARN", "Certificate-only TLS authentication", "client certificate presented; relay authorization not independently confirmed")
+			authenticationWarning(o, log, "Certificate-only TLS authentication", "client certificate presented; relay authorization not independently confirmed")
 		}
 	}
 	reportAuthentication(o, *evidence)

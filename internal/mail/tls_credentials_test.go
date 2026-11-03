@@ -28,6 +28,47 @@ func testClientCertificate(t *testing.T) *tls.Certificate {
 	return &tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: key, Leaf: leaf}
 }
 
+func TestClientCertificateValidityUsageAndRequest(t *testing.T) {
+	now := time.Now()
+	for _, tt := range []struct {
+		name   string
+		change func(*x509.Certificate)
+		wantOK bool
+	}{
+		{"valid", func(*x509.Certificate) {}, true},
+		{"expired", func(c *x509.Certificate) { c.NotAfter = now.Add(-time.Nanosecond) }, false},
+		{"future", func(c *x509.Certificate) { c.NotBefore = now.Add(time.Nanosecond) }, false},
+		{"boundary", func(c *x509.Certificate) { c.NotBefore, c.NotAfter = now, now }, true},
+		{"server-eku", func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth} }, false},
+		{"any-eku", func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny} }, true},
+		{"no-eku", func(c *x509.Certificate) { c.ExtKeyUsage = nil }, true},
+		{"encryption-only", func(c *x509.Certificate) { c.KeyUsage = x509.KeyUsageKeyEncipherment }, false},
+		{"unrestricted-key-use", func(c *x509.Certificate) { c.KeyUsage = 0 }, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cert := testClientCertificate(t)
+			tt.change(cert.Leaf)
+			if err := validateClientCertificate(cert, now); (err == nil) != tt.wantOK {
+				t.Fatalf("client validity/usage: %v", err)
+			}
+		})
+	}
+	prepared, err := PrepareAuthentication(Config{Auth: AuthMTLS, ClientCertificate: testClientCertificate(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, evidence, err := authenticationTLS(options{auth: prepared.Auth, clientCertificate: prepared.ClientCertificate,
+		serverTrust: prepared.ServerTrust}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.GetClientCertificate(&tls.CertificateRequestInfo{Version: tls.VersionTLS12,
+		SignatureSchemes: []tls.SignatureScheme{tls.PSSWithSHA256}}); err == nil ||
+		!evidence.ClientCertificateRequested || evidence.ClientCertificatePresented {
+		t.Fatalf("incompatible signature request accepted or fabricated presentation: %+v %v", evidence, err)
+	}
+}
+
 func TestAuthenticationConfigCopiesAndRejectsConflicts(t *testing.T) {
 	cert := testClientCertificate(t)
 	cert.OCSPStaple = []byte("ocsp")

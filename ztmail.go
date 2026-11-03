@@ -272,13 +272,19 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		report.Value("Hostname", c.options.Hostname)
 		report.Value("AD domain", c.options.Domain)
 		report.Value("Target relay", fmt.Sprintf("%s:%d", c.options.Relay, c.options.Port))
-		report.Value("SPN", c.options.SPN)
+		if c.options.Auth == "" || c.options.Auth == AuthGSSAPI {
+			report.Value("SPN", c.options.SPN)
+		}
 		if c.options.TLS == TLSOff {
 			report.Value("Transport security", "Disabled; no confidentiality")
 		}
 		defer report.Finish(&err)
-		report.Line("INFO", "Target configuration", fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q",
-			c.options.Domain, c.options.Realm, c.options.Relay, c.options.Port, c.options.Hostname, c.options.SPN, c.options.TLS))
+		targetDetail := fmt.Sprintf("AD domain=%q relay=%q port=%d EHLO=%q TLS=%q auth=%q",
+			c.options.Domain, c.options.Relay, c.options.Port, c.options.Hostname, c.options.TLS, c.options.Auth)
+		if c.options.Auth == "" || c.options.Auth == AuthGSSAPI {
+			targetDetail += fmt.Sprintf(" realm=%q SPN=%q", c.options.Realm, c.options.SPN)
+		}
+		report.Line("INFO", "Target configuration", targetDetail)
 		report.Line("INFO", "Borrowed AD owner", "owner and observation hooks remain application-owned; no credential prompting or owner closure")
 	}
 	var data []byte

@@ -62,8 +62,9 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
         return err
     }
     for _, warning := range result.Warnings {
-        // The relay already accepted DATA; log this without resending.
-        fmt.Printf("SMTP cleanup warning: %v\n", warning)
+        // Includes TLS-policy warnings and post-acceptance cleanup warnings.
+        // result.Accepted, not the presence of a warning, proves DATA acceptance.
+        fmt.Printf("Submission warning: %v\n", warning)
     }
     return nil
 }
@@ -72,12 +73,12 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
 ## Ownership, defaults, and concurrency
 
 - `New` validates options without network I/O. `Domain` is required and must
-  describe the borrowed client's AD domain. `Realm` defaults to uppercase
+  describe the borrowed client's AD DNS domain. In GSSAPI, `Realm` defaults to uppercase
   `Domain` and must match the acquired identity. The library does not inspect
   host configuration, credentials files, environment variables, or terminals;
   credential sourcing remains entirely with the supplied AD owner.
 - The default relay is `mailgw.<Domain>`, port 25, EHLO `localhost`, and SPN
-  `smtp/<Relay>`. TLS defaults to verified STARTTLS (`TLSRequired`). Use
+  `smtp/<Relay>` (GSSAPI only). TLS defaults to verified STARTTLS (`TLSRequired`). Use
   `TLSImplicit` with an explicit appropriate port, or deliberately opt out with
   `TLSOff`. `Timeout` defaults to 60 seconds for the complete operation; caller
   context cancellation/deadlines also apply.

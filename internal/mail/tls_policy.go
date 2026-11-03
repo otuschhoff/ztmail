@@ -99,7 +99,7 @@ func cloneServerTrust(o ServerTrust) (ServerTrust, error) {
 		if err != nil {
 			return ServerTrust{}, fmt.Errorf("TLS root certificate %d: %w", i+1, err)
 		}
-		if !cert.IsCA || !cert.BasicConstraintsValid || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		if !cert.IsCA || !cert.BasicConstraintsValid || (cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0) {
 			return ServerTrust{}, fmt.Errorf("TLS root certificate %d is not a signing CA", i+1)
 		}
 	}
@@ -207,7 +207,7 @@ func verifyServerCertificate(peer []*x509.Certificate, roots *x509.CertPool, pol
 	for _, anchor := range peer {
 		selfSignedLeaf := anchor == leaf && bytes.Equal(leaf.RawSubject, leaf.RawIssuer) &&
 			leaf.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature) == nil
-		if !selfSignedLeaf && (!anchor.IsCA || !anchor.BasicConstraintsValid || anchor.KeyUsage&x509.KeyUsageCertSign == 0) {
+		if !selfSignedLeaf && (!anchor.IsCA || !anchor.BasicConstraintsValid || (anchor.KeyUsage != 0 && anchor.KeyUsage&x509.KeyUsageCertSign == 0)) {
 			continue
 		}
 		if !selfSignedLeaf && slices.ContainsFunc(peer, func(parent *x509.Certificate) bool {
