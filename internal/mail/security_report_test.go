@@ -99,8 +99,8 @@ func TestSecurityTablesSplitAndWeakestComponent(t *testing.T) {
 		t.Errorf("certificate relative validity is incorrect: %v", cert)
 	}
 	ticket := securityTableRow(t, validity, "Kerberos SMTP service ticket (smtp/mailgw.corp.example)")
-	if ticket[1] != now.Add(-2*time.Hour).Format(time.RFC3339) ||
-		ticket[2] != now.Add(8*time.Hour).Format(time.RFC3339) ||
+	if ticket[1] != now.Add(-2*time.Hour).Format("2006-01-02 15:04") ||
+		ticket[2] != now.Add(8*time.Hour).Format("2006-01-02 15:04") ||
 		ticket[3] != "2 hours" || ticket[4] != "+8 hours" || ticket[5] != string(kerberos.MetadataNormalizedStart) {
 		t.Errorf("ticket effective validity/provenance is incorrect: %v", ticket)
 	}

@@ -19,7 +19,9 @@ const cryptoReportNote = "NIST SP 800-57 classical key-strength estimate, not ce
 	"TLS handshake signature scheme is not exposed by Go. Kerberos ratings cover supported AES encryption keys, not ticket MACs or password entropy; legacy/unknown enctypes are not rated. " +
 	"Ticket encryption, ticket session key and SSPI context protection are distinct; context attributes never substitute for ticket metadata."
 
-const validityReportNote = "UTC start/end; age and remaining validity use the report snapshot time. " +
+const validityReportNote = "UTC start/end; dates more than 48 hours from the snapshot omit the time, otherwise show hours/minutes. " +
+	"Matching UTC year/month/day prefixes are grey in styled reports. Ages below five seconds display grey new with start now; future starts remain explicit. " +
+	"Age and remaining validity use the report snapshot time. " +
 	"Kerberos start is effective ValidFrom: auth_time_fallback uses AuthTime; start_time_or_auth_time means the original optional StartTime was not retained. " +
 	"SSPI context lifetime is separate from OS-managed/unavailable ticket validity."
 
@@ -165,30 +167,40 @@ func relativeValidityDuration(duration time.Duration) string {
 	return fmt.Sprintf("%d %s", count, unit)
 }
 
-func validityTime(field kerberos.MetadataField[time.Time]) string {
+func validityTime(field kerberos.MetadataField[time.Time], now time.Time) string {
 	if !field.Available {
 		return metadataValue(field)
 	}
 	if field.Value.IsZero() {
 		return "Unavailable (invalid timestamp)"
 	}
-	return field.Value.UTC().Format(time.RFC3339)
+	layout := "2006-01-02 15:04"
+	distance := field.Value.Sub(now)
+	if distance > 48*time.Hour || distance < -48*time.Hour {
+		layout = "2006-01-02"
+	}
+	return field.Value.UTC().Format(layout)
 }
 
 func (r *TestReport) validityTable() reportTable {
+	now := r.snapshotTime()
 	t := reportTable{header: table.Row{"Object", "Start (UTC)", "End (UTC)", "Age", "Remaining", "Start source"},
+		currentDateUTC: now.UTC().Format("2006-01-02"),
 		configs: []table.ColumnConfig{
 			{Number: 4, Align: text.AlignRight, AlignHeader: text.AlignRight},
 			{Number: 5, Align: text.AlignRight, AlignHeader: text.AlignRight},
 		}}
-	now := r.snapshotTime()
 	appendValidity := func(label string, start, end kerberos.MetadataField[time.Time]) {
-		age, remaining, source := validityTime(start), validityTime(end), "-"
+		startTime := validityTime(start, now)
+		age, remaining, source := startTime, validityTime(end, now), "-"
 		if start.Available && !start.Value.IsZero() {
 			source = string(start.Provenance)
-			age = relativeValidityDuration(now.Sub(start.Value))
+			elapsed := now.Sub(start.Value)
+			age = relativeValidityDuration(elapsed)
 			if start.Value.After(now) {
 				age = "Starts in " + relativeValidityDuration(start.Value.Sub(now))
+			} else if elapsed >= 0 && elapsed < 5*time.Second {
+				age, startTime = "new", "now"
 			}
 		}
 		if end.Available && !end.Value.IsZero() {
@@ -197,7 +209,7 @@ func (r *TestReport) validityTable() reportTable {
 				remaining = "Expired " + relativeValidityDuration(now.Sub(end.Value)) + " ago"
 			}
 		}
-		t.rows = append(t.rows, table.Row{label, validityTime(start), validityTime(end), age, remaining, source})
+		t.rows = append(t.rows, table.Row{label, startTime, validityTime(end, now), age, remaining, source})
 	}
 	for _, cert := range r.tlsValidity {
 		start := kerberos.MetadataField[time.Time]{Value: cert.start, Available: !cert.start.IsZero(), Provenance: "tls_certificate", Reason: kerberos.MetadataNotPresent}

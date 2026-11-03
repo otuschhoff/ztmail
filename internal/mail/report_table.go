@@ -22,10 +22,17 @@ const (
 )
 
 type reportTable struct {
-	header  table.Row
-	rows    []table.Row
-	configs []table.ColumnConfig
+	header         table.Row
+	rows           []table.Row
+	configs        []table.ColumnConfig
+	currentDateUTC string
 }
+
+const (
+	currentYearDateKey  = "Current-year date (UTC)"
+	currentMonthDateKey = "Current-month date (UTC)"
+	currentDayDateKey   = "Current-day date (UTC)"
+)
 
 func (t reportTable) render(format reportFormat, color bool, domain string) string {
 	numeric := t.numericColumns()
@@ -184,7 +191,20 @@ func (t reportTable) cellKey(row table.Row, column int) string {
 		return fmt.Sprint(row[0])
 	}
 	if column < len(t.header) {
-		return fmt.Sprint(t.header[column])
+		key := fmt.Sprint(t.header[column])
+		if (key == "Start (UTC)" || key == "End (UTC)") && len(t.currentDateUTC) == 10 {
+			value := fmt.Sprint(row[column])
+			if strings.HasPrefix(value, t.currentDateUTC) {
+				return currentDayDateKey
+			}
+			if strings.HasPrefix(value, t.currentDateUTC[:8]) {
+				return currentMonthDateKey
+			}
+			if strings.HasPrefix(value, t.currentDateUTC[:5]) {
+				return currentYearDateKey
+			}
+		}
+		return key
 	}
 	return ""
 }
@@ -201,6 +221,22 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 	}
 	if format == reportPlain || (format == reportTerminal && !color) {
 		return styled
+	}
+	dimLength := 0
+	switch key {
+	case currentYearDateKey:
+		dimLength = 5
+	case currentMonthDateKey:
+		dimLength = 8
+	case currentDayDateKey:
+		dimLength = 10
+	}
+	if dimLength > 0 && len(value) >= 10 {
+		date, rest := value[:dimLength], value[dimLength:]
+		if format == reportHTML {
+			return `<span style="color:#6b7280">` + html.EscapeString(date) + "</span>" + html.EscapeString(rest)
+		}
+		return text.FgHiBlack.EscapeSeq() + date + text.Reset.EscapeSeq() + rest
 	}
 	if key == "Cred source" {
 		source, path, found := strings.Cut(value, " (")
@@ -231,6 +267,8 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 		}
 	} else if key == "Cred source" && strings.EqualFold(value, "password") {
 		shade, ansi = "#a16207", text.FgYellow
+	} else if key == "Age" && value == "new" {
+		shade, ansi = "#6b7280", text.FgHiBlack
 	} else if strings.HasPrefix(value, "[FAIL] ") {
 		shade, ansi = "#b91c1c", text.FgRed
 	} else if strings.HasPrefix(value, "[WARN] ") || strings.HasPrefix(value, "[SKIP] ") {
@@ -259,7 +297,7 @@ func technicalReportCell(key string) bool {
 		"Cred source", "Discovered DC / service", "Protocol", "TLS version", "Subject", "Issuer",
 		"Subject alternative names", "Cipher suite", "Key exchange", "Certificate key",
 		"Certificate signature", "Kerberos ticket encryption", "Kerberos ticket session key",
-		"SSPI context protection", "Start (UTC)", "End (UTC)", "Start source", "Scope / parent":
+		"SSPI context protection", "Start (UTC)", "End (UTC)", currentYearDateKey, currentMonthDateKey, currentDayDateKey, "Start source", "Scope / parent":
 		return true
 	default:
 		return false

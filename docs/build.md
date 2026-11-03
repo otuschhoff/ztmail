@@ -38,12 +38,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=linux TARGET_ARCH=amd64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.2.16+20261101-110716.abcdef0
+# 0.2.17+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.2.16**. Every supported build includes UTC build time
+The semantic version is **0.2.17**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.2.16+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.2.17+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 The executable now lives in `cmd/ztmail`; `go build ./cmd/ztmail` builds the CLI,

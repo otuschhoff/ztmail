@@ -5,6 +5,20 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-11-03
+
+### Changed
+
+- Format validity-table UTC start/end as `YYYY-MM-DD` when more than 48 hours
+  from the report snapshot, otherwise as `YYYY-MM-DD hh:mm`. Grey matching UTC
+  year/month/day prefixes in HTML and colour-enabled terminal reports,
+  retaining normal time colour and shared unstyled plain-text/JSON values.
+- Display Age as grey `new` and Start as `now` for valid, non-future starts
+  strictly less than five seconds old. Apply the same snapshot-based policy to
+  TLS certificates, Kerberos SMTP tickets and SSPI contexts, keeping future
+  starts, unavailable/invalid timestamps, provenance and remaining validity
+  explicit and retaining raw `now`/`new` in plain-text and JSON reports.
+
 ## [0.2.16] - 2026-11-03
 
 ### Fixed

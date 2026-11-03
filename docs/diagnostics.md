@@ -97,6 +97,19 @@ borrowed lease). Security diagnostics are split into three tables:
   TLS certificate and the actual SMTP service ticket. Future starts and expired
   intervals are explicit.
 
+Validity start/end dates more than 48 hours from the report snapshot, in either
+direction, use `YYYY-MM-DD`; dates within or exactly at 48 hours use
+`YYYY-MM-DD hh:mm` (24-hour UTC). In HTML and colour-enabled terminal reports,
+grey the `YYYY-` prefix for the snapshot's UTC year, extend it to `YYYY-MM-`
+for the same month, and grey the full date for the same day. Hours/minutes
+retain their normal colour. Plain text and JSON share the same date precision
+without styling. The JSON `snapshot_at` remains a full UTC timestamp.
+For a valid start between zero and strictly less than five seconds before the
+snapshot, Start displays `now` and Age displays `new` (grey in styled reports).
+Future starts, unavailable/invalid timestamps, start provenance and remaining
+validity retain their existing behavior; JSON and plain text use unstyled
+`now`/`new`.
+
 The cryptography table's third column lists estimated NIST-equivalent classical
 key strengths. TLS and Kerberos encryption-key estimates are shown separately,
 with an overall weakest-component estimate only when both can be assessed;
