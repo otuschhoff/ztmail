@@ -2,8 +2,8 @@
 
 [README](../README.md) | [Implementation](implementation.md) | [Go library](library.md) | [Diagnostics](diagnostics.md) | [Build](build.md)
 
-**Status:** Phases 0–1 complete: prerequisites, typed configuration, resolver
-seams and PEM loading established. Production mTLS submission is not yet wired.
+**Status:** Phases 0–2 complete: prerequisites, configuration and shared mTLS/
+EXTERNAL transport established. CLI/library certificate dispatch is not yet wired.
 Baseline: ztmail v0.2.17.
 This document defines a bounded implementation plan for an LLM coding agent.
 The proposed flags and API fields below do not exist yet.

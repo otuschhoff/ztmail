@@ -16,9 +16,7 @@ import (
 	"net"
 	"net/netip"
 	"net/smtp"
-	"net/textproto"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,41 +169,6 @@ func prerequisiteDNSReply(conn net.Conn, network string, queries *atomic.Int32) 
 	return err
 }
 
-// This test-local prototype proves the existing client's command API can emit
-// EXTERNAL's literal empty response without net/smtp.Auth's base64 conversion.
-func prerequisiteExternal(c *smtp.Client) error {
-	ok, mechanisms := c.Extension("AUTH")
-	if !ok || !slices.ContainsFunc(strings.Fields(mechanisms), func(s string) bool { return strings.EqualFold(s, "EXTERNAL") }) {
-		return errors.New("AUTH EXTERNAL not advertised")
-	}
-	command := func(value string) (int, string, error) {
-		id, err := c.Text.Cmd("%s", value)
-		if err != nil {
-			return 0, "", err
-		}
-		c.Text.StartResponse(id)
-		defer c.Text.EndResponse(id)
-		return c.Text.ReadResponse(0)
-	}
-	code, message, err := command("AUTH EXTERNAL =")
-	if err != nil {
-		return err
-	}
-	if code == 334 {
-		if message != "" {
-			return errors.New("unexpected EXTERNAL challenge")
-		}
-		code, message, err = command("=")
-		if err != nil {
-			return err
-		}
-	}
-	if code != 235 {
-		return &textproto.Error{Code: code, Msg: message}
-	}
-	return nil
-}
-
 func TestMTLSPrerequisiteExternalWire(t *testing.T) {
 	for _, tt := range []struct {
 		name, first, final string
@@ -265,7 +228,7 @@ func TestMTLSPrerequisiteExternalWire(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = prerequisiteExternal(c)
+			err = externalAuthentication(c)
 			if (err != nil) != tt.wantError {
 				t.Fatalf("EXTERNAL error=%v, wantError=%v", err, tt.wantError)
 			}

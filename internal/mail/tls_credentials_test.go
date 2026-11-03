@@ -66,8 +66,8 @@ func TestAuthenticationConfigCopiesAndRejectsConflicts(t *testing.T) {
 		t.Fatal("mismatched signer accepted")
 	}
 	if err := Deliver(context.Background(), Config{Auth: AuthMTLS, ClientCertificate: prepared.ClientCertificate},
-		nil, nil, nil, io.Discard); err == nil || !strings.Contains(err.Error(), "not yet wired") {
-		t.Fatalf("Phase 1 must not fall through into GSSAPI: %v", err)
+		nil, nil, nil, io.Discard); err == nil || !strings.Contains(err.Error(), "resolver is required") {
+		t.Fatalf("mTLS must not fall through into GSSAPI: %v", err)
 	}
 }
 

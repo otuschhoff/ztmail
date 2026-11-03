@@ -2,10 +2,10 @@
 
 [README](../README.md) | [Advanced usage](advanced-usage.md) | [Diagnostics](diagnostics.md) | [Implementation](implementation.md) | [Go library](library.md) | [Build and release](build.md)
 
-The mTLS implementation is currently at configuration Phase 1. Typed `Auth`,
+The mTLS implementation has completed shared transport Phase 2. Typed `Auth`,
 `ClientCertificate` and `ServerTrust` options validate/copy TLS inputs, but
-mTLS Send/Test deliberately return an explicit not-yet-wired error until the
-transport and library phases are complete. GSSAPI remains the working default.
+mTLS library Send/Test deliberately return an explicit not-yet-wired error until
+the library dispatch phase is complete. GSSAPI remains the working default.
 See the [design and approved platform limits](mtls-design.md).
 
 Import `github.com/otuschhoff/ztmail`. The application supplies an existing

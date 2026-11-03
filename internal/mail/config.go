@@ -19,6 +19,7 @@ type Config struct {
 	Auth                             AuthMode
 	ClientCertificate                *tls.Certificate
 	ServerTrust                      ServerTrust
+	Authentication                   func(AuthenticationResult)
 }
 
 type options struct {
@@ -32,6 +33,7 @@ type options struct {
 	auth                             AuthMode
 	clientCertificate                *tls.Certificate
 	serverTrust                      ServerTrust
+	authentication                   func(AuthenticationResult)
 }
 
 func Deliver(ctx context.Context, c Config, recipients []string, message []byte, backend Resolver, log io.Writer) error {
@@ -43,11 +45,8 @@ func Deliver(ctx context.Context, c Config, recipients []string, message []byte,
 	if err != nil {
 		return err
 	}
-	if c.Auth != AuthGSSAPI {
-		return errors.New("mTLS submission transport is not yet wired")
-	}
 	return deliver(ctx, options{relay: c.Relay, hello: c.Hello, spn: c.SPN, from: c.From,
 		tlsMode: c.TLSMode, port: c.Port, timeout: c.Timeout, testMode: c.Test, testMail: c.TestMail, report: c.Report, warning: c.Warning,
-		auth: c.Auth, clientCertificate: c.ClientCertificate, serverTrust: c.ServerTrust},
+		auth: c.Auth, clientCertificate: c.ClientCertificate, serverTrust: c.ServerTrust, authentication: c.Authentication},
 		recipients, message, backend, log)
 }

@@ -111,6 +111,24 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	o.report.Value("SPN", o.spn)
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
+	var tlsConfig *tls.Config
+	evidence := &AuthenticationResult{Method: AuthGSSAPI}
+	tlsEstablished := false
+	if o.tlsMode != "off" {
+		tlsConfig, evidence, err = authenticationTLS(o, log)
+		if err != nil {
+			return fmt.Errorf("SMTP TLS configuration: %w", err)
+		}
+	}
+	defer func() {
+		if !tlsEstablished {
+			evidence.ClientCertificatePresented = false
+		}
+		reportAuthentication(o, *evidence)
+	}()
+	if backend == nil {
+		return errors.New("relay resolver is required")
+	}
 	conn, err := dialRelay(ctx, o, backend)
 	if err != nil {
 		return fmt.Errorf("connect to relay: %w", err)
@@ -127,7 +145,6 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	tlsConfig := &tls.Config{ServerName: o.relay, MinVersion: tls.VersionTLS12}
 	var transport net.Conn = conn
 	if o.tlsMode == "implicit" {
 		secure := tls.Client(conn, tlsConfig)
@@ -138,7 +155,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			o.report.Step("Implicit TLS", err, "")
 			return fmt.Errorf("TLS handshake: %w", err)
 		}
-		o.report.Step("Implicit TLS", nil, "verified server certificate; TLS established")
+		o.report.Step("Implicit TLS", nil, "server TLS policy passed; TLS established")
 		transport = secure
 	}
 	greetingDone := o.report.Measure("SMTP greeting")
@@ -168,7 +185,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		tlsDone := o.report.Measure("SMTP STARTTLS")
 		err = c.StartTLS(tlsConfig)
 		tlsDone()
-		o.report.Step("SMTP STARTTLS", err, "verified server certificate; TLS and post-TLS EHLO completed")
+		o.report.Step("SMTP STARTTLS", err, "server TLS policy passed; TLS and post-TLS EHLO completed")
 		if err != nil {
 			return fmt.Errorf("SMTP STARTTLS: %w", err)
 		}
@@ -177,48 +194,71 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	}
 	var state *tls.ConnectionState
 	if tlsState, ok := c.TLSConnectionState(); ok {
+		tlsEstablished = tlsState.HandshakeComplete
 		state = &tlsState
 		o.report.TLS(tlsState)
 	}
-	gssBackend, ok := backend.(Backend)
-	if !ok {
-		return errors.New("GSSAPI authentication requires a security-context backend")
-	}
-	security, err := gssBackend.NewSecurityContext(ctx, o.spn, state)
-	o.report.Step("SMTP GSSAPI security context", err, fmt.Sprintf("SPN=%q TLS channel binding available=%t", o.spn, state != nil))
-	if err != nil {
-		return fmt.Errorf("AD SMTP security context: %w", err)
-	}
-	defer func() {
-		done := o.report.Measure("GSSAPI cleanup")
-		defer done()
-		if closeErr := security.Close(); closeErr != nil {
-			if err != nil || o.testMode {
-				err = errors.Join(err, closeErr)
-			} else {
-				warn(o, log, fmt.Errorf("message accepted, but security context cleanup failed: %w", closeErr))
-			}
-			o.report.Step("GSSAPI cleanup", closeErr, "")
-		} else {
-			o.report.Step("GSSAPI cleanup", nil, "security context closed")
+	if evidence.Method == AuthGSSAPI {
+		gssBackend, ok := backend.(Backend)
+		if !ok {
+			return errors.New("GSSAPI authentication requires a security-context backend")
 		}
-	}()
-	auth := &gssAuth{security: security, report: o.report}
-	authDone := o.report.Measure("SMTP GSSAPI authentication")
-	err = c.Auth(auth)
-	authDone()
-	if provider, ok := security.(kerberos.TicketMetadataProvider); ok {
-		o.report.KerberosTicket(provider.TicketMetadata())
+		var security SecurityContext
+		security, err = gssBackend.NewSecurityContext(ctx, o.spn, state)
+		o.report.Step("SMTP GSSAPI security context", err, fmt.Sprintf("SPN=%q TLS channel binding available=%t", o.spn, state != nil))
+		if err != nil {
+			return fmt.Errorf("AD SMTP security context: %w", err)
+		}
+		defer func() {
+			done := o.report.Measure("GSSAPI cleanup")
+			defer done()
+			if closeErr := security.Close(); closeErr != nil {
+				if err != nil || o.testMode {
+					err = errors.Join(err, closeErr)
+				} else {
+					warn(o, log, fmt.Errorf("message accepted, but security context cleanup failed: %w", closeErr))
+				}
+				o.report.Step("GSSAPI cleanup", closeErr, "")
+			} else {
+				o.report.Step("GSSAPI cleanup", nil, "security context closed")
+			}
+		}()
+		auth := &gssAuth{security: security, report: o.report}
+		authDone := o.report.Measure("SMTP GSSAPI authentication")
+		err = c.Auth(auth)
+		authDone()
+		if provider, ok := security.(kerberos.TicketMetadataProvider); ok {
+			o.report.KerberosTicket(provider.TicketMetadata())
+		} else {
+			o.report.KerberosTicket(kerberos.Ticket{}.Metadata())
+		}
+		if err == nil && !auth.confirmed {
+			err = errors.New("relay did not confirm SMTP authentication")
+		}
+		o.report.Step("SMTP AUTH GSSAPI", err, "relay accepted authentication")
+		if err != nil {
+			return fmt.Errorf("SMTP AUTH GSSAPI: %w", err)
+		}
+		evidence.SMTPAuthConfirmed = true
 	} else {
-		o.report.KerberosTicket(kerberos.Ticket{}.Metadata())
+		if !tlsEstablished || !evidence.ClientCertificateRequested || !evidence.ClientCertificatePresented {
+			return errors.New("mTLS requires a completed TLS handshake and a requested/presented client certificate")
+		}
+		o.report.Step("TLS client certificate presentation", nil, "requested client certificate presented; relay policy is not independently observable")
+		if evidence.Method == AuthMTLSExternal {
+			done := o.report.Measure("SMTP EXTERNAL authentication")
+			err = externalAuthentication(c)
+			done()
+			o.report.Step("SMTP AUTH EXTERNAL", err, "relay confirmed certificate-backed SMTP authentication")
+			if err != nil {
+				return fmt.Errorf("SMTP AUTH EXTERNAL: %w", err)
+			}
+			evidence.SMTPAuthConfirmed = true
+		} else {
+			o.report.Line("WARN", "Certificate-only TLS authentication", "client certificate presented; relay authorization not independently confirmed")
+		}
 	}
-	if err == nil && !auth.confirmed {
-		err = errors.New("relay did not confirm SMTP authentication")
-	}
-	o.report.Step("SMTP AUTH GSSAPI", err, "relay accepted authentication")
-	if err != nil {
-		return fmt.Errorf("SMTP AUTH GSSAPI: %w", err)
-	}
+	reportAuthentication(o, *evidence)
 	if o.testMode {
 		quitDone := o.report.Measure("SMTP QUIT")
 		err = c.Quit()

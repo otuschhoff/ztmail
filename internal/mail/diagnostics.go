@@ -42,6 +42,7 @@ type TestReport struct {
 	tlsStrength       int
 	tlsStrengthReason string
 	ticketMetadata    kerberos.TicketMetadata
+	authentication    AuthenticationResult
 	passwordPrompted  bool
 	promptDuration    time.Duration
 }
