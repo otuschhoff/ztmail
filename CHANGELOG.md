@@ -5,6 +5,8 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
 ### Added
 
 - Explicit certificate-only `--auth mtls` and certificate-backed SMTP
@@ -30,6 +32,26 @@ Versions use Semantic Versioning; dates are in UTC.
   recipients. Preserve message privacy, null envelopes, DATA uncertainty and
   post-acceptance warnings without retries. Document relay prerequisites,
   trust risks, schema migration and unperformed operator-only checks.
+- Migrate all testmail JSON attachments, including GSSAPI reports, from
+  schema v1 to v2. Consumers must accept the new
+  `after_transport_authentication_before_data` snapshot phase and structured
+  authentication evidence; existing applicable table IDs/columns are retained
+  and debug reports add an `authentication` table.
+- Surface configured and actually used server-TLS exceptions and certificate-only
+  authorization limitations through library `Result.Warnings` as well as local
+  reports. Warnings are separate from `Result.Accepted` and never imply delivery
+  acceptance. Preserve UTC validity formatting and raw JSON values.
+
+### Known limitations
+
+- Combined mTLS-GSSAPI is not implemented. EXTERNAL needs explicit relay support
+  and certificate mapping; certificate-only TLS does not independently confirm
+  relay-side client verification or authorization.
+- Native Windows/macOS runtime and production AD/relay pilots remain operator
+  checks, not inferred from cross-builds. The real-CLI isolated DNS-port-53
+  integration test is explicitly skipped when binding is denied; deterministic
+  SDK DNS, CLI validation, shared transport and public library tests remain
+  required.
 
 ## [0.2.17] - 2026-11-03
 

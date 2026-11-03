@@ -622,7 +622,8 @@ groups (in addition to the pre-existing GSSAPI/message/diagnostic suites):
 Validation commands: `make test` (release-note tests, full `go test -race ./...`,
 `go vet ./...`), Windows and Darwin amd64 `CGO_ENABLED=0 go vet ./...`
 cross-checks, and `make build` for Linux/Windows/Darwin amd64/arm64. The Linux
-binary's `--version` retains semantic version 0.2.17 with UTC build time and
+binary's `--version` retained semantic version 0.2.17 during Phase 5 validation,
+before the 0.3.0 release bump, with UTC build time and
 seven-character commit metadata. Cross-build/vet is not native execution.
 
 The real-CLI `TestLibraryMTLSEndToEnd/cli` subtest cannot bind its isolated
