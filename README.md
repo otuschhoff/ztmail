@@ -245,6 +245,7 @@ lifetime semantics.
 | [Advanced usage reference](docs/advanced-usage.md) | Discovery overrides, credential selection, sender configuration, native fallback, sendmail compatibility and failure semantics |
 | [Diagnostics](docs/diagnostics.md) | No-email checks, testmail, JSON tables, DC observations, timings, crypto/validity and sharing precautions |
 | [Implementation](docs/implementation.md) | Package layout, submission flow, AD ownership, LDAP canonical-mail lookup and transport safety |
+| [mTLS design (proposed)](docs/mtls-design.md) | Certificate-authentication objective, key decisions, compatibility constraints and phased LLM implementation plan |
 | [Go library](docs/library.md) | Application-owned AD client example, defaults, concurrency, message/result semantics and no-email testing |
 | [Build, test and release](docs/build.md) | Toolchain, private dependencies, platform targets, version metadata, validation and GitHub Actions |
 

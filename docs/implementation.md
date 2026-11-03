@@ -2,6 +2,10 @@
 
 [README](../README.md) | [Advanced usage](advanced-usage.md) | [Diagnostics](diagnostics.md) | [Implementation](implementation.md) | [Go library](library.md) | [Build and release](build.md)
 
+The [proposed mTLS design](mtls-design.md) describes adding certificate-based
+authentication without changing the current GSSAPI defaults. It is a future
+implementation plan, not a description of currently supported flags.
+
 ## Package layout
 
 | Location | Responsibility |
