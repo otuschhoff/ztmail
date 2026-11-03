@@ -57,7 +57,8 @@ func NewTestReport(output io.Writer, verbose bool) *TestReport {
 		color = term.IsTerminal(int(file.Fd())) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	}
 	return &TestReport{output: output, verbose: verbose, color: color, started: time.Now(),
-		values: map[string]string{"Authentication method": "GSSAPI"}}
+		authentication: AuthenticationResult{Method: AuthGSSAPI},
+		values:         map[string]string{"Authentication method": "GSSAPI"}}
 }
 
 func (r *TestReport) Line(status, step, detail string) {
@@ -129,7 +130,7 @@ func (r *TestReport) Step(step string, err error, detail string) {
 				value = "FAILED: " + err.Error()
 			}
 			r.Value("Transport security", value)
-		case "SMTP AUTH GSSAPI":
+		case "SMTP AUTH GSSAPI", "SMTP AUTH EXTERNAL":
 			value := "OK"
 			if err != nil {
 				value = "FAILED: " + err.Error()
@@ -255,18 +256,7 @@ func (r *TestReport) snapshotTime() time.Time {
 func (r *TestReport) summaryTable() reportTable {
 	t := reportTable{configs: []table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}}}
 	gssapi := strings.EqualFold(r.values["Authentication method"], "GSSAPI")
-	keys := []string{"Hostname", "Target relay", "AD domain"}
-	if gssapi {
-		keys = append(keys, "User")
-	}
-	keys = append(keys, "Mail (from)")
-	if gssapi {
-		keys = append(keys, "Cred source")
-	}
-	keys = append(keys, "Authentication method")
-	if gssapi {
-		keys = append(keys, "SPN")
-	}
+	keys := []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)", "Cred source", "Authentication method", "SPN"}
 	keys = append(keys, "Transport security", "Authentication", "Total runtime")
 	if r.passwordPrompted {
 		keys = append(keys, "Execution runtime")
@@ -274,6 +264,9 @@ func (r *TestReport) summaryTable() reportTable {
 	elapsed := r.snapshotTime().Sub(r.started)
 	for _, key := range keys {
 		value := r.values[key]
+		if !gssapi && (key == "User" || key == "SPN" || key == "Cred source") {
+			value = "Not applicable (certificate authentication; no Kerberos)"
+		}
 		if key == "Cred source" && (strings.EqualFold(value, "ccache") || strings.EqualFold(value, "keytab")) &&
 			r.values["Cred source path"] != "" {
 			value += " (" + r.values["Cred source path"] + ")"

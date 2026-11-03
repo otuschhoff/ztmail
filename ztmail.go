@@ -268,6 +268,7 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	var report *mail.TestReport
 	if test {
 		report = mail.NewTestReport(output, false)
+		report.AuthenticationMethod(c.options.Auth)
 		report.Value("Hostname", c.options.Hostname)
 		report.Value("AD domain", c.options.Domain)
 		report.Value("Target relay", fmt.Sprintf("%s:%d", c.options.Relay, c.options.Port))

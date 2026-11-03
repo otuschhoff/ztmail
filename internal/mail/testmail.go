@@ -53,6 +53,7 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory, tlsDetails: r.tlsDetails,
 		tlsCrypto: r.tlsCrypto, tlsValidity: r.tlsValidity, tlsStrength: r.tlsStrength,
 		tlsStrengthReason: r.tlsStrengthReason, ticketMetadata: r.ticketMetadata,
+		authentication:   r.authentication,
 		passwordPrompted: r.passwordPrompted, promptDuration: r.promptDuration}
 	jsonData, err := copyReport.jsonSnapshot()
 	if err != nil {
@@ -82,7 +83,7 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 			return nil, fmt.Errorf("create testmail part: %w", err)
 		}
 		body := reportNote(format, "ztmail diagnostic test message") + "\n\n" +
-			reportNote(format, "Snapshot taken after SMTP authentication, before sending this message.") + "\n" +
+			reportNote(format, "Snapshot taken after transport authentication, before sending this message (before DATA); TLS-only mode has no SMTP AUTH confirmation.") + "\n" +
 			reportNote(format, "DATA acceptance, QUIT and final cleanup are not included; consult the local report.") + "\n" +
 			reportNote(format, "This message contains account names and internal topology. Review before sharing.") + "\n\n" +
 			copyReport.renderFormat(format) + "\n"

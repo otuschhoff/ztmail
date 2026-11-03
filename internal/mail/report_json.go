@@ -14,21 +14,24 @@ type jsonReportTable struct {
 }
 
 type jsonTestReport struct {
-	SchemaVersion int               `json:"schema_version"`
-	SnapshotAt    time.Time         `json:"snapshot_at"`
-	SnapshotPhase string            `json:"snapshot_phase"`
-	Notes         []string          `json:"notes"`
-	Tables        []jsonReportTable `json:"tables"`
+	SchemaVersion  int                  `json:"schema_version"`
+	SnapshotAt     time.Time            `json:"snapshot_at"`
+	SnapshotPhase  string               `json:"snapshot_phase"`
+	Notes          []string             `json:"notes"`
+	Tables         []jsonReportTable    `json:"tables"`
+	Authentication AuthenticationResult `json:"authentication"`
 }
 
 func (r *TestReport) jsonSnapshot() ([]byte, error) {
 	snapshot := jsonTestReport{
-		SchemaVersion: 1,
-		SnapshotAt:    r.snapshotTime().UTC(),
-		SnapshotPhase: "after_smtp_authentication_before_data",
+		SchemaVersion:  2,
+		SnapshotAt:     r.snapshotTime().UTC(),
+		SnapshotPhase:  "after_transport_authentication_before_data",
+		Authentication: r.authentication,
 		Notes: []string{
 			"DATA acceptance, QUIT and final cleanup are not included; consult the local report.",
 			"This report contains account names, credential paths and internal topology. Review before sharing.",
+			"TLS-only mode has no SMTP AUTH confirmation; certificate presentation is not relay authorization or DATA acceptance.",
 		},
 	}
 	appendTable := func(id, title string, source reportTable) {
@@ -65,11 +68,12 @@ func (r *TestReport) jsonSnapshot() ([]byte, error) {
 			appendTable("step_timings", "Step timings", r.stepTimingsTable())
 		}
 		appendTable("tls", "Server TLS certificate / connection", r.tlsDetailsTable())
+		appendTable("authentication", "Authentication evidence / local client certificate", r.authenticationTable())
 		appendTable("crypto", "Cryptography (TLS / Kerberos)", r.cryptoTable())
 		appendTable("validity", "Validity (TLS certificates / Kerberos)", r.validityTable())
 		snapshot.Notes = append(snapshot.Notes,
 			"Runtime intervals overlap and are counted once; detailed step durations are not additive.",
-			cryptoReportNote,
+			r.cryptoNote(),
 			validityReportNote,
 		)
 	}

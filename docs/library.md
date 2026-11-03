@@ -5,8 +5,9 @@
 GSSAPI remains the default. `AuthMTLS` performs TLS client-certificate
 presentation only; `AuthMTLSExternal` additionally requires SMTP AUTH EXTERNAL
 confirmation. Both work with `Send` and `Test`, without acquiring credentials,
-requesting tickets or looking up LDAP mail. Method-aware report rendering is
-the next implementation phase.
+requesting tickets or looking up LDAP mail. Diagnostics are method-aware;
+testmail attachments use JSON schema v2 with independent transport, certificate
+presentation and SMTP authentication evidence.
 See the [design and approved platform limits](mtls-design.md).
 
 For certificate authentication, supply `Auth: ztmail.AuthMTLSExternal`,

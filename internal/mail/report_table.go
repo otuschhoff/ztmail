@@ -261,6 +261,9 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 		shade = "#0891b2"
 		if strings.Contains(value, "FAILED") {
 			shade, ansi = "#b91c1c", text.FgRed
+		} else if strings.HasPrefix(value, "WARNING:") || strings.Contains(value, "not independently confirmed") ||
+			strings.Contains(value, "not confirmed") || strings.Contains(value, "not presented") {
+			shade, ansi = "#a16207", text.FgYellow
 		} else if strings.HasPrefix(value, "OK") || strings.Contains(value, "verified") {
 			shade, ansi = "#15803d", text.FgGreen
 			ok = strings.HasPrefix(value, "OK")
@@ -294,6 +297,8 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 func technicalReportCell(key string) bool {
 	switch key {
 	case "AD domain", "Realm", "User", "Mail (from)", "Mail", "SPN", "Hostname", "Relay", "Target relay", "Port",
+		"Client certificate subject", "Client certificate issuer", "Client certificate SHA256", "Client certificate key",
+		"Client certificate signature", "Server trust anchor SHA256", "Server root mode", "Authentication method",
 		"Cred source", "Discovered DC / service", "Protocol", "TLS version", "Subject", "Issuer",
 		"Subject alternative names", "Cipher suite", "Key exchange", "Certificate key",
 		"Certificate signature", "Kerberos ticket encryption", "Kerberos ticket session key",

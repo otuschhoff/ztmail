@@ -242,6 +242,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	if o.testMode || o.testMail {
 		o.report = newTestReport(log, o.verbose)
+		o.report.AuthenticationMethod(mail.AuthMode(o.authMethod))
 		if o.testMail {
 			o.report.EnableTestMail()
 		}

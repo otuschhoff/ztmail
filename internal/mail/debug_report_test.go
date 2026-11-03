@@ -55,7 +55,7 @@ func TestGSSAPISummary(t *testing.T) {
 	}
 }
 
-func TestSummaryHidesGSSAPIFieldsForOtherMethods(t *testing.T) {
+func TestSummaryMarksGSSAPIFieldsNotApplicableForOtherMethods(t *testing.T) {
 	report := NewTestReport(&bytes.Buffer{}, false)
 	report.Value("Authentication method", "mTLS")
 	report.Value("User", "user@corp.example")
@@ -66,7 +66,10 @@ func TestSummaryHidesGSSAPIFieldsForOtherMethods(t *testing.T) {
 		if !strings.Contains(result, "mTLS") || !strings.Contains(result, "Mail (from)") {
 			t.Errorf("missing common fields:\n%s", result)
 		}
-		for _, unwanted := range []string{"User", "Cred source", "SPN", "user@corp.example", "keytab", "smtp/relay.corp.example"} {
+		if !strings.Contains(result, "Not applicable") {
+			t.Errorf("missing explicit Kerberos applicability:\n%s", result)
+		}
+		for _, unwanted := range []string{"user@corp.example", "keytab", "smtp/relay.corp.example"} {
 			if strings.Contains(result, unwanted) {
 				t.Errorf("non-GSSAPI report contains %q:\n%s", unwanted, result)
 			}

@@ -266,7 +266,7 @@ func TestValidityJSONUsesSnapshotDatePrecisionWithoutStyling(t *testing.T) {
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.SnapshotAt.Equal(now) || snapshot.SchemaVersion != 1 {
+	if !snapshot.SnapshotAt.Equal(now) || snapshot.SchemaVersion != 2 {
 		t.Fatalf("snapshot metadata changed: %+v", snapshot)
 	}
 	for _, item := range snapshot.Tables {

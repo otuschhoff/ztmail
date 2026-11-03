@@ -2,10 +2,10 @@
 
 [README](../README.md) | [Implementation](implementation.md) | [Go library](library.md) | [Diagnostics](diagnostics.md) | [Build](build.md)
 
-**Status:** Phases 0–3 complete: prerequisites, configuration and shared mTLS/
+**Status:** Phases 0–4 complete: prerequisites, configuration and shared mTLS/
 EXTERNAL transport and end-to-end CLI/library certificate dispatch established.
-Method-aware diagnostics (Phase 4) and final documentation/platform matrix
-(Phase 5) remain.
+Method-aware diagnostics and JSON v2 are established; final documentation and
+platform/regression matrix (Phase 5) remain.
 Baseline: ztmail v0.2.17.
 This document defines a bounded implementation plan for an LLM coding agent.
 The authentication/trust flags and API fields below are implemented.

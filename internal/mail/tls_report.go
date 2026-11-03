@@ -255,5 +255,6 @@ func (r *TestReport) renderTLSDetails(format reportFormat) string {
 	}
 	return reportNote(format, "Server TLS certificate / connection") + "\n" +
 		t.render(format, r.color, r.values["AD domain"]) + "\n" +
+		r.renderAuthentication(format) + "\n" +
 		r.renderCrypto(format) + "\n" + r.renderValidity(format)
 }

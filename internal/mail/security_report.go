@@ -89,6 +89,28 @@ func (r *TestReport) cryptoTable() reportTable {
 	if len(rows) == 0 {
 		rows = append(rows, table.Row{"TLS cryptography", "TLS not established / unavailable", "Unavailable"})
 	}
+	if r.certificateAuthentication() {
+		rating, key, strength := "Unavailable", "Not presented / unavailable", 0
+		if cert := r.authentication.ClientCertificate; cert != nil {
+			key, strength = cert.PublicKey+" (local configured metadata)", cert.ClassicalKeyStrength
+			rating = equivalentStrength(strength)
+		}
+		overall := 0
+		if r.authentication.ClientCertificatePresented && r.tlsStrength > 0 && strength > 0 {
+			overall = min(r.tlsStrength, strength)
+		}
+		rows = append(rows,
+			table.Row{"Client certificate key", key, rating},
+			table.Row{"Kerberos ticket encryption", "Not applicable (certificate authentication)", "-"},
+			table.Row{"Kerberos ticket session key", "Not applicable (certificate authentication)", "-"},
+			table.Row{"Overall strength", "Weakest observable TLS / local client key; not relay authorization", equivalentStrength(overall)})
+		if overall == 0 {
+			rows = append(rows, table.Row{"Overall estimate limitation", "Client presentation or strictly verified TLS strength unavailable; no trust/authorization estimate", "-"})
+		}
+		return reportTable{header: table.Row{"Property", "Cryptography", "NIST strength"}, rows: rows,
+			configs: []table.ColumnConfig{{Number: 2, WidthMax: 76},
+				{Number: 3, Align: text.AlignRight, AlignHeader: text.AlignRight}}}
+	}
 	metadata := r.ticketMetadata
 	ticketBits, ticketRating := enctypeStrength(metadata.TicketEncryption)
 	sessionBits, sessionRating := enctypeStrength(metadata.SessionKey)
@@ -145,7 +167,7 @@ func (r *TestReport) renderCrypto(format reportFormat) string {
 	}
 	return reportNote(format, "Cryptography (TLS / Kerberos)") + "\n" +
 		t.render(format, r.color, r.values["AD domain"]) + "\n" +
-		reportNote(format, cryptoReportNote)
+		reportNote(format, r.cryptoNote())
 }
 
 func relativeValidityDuration(duration time.Duration) string {
@@ -219,6 +241,15 @@ func (r *TestReport) validityTable() reportTable {
 	if len(r.tlsValidity) == 0 {
 		appendValidity("TLS certificate", kerberos.MetadataField[time.Time]{Reason: kerberos.MetadataNotEstablished},
 			kerberos.MetadataField[time.Time]{Reason: kerberos.MetadataNotEstablished})
+	}
+	if r.certificateAuthentication() {
+		if cert := r.authentication.ClientCertificate; cert != nil {
+			appendValidity("Client certificate (local configured leaf)",
+				kerberos.MetadataField[time.Time]{Value: cert.NotBefore, Available: !cert.NotBefore.IsZero(), Provenance: "client_certificate_local"},
+				kerberos.MetadataField[time.Time]{Value: cert.NotAfter, Available: !cert.NotAfter.IsZero(), Provenance: "client_certificate_local"})
+		}
+		t.rows = append(t.rows, table.Row{"Kerberos SMTP service ticket", "Not applicable", "Not applicable", "-", "-", "certificate authentication"})
+		return t
 	}
 	metadata := r.ticketMetadata
 	label := "Kerberos SMTP service ticket"

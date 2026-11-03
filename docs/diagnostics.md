@@ -278,17 +278,49 @@ message payloads from other submissions are never included. The report does
 contain account names, credential paths and internal topology: choose recipients
 accordingly.
 
-The JSON attachment uses `schema_version: 1`, a UTC `snapshot_at`, the
-`snapshot_phase` value `after_smtp_authentication_before_data`, explanatory
+The JSON attachment uses `schema_version: 2`, a UTC `snapshot_at`, the
+method-neutral `snapshot_phase` value `after_transport_authentication_before_data`, explanatory
 `notes`, and an ordered `tables` array. Each table has a stable `id`, `title`,
 `columns`, and `rows`; each row is an array of unstyled strings corresponding
 to the columns. Values preserve the displayed units, unavailable markers and
 unrounded-threshold row filtering; terminal colours and HTML styling are not
 included. The `summary` table is always present; `issues` appears when needed.
 With `--debug`, tables also include `runtime`, `dc_observations` when nonempty,
-and `tls`, `crypto`, and `validity`; `--debug --verbose` additionally includes
+and `tls`, `authentication`, `crypto`, and `validity`; `--debug --verbose` additionally includes
 `step_timings`.
 Attachment contents follow the same table selection as the email body.
+
+### Schema v2 migration and certificate evidence
+
+Consumers of v1 must accept schema version 2 and the new snapshot phase.
+Existing table IDs and columns remain where applicable; debug adds
+`authentication`. The top-level `authentication` object is present even without
+debug: `method`, `tls_established`, `client_certificate_requested`,
+`client_certificate_presented`, `smtp_auth_confirmed`, optional safe
+`client_certificate`, and `server_verification`. Expiry grace is an integer
+`expiry_grace_nanoseconds`; times are UTC RFC 3339 JSON timestamps. Fingerprints
+are lowercase SHA-256 hex. No values contain ANSI or rendered HTML.
+
+`mtls` confirms only requested/selected client-certificate presentation over
+completed TLS. It has no SMTP AUTH and does not prove relay identity mapping or
+authorization. `mtls-external` additionally requires SMTP 235. Neither proves
+DATA acceptance: the attached snapshot precedes DATA. Local reports separately
+show delivery acceptance and cleanup warnings.
+
+Server evidence distinguishes `policy_passed` and `trusted_issuer`, selected
+root mode/anchor, configured CA allow/deny lists, configured insecure options,
+and actually used exceptions. An issuer exception is never labelled trusted;
+any used expiry/issuer exception makes the transport summary a warning, not
+strict verification. A configured but unused exception still produces a warning.
+With custom verification, Go may not expose verified chains for key-strength
+assessment; the report conservatively leaves that strength unavailable.
+
+Client subject/issuer, fingerprint, public-key/signature metadata and validity
+are local configured-leaf evidence, not a server-verified client path.
+`client_certificate_local` validity provenance uses the same frozen UTC
+snapshot, 48-hour precision and fresh-age rules as other validity rows.
+Kerberos principal/source/SPN and ticket fields are explicitly not applicable
+for mTLS; no Kerberos strength or certificate-derived mail identity is invented.
 
 HTML uses the same bold green `OK`, grey AD-domain suffixes and status colours
 as the CLI, regardless of terminal colour settings. Tables have grey borders

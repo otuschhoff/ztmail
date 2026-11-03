@@ -67,7 +67,7 @@ func TestTestmailJSONTablesSnapshot(t *testing.T) {
 			if err := json.Unmarshal(jsonData, &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.SchemaVersion != 1 || snapshot.SnapshotPhase != "after_smtp_authentication_before_data" ||
+			if snapshot.SchemaVersion != 2 || snapshot.SnapshotPhase != "after_transport_authentication_before_data" ||
 				snapshot.SnapshotAt.Before(before) || snapshot.SnapshotAt.After(after) {
 				t.Fatalf("incorrect snapshot metadata: %+v", snapshot)
 			}
@@ -77,7 +77,7 @@ func TestTestmailJSONTablesSnapshot(t *testing.T) {
 				if mode.verbose {
 					wantIDs = append(wantIDs, "step_timings")
 				}
-				wantIDs = append(wantIDs, "tls", "crypto", "validity")
+				wantIDs = append(wantIDs, "tls", "authentication", "crypto", "validity")
 			}
 			var ids []string
 			for _, item := range snapshot.Tables {

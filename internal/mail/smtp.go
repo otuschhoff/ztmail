@@ -108,24 +108,33 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 }
 
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Resolver, log io.Writer) (err error) {
-	o.report.Value("SPN", o.spn)
+	o.report.AuthenticationMethod(o.auth)
+	if o.auth == AuthGSSAPI || o.auth == "" {
+		o.report.Value("SPN", o.spn)
+	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	var tlsConfig *tls.Config
-	evidence := &AuthenticationResult{Method: AuthGSSAPI}
-	tlsEstablished := false
-	if o.tlsMode != "off" {
-		tlsConfig, evidence, err = authenticationTLS(o, log)
-		if err != nil {
-			return fmt.Errorf("SMTP TLS configuration: %w", err)
-		}
+	evidence := &AuthenticationResult{Method: o.auth}
+	if evidence.Method == "" {
+		evidence.Method = AuthGSSAPI
 	}
+	tlsEstablished := false
 	defer func() {
+		evidence.TLSEstablished = tlsEstablished
 		if !tlsEstablished {
 			evidence.ClientCertificatePresented = false
 		}
 		reportAuthentication(o, *evidence)
 	}()
+	if o.tlsMode != "off" {
+		var configured *AuthenticationResult
+		tlsConfig, configured, err = authenticationTLS(o, log)
+		if err != nil {
+			return fmt.Errorf("SMTP TLS configuration: %w", err)
+		}
+		evidence = configured
+	}
 	if backend == nil {
 		return errors.New("relay resolver is required")
 	}
@@ -156,6 +165,8 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			return fmt.Errorf("TLS handshake: %w", err)
 		}
 		o.report.Step("Implicit TLS", nil, "server TLS policy passed; TLS established")
+		tlsEstablished = true
+		evidence.TLSEstablished = true
 		transport = secure
 	}
 	greetingDone := o.report.Measure("SMTP greeting")
@@ -184,6 +195,10 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 		tlsDone := o.report.Measure("SMTP STARTTLS")
 		err = c.StartTLS(tlsConfig)
+		if state, ok := c.TLSConnectionState(); ok && state.HandshakeComplete {
+			tlsEstablished = true
+			evidence.TLSEstablished = true
+		}
 		tlsDone()
 		o.report.Step("SMTP STARTTLS", err, "server TLS policy passed; TLS and post-TLS EHLO completed")
 		if err != nil {
@@ -195,6 +210,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	var state *tls.ConnectionState
 	if tlsState, ok := c.TLSConnectionState(); ok {
 		tlsEstablished = tlsState.HandshakeComplete
+		evidence.TLSEstablished = tlsEstablished
 		state = &tlsState
 		o.report.TLS(tlsState)
 	}
