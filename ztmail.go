@@ -5,6 +5,7 @@ package ztmail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -28,10 +29,37 @@ const (
 	TLSOff      TLSMode = "off"
 )
 
+type AuthMode = mail.AuthMode
+type RootMode = mail.RootMode
+type CASelector = mail.CASelector
+type CASelectorKind = mail.CASelectorKind
+type ServerTrust = mail.ServerTrust
+
+const (
+	AuthGSSAPI          = mail.AuthGSSAPI
+	AuthMTLS            = mail.AuthMTLS
+	AuthMTLSExternal    = mail.AuthMTLSExternal
+	RootsSystem         = mail.RootsSystem
+	RootsAppend         = mail.RootsAppend
+	RootsReplace        = mail.RootsReplace
+	CACertificateSHA256 = mail.CACertificateSHA256
+	CASPKISHA256        = mail.CASPKISHA256
+)
+
+var ErrTLSFeatureUnavailable = mail.ErrTLSFeatureUnavailable
+
+func ParseCASelector(kind CASelectorKind, value string) (CASelector, error) {
+	return mail.ParseCASelector(kind, value)
+}
+
 // Options is copied by New. AD must have been created with adclient.NewAD.
 // The application retains ownership and must keep AD alive until all calls end.
 type Options struct {
-	AD *adclient.Client
+	AD   *adclient.Client
+	Auth AuthMode
+	// ClientCertificate is copied; its signer must remain immutable/concurrent-safe.
+	ClientCertificate *tls.Certificate
+	ServerTrust       ServerTrust
 	// Domain is explicit; the library does not discover local host configuration.
 	// It must describe the supplied AD client's domain.
 	Domain string
@@ -115,6 +143,12 @@ func (s *borrowedSession) release() { s.Lease.Release() }
 // New validates configuration without network I/O. It borrows AD, never creates
 // another AD owner, and never selects different credentials on failure.
 func New(o Options) (*Client, error) {
+	if o.Auth == "" {
+		o.Auth = AuthGSSAPI
+	}
+	if o.Auth != AuthGSSAPI && (o.Realm != "" || o.SPN != "" || o.LDAPRaceCandidates != 0) {
+		return nil, errors.New("mTLS cannot include Kerberos realm/SPN or LDAP options")
+	}
 	if o.AD == nil {
 		return nil, errors.New("AD client is required")
 	}
@@ -126,7 +160,7 @@ func New(o Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("AD domain: %w", err)
 	}
-	if o.Realm == "" {
+	if o.Realm == "" && o.Auth == AuthGSSAPI {
 		o.Realm = strings.ToUpper(o.Domain)
 	}
 	if strings.ContainsAny(o.Realm, "\r\n\x00 /@") {
@@ -146,7 +180,7 @@ func New(o Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("EHLO hostname: %w", err)
 	}
-	if o.SPN == "" {
+	if o.SPN == "" && o.Auth == AuthGSSAPI {
 		o.SPN = "smtp/" + o.Relay
 	}
 	if strings.ContainsAny(o.SPN, "\r\n\x00") {
@@ -172,6 +206,12 @@ func New(o Options) (*Client, error) {
 	if o.Timeout < 0 {
 		return nil, errors.New("timeout must be positive")
 	}
+	prepared, err := mail.PrepareAuthentication(mail.Config{Auth: o.Auth, ClientCertificate: o.ClientCertificate,
+		ServerTrust: o.ServerTrust, TLSMode: string(o.TLS)})
+	if err != nil {
+		return nil, err
+	}
+	o.Auth, o.ClientCertificate, o.ServerTrust = prepared.Auth, prepared.ClientCertificate, prepared.ServerTrust
 	if o.LDAPRaceCandidates < 0 || o.LDAPRaceCandidates > 8 {
 		return nil, errors.New("LDAPRaceCandidates must be between 0 and 8")
 	}
@@ -206,6 +246,9 @@ func (c *Client) Test(ctx context.Context, report io.Writer) (Result, error) {
 }
 
 func (c *Client) send(ctx context.Context, message Message, output io.Writer, test bool) (result Result, err error) {
+	if c != nil && c.options.Auth != "" && c.options.Auth != AuthGSSAPI {
+		return result, errors.New("mTLS library submission is not yet wired")
+	}
 	if c == nil || c.acquire == nil {
 		return result, errors.New("ztmail client must be constructed with New")
 	}

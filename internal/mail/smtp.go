@@ -34,8 +34,12 @@ type SecurityContext interface {
 	Close() error
 }
 
-type Backend interface {
+type Resolver interface {
 	Resolve(context.Context, string) ([]netip.Addr, error)
+}
+
+type Backend interface {
+	Resolver
 	NewSecurityContext(context.Context, string, *tls.ConnectionState) (SecurityContext, error)
 }
 
@@ -103,7 +107,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 	}
 }
 
-func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Backend, log io.Writer) (err error) {
+func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Resolver, log io.Writer) (err error) {
 	o.report.Value("SPN", o.spn)
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -176,7 +180,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		state = &tlsState
 		o.report.TLS(tlsState)
 	}
-	security, err := backend.NewSecurityContext(ctx, o.spn, state)
+	gssBackend, ok := backend.(Backend)
+	if !ok {
+		return errors.New("GSSAPI authentication requires a security-context backend")
+	}
+	security, err := gssBackend.NewSecurityContext(ctx, o.spn, state)
 	o.report.Step("SMTP GSSAPI security context", err, fmt.Sprintf("SPN=%q TLS channel binding available=%t", o.spn, state != nil))
 	if err != nil {
 		return fmt.Errorf("AD SMTP security context: %w", err)
@@ -306,7 +314,7 @@ func certificateLifetime(notAfter, now time.Time) string {
 	return "+<1 minute"
 }
 
-func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error) {
+func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, error) {
 	dnsDone := o.report.Measure("DNS relay lookup")
 	addresses, err := backend.Resolve(ctx, o.relay)
 	dnsDone()
