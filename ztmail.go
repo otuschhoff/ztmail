@@ -242,7 +242,11 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	if err != nil {
 		return result, fmt.Errorf("acquire AD credentials: %w", err)
 	}
-	defer credentials.release()
+	defer func() {
+		done := report.Measure("AD credential cleanup")
+		defer done()
+		credentials.release()
+	}()
 	result.Identity, err = credentials.identity()
 	if err == nil && !strings.EqualFold(result.Identity.Realm, c.options.Realm) {
 		err = fmt.Errorf("AD identity realm %q does not match configured realm %q", result.Identity.Realm, c.options.Realm)

@@ -105,6 +105,73 @@ func TestOverallTLSStrengthUsesWeakestObservableComponent(t *testing.T) {
 	}
 }
 
+func TestTLSDebugStrengthColumn(t *testing.T) {
+	state := strongTLSState()
+	state.PeerCertificates[0].PublicKey = testRSAKey(2048)
+	report := NewTestReport(&bytes.Buffer{}, false)
+	report.TLS(state)
+	want := map[string]string{
+		"Cipher suite":               "~256bit",
+		"Key exchange":               "~192bit",
+		"Certificate key":            "~112bit",
+		"Certificate signature":      "-",
+		"Verified certificate chain": "~112bit",
+		"TLS overall strength":       "~112bit",
+	}
+	for _, row := range report.cryptoTable().rows {
+		if len(row) != 3 {
+			t.Fatalf("TLS row has %d columns: %v", len(row), row)
+		}
+		key := row[0].(string)
+		if strength, ok := want[key]; ok {
+			if row[2] != strength {
+				t.Errorf("%s strength = %v, want %s", key, row[2], strength)
+			}
+			delete(want, key)
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("missing TLS rows: %v", want)
+	}
+	for _, format := range []reportFormat{reportTerminal, reportHTML, reportPlain} {
+		result := report.renderTLSDetails(format)
+		for _, strength := range []string{"~256bit", "~192bit", "~112bit"} {
+			if !strings.Contains(result, strength) {
+				t.Errorf("format=%v: missing strength %s:\n%s", format, strength, result)
+			}
+		}
+		if format != reportPlain && !strings.Contains(strings.ToLower(result), "nist strength") {
+			t.Errorf("format=%v: missing strength column header:\n%s", format, result)
+		}
+		if format == reportPlain && !strings.Contains(result, "TLS overall strength: Weakest observable TLS component (~112bit)") {
+			t.Errorf("plain-text report lost overall estimate:\n%s", result)
+		}
+	}
+}
+
+func TestTLSDebugUnavailableStrength(t *testing.T) {
+	report := NewTestReport(&bytes.Buffer{}, false)
+	for _, format := range []reportFormat{reportTerminal, reportHTML, reportPlain} {
+		if result := report.renderTLSDetails(format); !strings.Contains(result, "TLS not established / unavailable") {
+			t.Errorf("format=%v: missing TLS status:\n%s", format, result)
+		}
+	}
+	state := strongTLSState()
+	state.CurveID = 0
+	report.TLS(state)
+	for _, row := range report.cryptoTable().rows {
+		if len(row) != 3 {
+			t.Fatalf("TLS row has %d columns: %v", len(row), row)
+		}
+		if (row[0] == "Key exchange" || row[0] == "Overall strength") && row[2] != "Unavailable" {
+			t.Errorf("unsupported strength reported as known: %v", row)
+		}
+	}
+	if result := report.renderTLSDetails(reportPlain); !strings.Contains(result, "Key exchange strength unavailable or unsupported") {
+		t.Errorf("missing explanation for unavailable overall estimate:\n%s", result)
+	}
+}
+
 func TestTLSDebugDetailsInEmailSnapshot(t *testing.T) {
 	state := strongTLSState()
 	state.PeerCertificates[0].Subject.CommonName = `<smtp>&.corp.example`
@@ -123,7 +190,7 @@ func TestTLSDebugDetailsInEmailSnapshot(t *testing.T) {
 	bodies := testmailBodies(t, message)
 	for format, body := range bodies {
 		for _, want := range []string{"Server TLS certificate / connection", "Certificate key", "ECDSA P-384",
-			"Key exchange", state.CurveID.String(), tls.CipherSuiteName(state.CipherSuite), "192-bit classical equivalent"} {
+			"Key exchange", state.CurveID.String(), tls.CipherSuiteName(state.CipherSuite), "~192bit", "Overall strength"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing TLS detail %q:\n%s", format, want, body)
 			}

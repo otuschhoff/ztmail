@@ -103,6 +103,7 @@ func TestSMTPTestAuthenticatesWithoutSendingEmail(t *testing.T) {
 			var output bytes.Buffer
 			o := options{testMode: true, report: NewTestReport(&output, true), relay: "relay.corp.example", port: port,
 				hello: "host.corp.example", spn: "smtp/relay.corp.example", tlsMode: "off", timeout: 3 * time.Second}
+			o.report.EnableDebug()
 			if mode == "starttls-missing" {
 				o.tlsMode = "required"
 			}
@@ -115,6 +116,16 @@ func TestSMTPTestAuthenticatesWithoutSendingEmail(t *testing.T) {
 			err = deliver(context.Background(), o, []string{"must-not-send@corp.example"}, []byte("must-not-send"), backend, &output)
 			result := <-results
 			assertNoEmailCommands(t, result)
+			quitCount, securityCleanupCount := 1, 1
+			if mode == "auth-failure" || mode == "starttls-missing" {
+				quitCount = 0
+			}
+			if mode == "starttls-missing" {
+				securityCleanupCount = 0
+			}
+			assertMeasuredOperation(t, o.report, "SMTP QUIT", quitCount)
+			assertMeasuredOperation(t, o.report, "GSSAPI cleanup", securityCleanupCount)
+			assertMeasuredOperation(t, o.report, "SMTP connection cleanup", 2)
 			if mode == "success" {
 				if err != nil || result.err != nil {
 					t.Fatalf("client=%v server=%v", err, result.err)
@@ -278,7 +289,7 @@ func TestSMTPTestTLSHelper(t *testing.T) {
 	}
 	report.EnableDebug()
 	for _, want := range []string{"Server TLS certificate / connection", "Ed25519", "Cipher suite",
-		tls.CipherSuiteName(backend.state.CipherSuite), backend.state.CurveID.String(), "128-bit classical equivalent"} {
+		tls.CipherSuiteName(backend.state.CipherSuite), backend.state.CurveID.String(), "~128bit"} {
 		if !strings.Contains(report.renderDebug(reportPlain), want) {
 			t.Errorf("missing verified TLS detail %q", want)
 		}

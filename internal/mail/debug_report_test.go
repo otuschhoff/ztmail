@@ -32,8 +32,8 @@ func TestGSSAPISummary(t *testing.T) {
 	}
 	plain := report.renderFormat(reportPlain)
 	previous := -1
-	for _, key := range []string{"Hostname", "Target relay", "AD domain", "Mail (from)", "Authentication method", "User",
-		"Cred source", "SPN", "Transport security", "Authentication", "Total runtime"} {
+	for _, key := range []string{"Hostname", "Target relay", "AD domain", "User", "Mail (from)",
+		"Cred source", "Authentication method", "SPN", "Transport security", "Authentication", "Total runtime"} {
 		if strings.Count(plain, "\n"+key+":") != 1 && !strings.HasPrefix(plain, key+":") {
 			t.Errorf("missing/duplicate key %q:\n%s", key, &output)
 		}
@@ -112,7 +112,7 @@ func TestRuntimeBreakdownDoesNotDoubleCount(t *testing.T) {
 	}
 	report.traceEnds = []time.Time{end, end, end}
 	text := report.runtimeBreakdown()
-	for _, want := range []string{"DNS", "100.0ms", "200.0ms", "SMTP auth", "counted once"} {
+	for _, want := range []string{"DNS", "100.0ms", "200.0ms", "counted once"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}

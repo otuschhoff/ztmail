@@ -58,7 +58,7 @@ func TestPasswordPromptPrincipalSelection(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			terminal := &fakePasswordTerminal{input: strings.NewReader(tt.input), password: []byte("synthetic-secret")}
-			principal, password, err := readPasswordCredentials(context.Background(), terminal, tt.guess, tt.pinned, "EXAMPLE.COM")
+			principal, password, err := readPasswordCredentials(context.Background(), terminal, tt.guess, tt.pinned, "EXAMPLE.COM", nil)
 			defer clear(password)
 			if err != nil || principal != tt.want || string(password) != "synthetic-secret" {
 				t.Fatalf("principal=%q err=%v", principal, err)
@@ -92,7 +92,7 @@ func TestPasswordPromptErrors(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			terminal := &fakePasswordTerminal{input: strings.NewReader(tt.line), password: tt.password, passwordErr: tt.err}
-			_, password, err := readPasswordCredentials(context.Background(), terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM")
+			_, password, err := readPasswordCredentials(context.Background(), terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM", nil)
 			if err == nil || password != nil {
 				t.Fatal("invalid prompt input accepted")
 			}
@@ -107,9 +107,44 @@ func TestPasswordPromptErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	terminal := &fakePasswordTerminal{input: strings.NewReader("\n"), password: []byte("synthetic")}
-	if _, _, err := readPasswordCredentials(ctx, terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM"); !errors.Is(err, context.Canceled) ||
+	if _, _, err := readPasswordCredentials(ctx, terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM", nil); !errors.Is(err, context.Canceled) ||
 		terminal.principalReads != 0 || terminal.passwordReads != 0 {
 		t.Fatal("canceled context performed prompt work")
+	}
+}
+
+func TestPasswordPromptExecutionRuntimeReporting(t *testing.T) {
+	for _, test := range []struct {
+		name, input               string
+		passwordError, writeError error
+		canceled                  bool
+	}{
+		{name: "success", input: "\n"},
+		{name: "principal-eof", input: ""},
+		{name: "password-error", input: "\n", passwordError: io.EOF},
+		{name: "terminal-write-error", input: "\n", writeError: errors.New("terminal output failed")},
+		{name: "already-canceled", input: "\n", canceled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			report := newTestReport(&output, false)
+			terminal := &fakePasswordTerminal{input: strings.NewReader(test.input), password: []byte("synthetic-secret"),
+				passwordErr: test.passwordError, writeErr: test.writeError}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if test.canceled {
+				cancel()
+			}
+			_, password, err := readPasswordCredentials(ctx, terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM", report)
+			clear(password)
+			report.Finish(&err)
+			if strings.Contains(output.String(), "Execution runtime") != (terminal.passwordReads > 0) {
+				t.Errorf("execution runtime did not reflect actual password prompting:\n%s", output.String())
+			}
+			if strings.Contains(output.String(), "synthetic-secret") {
+				t.Fatal("password leaked into report")
+			}
+		})
 	}
 }
 
@@ -124,7 +159,7 @@ func TestGuessedPrincipal(t *testing.T) {
 func TestPasswordPromptWriteAndCancellationErrors(t *testing.T) {
 	writeErr := errors.New("terminal output failed")
 	terminal := &fakePasswordTerminal{input: strings.NewReader("\n"), writeErr: writeErr}
-	if _, _, err := readPasswordCredentials(context.Background(), terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM"); !errors.Is(err, writeErr) {
+	if _, _, err := readPasswordCredentials(context.Background(), terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM", nil); !errors.Is(err, writeErr) {
 		t.Fatalf("lost terminal output error: %v", err)
 	}
 	if terminal.passwordReads != 0 || terminal.principalReads != 0 {
@@ -133,7 +168,7 @@ func TestPasswordPromptWriteAndCancellationErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	terminal = &fakePasswordTerminal{input: strings.NewReader("\n"), password: []byte("synthetic"), onPasswordRead: cancel}
-	_, password, err := readPasswordCredentials(ctx, terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM")
+	_, password, err := readPasswordCredentials(ctx, terminal, "alice@EXAMPLE.COM", false, "EXAMPLE.COM", nil)
 	if !errors.Is(err, context.Canceled) || password != nil || !bytes.Equal(terminal.password, make([]byte, len(terminal.password))) {
 		t.Fatal("password retained after cancellation")
 	}

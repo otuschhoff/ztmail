@@ -15,26 +15,35 @@ import (
 	"github.com/otuschhoff/adbind/ad/addns"
 	"github.com/otuschhoff/adbind/ad/discovery"
 	"github.com/otuschhoff/adbind/ad/dns"
+	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/observe"
 	"golang.org/x/term"
 )
 
 type TestReport struct {
-	mu         sync.Mutex
-	output     io.Writer
-	outputErr  error
-	exchanges  int
-	verbose    bool
-	color      bool
-	rows       []reportRow
-	values     map[string]string
-	started    time.Time
-	debug      bool
-	traces     []observe.TraceEvent
-	traceEnds  []time.Time
-	testMail   bool
-	inventory  []discovery.InventoryEvent
-	tlsDetails []table.Row
+	mu                sync.Mutex
+	output            io.Writer
+	outputErr         error
+	exchanges         int
+	verbose           bool
+	color             bool
+	rows              []reportRow
+	values            map[string]string
+	started           time.Time
+	snapshotAt        time.Time
+	debug             bool
+	traces            []observe.TraceEvent
+	traceEnds         []time.Time
+	testMail          bool
+	inventory         []discovery.InventoryEvent
+	tlsDetails        []table.Row
+	tlsCrypto         []table.Row
+	tlsValidity       []certificateValidity
+	tlsStrength       int
+	tlsStrengthReason string
+	ticketMetadata    kerberos.TicketMetadata
+	passwordPrompted  bool
+	promptDuration    time.Duration
 }
 
 type reportRow struct {
@@ -54,6 +63,8 @@ func (r *TestReport) Line(status, step, detail string) {
 	if r == nil {
 		return
 	}
+	done := r.Measure("Report output")
+	defer done()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if importantResult(status, step) {
@@ -233,23 +244,55 @@ func (r *TestReport) render() string {
 	return r.renderFormat(reportTerminal)
 }
 
-func (r *TestReport) renderFormat(format reportFormat) string {
+func (r *TestReport) snapshotTime() time.Time {
+	if !r.snapshotAt.IsZero() {
+		return r.snapshotAt
+	}
+	return time.Now()
+}
+
+func (r *TestReport) summaryTable() reportTable {
 	t := reportTable{configs: []table.ColumnConfig{{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft}}}
-	keys := []string{"Hostname", "Target relay", "AD domain", "Mail (from)", "Authentication method"}
-	if strings.EqualFold(r.values["Authentication method"], "GSSAPI") {
-		keys = append(keys, "User", "Cred source", "SPN")
+	gssapi := strings.EqualFold(r.values["Authentication method"], "GSSAPI")
+	keys := []string{"Hostname", "Target relay", "AD domain"}
+	if gssapi {
+		keys = append(keys, "User")
+	}
+	keys = append(keys, "Mail (from)")
+	if gssapi {
+		keys = append(keys, "Cred source")
+	}
+	keys = append(keys, "Authentication method")
+	if gssapi {
+		keys = append(keys, "SPN")
 	}
 	keys = append(keys, "Transport security", "Authentication", "Total runtime")
+	if r.passwordPrompted {
+		keys = append(keys, "Execution runtime")
+	}
+	elapsed := r.snapshotTime().Sub(r.started)
 	for _, key := range keys {
 		value := r.values[key]
+		if key == "Cred source" && (strings.EqualFold(value, "ccache") || strings.EqualFold(value, "keytab")) &&
+			r.values["Cred source path"] != "" {
+			value += " (" + r.values["Cred source path"] + ")"
+		}
 		if value == "" {
 			value = "Not reached / unavailable"
 		}
 		if key == "Total runtime" {
-			value = formatDuration(time.Since(r.started))
+			value = formatDuration(elapsed)
+		}
+		if key == "Execution runtime" {
+			value = formatDuration(max(0, elapsed-r.promptDuration))
 		}
 		t.rows = append(t.rows, table.Row{key, value})
 	}
+	return t
+}
+
+func (r *TestReport) renderFormat(format reportFormat) string {
+	t := r.summaryTable()
 	result := t.render(format, r.color, r.values["AD domain"])
 	// Failures and warnings must remain visible even if authentication succeeded.
 	if issues := r.renderIssues(format); issues != "" {
@@ -271,25 +314,28 @@ func (r *TestReport) renderFormat(format reportFormat) string {
 	return result + "\nNo email sent."
 }
 
-func (r *TestReport) renderIssues(format reportFormat) string {
+func (r *TestReport) issuesTable() reportTable {
 	t := reportTable{header: table.Row{"Check", "Result / details"}, configs: []table.ColumnConfig{
 		{Number: 1, WidthMax: 36, WidthMaxEnforcer: text.WrapSoft},
 		{Number: 2, WidthMax: 76, WidthMaxEnforcer: text.WrapSoft},
 	}}
-	if format == reportPlain {
-		t.header = nil
-	}
-	count := 0
 	for _, row := range r.rows {
 		if row.status != "FAIL" && row.status != "WARN" && row.status != "SKIP" && row.step != "DNS failure diagnostics" {
 			continue
 		}
-		count++
 		label := "[" + row.status + "] " + row.step
 		t.rows = append(t.rows, table.Row{label, row.detail})
 	}
-	if count == 0 {
+	return t
+}
+
+func (r *TestReport) renderIssues(format reportFormat) string {
+	t := r.issuesTable()
+	if len(t.rows) == 0 {
 		return ""
+	}
+	if format == reportPlain {
+		t.header = nil
 	}
 	return t.render(format, r.color, r.values["AD domain"])
 }

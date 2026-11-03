@@ -112,6 +112,14 @@ func overallTLSStrength(state tls.ConnectionState) (int, string) {
 		return 0, "Key exchange strength unavailable or unsupported"
 	}
 	strength = min(strength, exchange)
+	certificate, reason := verifiedCertificateStrength(state)
+	if reason != "" {
+		return 0, reason
+	}
+	return min(strength, certificate), ""
+}
+
+func verifiedCertificateStrength(state tls.ConnectionState) (int, string) {
 	if len(state.PeerCertificates) == 0 || len(state.VerifiedChains) == 0 {
 		return 0, "Verified certificate chain unavailable"
 	}
@@ -119,7 +127,7 @@ func overallTLSStrength(state tls.ConnectionState) (int, string) {
 	if leaf == 0 {
 		return 0, "Leaf certificate key strength unavailable or unsupported"
 	}
-	strength = min(strength, leaf)
+	strength := leaf
 	for _, chain := range state.VerifiedChains {
 		if len(chain) == 0 {
 			return 0, "Verified certificate chain unavailable"
@@ -147,7 +155,7 @@ func equivalentStrength(bits int) string {
 	if bits == 0 {
 		return "Unavailable"
 	}
-	return fmt.Sprintf("%d-bit classical equivalent", bits)
+	return fmt.Sprintf("~%dbit", bits)
 }
 
 func (r *TestReport) TLS(state tls.ConnectionState) {
@@ -157,11 +165,12 @@ func (r *TestReport) TLS(state tls.ConnectionState) {
 	now := time.Now()
 	rows := []table.Row{
 		{"TLS version", tls.VersionName(state.Version)},
-		{"Cipher suite", tls.CipherSuiteName(state.CipherSuite)},
-		{"Cipher strength", equivalentStrength(cipherStrength(state.CipherSuite))},
+	}
+	cryptoRows := []table.Row{
+		{"Cipher suite", tls.CipherSuiteName(state.CipherSuite), equivalentStrength(cipherStrength(state.CipherSuite))},
 	}
 	exchange, bits := keyExchangeStrength(state)
-	rows = append(rows, table.Row{"Key exchange", exchange}, table.Row{"Key exchange strength", equivalentStrength(bits)})
+	cryptoRows = append(cryptoRows, table.Row{"Key exchange", exchange, equivalentStrength(bits)})
 	if len(state.PeerCertificates) > 0 {
 		cert := state.PeerCertificates[0]
 		key, bits := publicKeyStrength(cert.PublicKey)
@@ -173,28 +182,56 @@ func (r *TestReport) TLS(state tls.ConnectionState) {
 			table.Row{"Subject", cert.Subject.String()},
 			table.Row{"Issuer", cert.Issuer.String()},
 			table.Row{"Subject alternative names", strings.Join(names, ", ")},
-			table.Row{"Certificate key", key},
-			table.Row{"Certificate key strength", equivalentStrength(bits)},
-			table.Row{"Certificate signature", cert.SignatureAlgorithm.String()},
-			table.Row{"Valid from", cert.NotBefore.UTC().Format(time.RFC3339)},
-			table.Row{"Valid until", cert.NotAfter.UTC().Format(time.RFC3339)},
-			table.Row{"Remaining validity", certificateLifetime(cert.NotAfter, now)},
+		)
+		cryptoRows = append(cryptoRows,
+			table.Row{"Certificate key", key, equivalentStrength(bits)},
+			table.Row{"Certificate signature", cert.SignatureAlgorithm.String(), "-"},
 		)
 	} else {
 		rows = append(rows, table.Row{"Certificate", "Unavailable"})
 	}
+	chain, _ := verifiedCertificateStrength(state)
+	cryptoRows = append(cryptoRows, table.Row{"Verified certificate chain", "Weakest verified certificate key/signature", equivalentStrength(chain)})
 	overall, reason := overallTLSStrength(state)
-	rows = append(rows, table.Row{"NIST-equivalent estimate", equivalentStrength(overall)})
+	cryptoRows = append(cryptoRows, table.Row{"TLS overall strength", "Weakest observable TLS component", equivalentStrength(overall)})
 	if reason != "" {
-		rows = append(rows, table.Row{"Estimate limitation", reason})
+		cryptoRows = append(cryptoRows, table.Row{"TLS estimate limitation", reason, "-"})
+	}
+	var certificates []*x509.Certificate
+	addCertificate := func(cert *x509.Certificate) {
+		for _, previous := range certificates {
+			if cert == previous || (len(cert.Raw) > 0 && cert.Equal(previous)) {
+				return
+			}
+		}
+		certificates = append(certificates, cert)
+	}
+	for _, cert := range state.PeerCertificates {
+		addCertificate(cert)
+	}
+	for _, chain := range state.VerifiedChains {
+		for _, cert := range chain {
+			addCertificate(cert)
+		}
+	}
+	validity := make([]certificateValidity, len(certificates))
+	for i, cert := range certificates {
+		label := fmt.Sprintf("TLS certificate %d", i+1)
+		if cert.Subject.CommonName != "" {
+			label += " (CN=" + cert.Subject.CommonName + ")"
+		}
+		validity[i] = certificateValidity{label, cert.NotBefore, cert.NotAfter}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tlsDetails = rows
+	r.tlsCrypto = cryptoRows
+	r.tlsValidity = validity
+	r.tlsStrength, r.tlsStrengthReason = overall, reason
 	r.values["Transport security"] = tlsTransportSummary(state, now)
 }
 
-func (r *TestReport) renderTLSDetails(format reportFormat) string {
+func (r *TestReport) tlsDetailsTable() reportTable {
 	rows := r.tlsDetails
 	if len(rows) == 0 {
 		status := r.values["Transport security"]
@@ -203,8 +240,20 @@ func (r *TestReport) renderTLSDetails(format reportFormat) string {
 		}
 		rows = []table.Row{{"Status", status}}
 	}
-	t := reportTable{rows: rows, configs: []table.ColumnConfig{{Number: 2, WidthMax: 76}}}
+	return reportTable{
+		header: table.Row{"Property", "Details"},
+		rows:   rows, configs: []table.ColumnConfig{
+			{Number: 2, WidthMax: 76},
+		},
+	}
+}
+
+func (r *TestReport) renderTLSDetails(format reportFormat) string {
+	t := r.tlsDetailsTable()
+	if format == reportPlain {
+		t.header = nil
+	}
 	return reportNote(format, "Server TLS certificate / connection") + "\n" +
 		t.render(format, r.color, r.values["AD domain"]) + "\n" +
-		reportNote(format, "NIST SP 800-57 classical estimate: weakest observable cipher, key exchange, certificate-chain key/signature; not certification or a post-quantum rating. TLS handshake signature scheme is not exposed by Go and is not assessed.")
+		r.renderCrypto(format) + "\n" + r.renderValidity(format)
 }

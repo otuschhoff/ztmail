@@ -18,16 +18,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/otuschhoff/adbind/ad/kerberos"
 )
 
 type fakeSecurity struct {
-	offer          []byte
-	wrapped        []byte
-	fail           bool
-	closed         int
-	closeErr       error
-	stepToken      []byte
-	emptySelection bool
+	offer                    []byte
+	wrapped                  []byte
+	fail                     bool
+	closed                   int
+	closeErr                 error
+	stepToken                []byte
+	emptySelection           bool
+	metadata                 kerberos.TicketMetadata
+	metadataCalls            int
+	metadataAfterNegotiation bool
 }
 
 func (f *fakeSecurity) Start() ([]byte, error) { return []byte("request"), nil }
@@ -51,6 +56,12 @@ func (f *fakeSecurity) Negotiate([]byte) ([]byte, error) {
 	return []byte("signed-selection"), nil
 }
 func (f *fakeSecurity) Close() error { f.closed++; return f.closeErr }
+
+func (f *fakeSecurity) TicketMetadata() kerberos.TicketMetadata {
+	f.metadataCalls++
+	f.metadataAfterNegotiation = len(f.wrapped) > 0
+	return f.metadata
+}
 
 type fakeBackend struct {
 	security   *fakeSecurity

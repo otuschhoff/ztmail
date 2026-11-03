@@ -109,3 +109,7 @@ func (c *adSecurityContext) Negotiate(input []byte) ([]byte, error) {
 }
 
 func (c *adSecurityContext) Close() error { return c.context.DeleteSecContext() }
+
+func (c *adSecurityContext) TicketMetadata() kerberos.TicketMetadata {
+	return kerberos.SecurityContextTicketMetadata(c.context)
+}

@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -47,12 +48,23 @@ func TestGeneratedTestmailDelivery(t *testing.T) {
 				report.EnableDebug()
 			}
 			security := &fakeSecurity{offer: []byte{1, 0, 0, 0}, fail: mode == "auth-failure"}
+			security.metadata = testTicketMetadata(time.Now())
 			backend := &fakeBackend{security: security, address: netip.MustParseAddr("127.0.0.1")}
 			err = Deliver(context.Background(), Config{Relay: "relay.corp.example", Hello: "worker.corp.example",
 				Port: listener.Addr().(*net.TCPAddr).Port, Timeout: 3 * time.Second, TLSMode: "off",
 				SPN: "smtp/relay.corp.example", From: "self@corp.example", TestMail: true, Report: report},
 				[]string{"recipient@corp.example"}, nil, backend, &output)
 			wire := <-results
+			if debug {
+				if security.metadataCalls != 1 || !security.metadataAfterNegotiation ||
+					report.ticketMetadata != security.metadata {
+					t.Fatal("report did not capture metadata from the negotiated SMTP context")
+				}
+				assertMeasuredOperation(t, report, "Report preparation", 1)
+				assertMeasuredOperation(t, report, "SMTP QUIT", 1)
+				assertMeasuredOperation(t, report, "GSSAPI cleanup", 1)
+				assertMeasuredOperation(t, report, "SMTP connection cleanup", 2)
+			}
 			report.Finish(&err)
 			if mode == "auth-failure" || mode == "recipient-failure" {
 				if err == nil || wire.message != "" || strings.Contains(output.String(), "Testmail delivery: Accepted") {
@@ -152,11 +164,26 @@ func TestTestmailHTMLMatchesCLIStyles(t *testing.T) {
 
 func testmailBodies(t *testing.T, message *netmail.Message) map[string]string {
 	t.Helper()
+	bodies, _ := testmailContents(t, message)
+	return bodies
+}
+
+func testmailContents(t *testing.T, message *netmail.Message) (map[string]string, []byte) {
+	t.Helper()
 	contentType, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
-	if err != nil || contentType != "multipart/alternative" || params["boundary"] == "" {
+	if err != nil || contentType != "multipart/mixed" || params["boundary"] == "" {
 		t.Fatalf("bad multipart header: %v, %v", message.Header, err)
 	}
-	reader := multipart.NewReader(message.Body, params["boundary"])
+	mixed := multipart.NewReader(message.Body, params["boundary"])
+	bodyPart, err := mixed.NextRawPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentType, params, err = mime.ParseMediaType(bodyPart.Header.Get("Content-Type"))
+	if err != nil || contentType != "multipart/alternative" || params["boundary"] == "" {
+		t.Fatalf("bad alternative header: %v, %v", bodyPart.Header, err)
+	}
+	reader := multipart.NewReader(bodyPart, params["boundary"])
 	bodies := make(map[string]string)
 	for _, want := range []string{"text/plain", "text/html"} {
 		part, err := reader.NextRawPart()
@@ -177,7 +204,30 @@ func testmailBodies(t *testing.T, message *netmail.Message) map[string]string {
 	if _, err := reader.NextRawPart(); err != io.EOF {
 		t.Fatalf("expected multipart end, got %v", err)
 	}
-	return bodies
+	attachment, err := mixed.NextRawPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentType, params, err = mime.ParseMediaType(attachment.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" || params["charset"] != "UTF-8" ||
+		params["name"] != "ztmail-report.json" || attachment.Header.Get("Content-Transfer-Encoding") != "quoted-printable" {
+		t.Fatalf("bad JSON attachment headers: %v, %v", attachment.Header, err)
+	}
+	disposition, params, err := mime.ParseMediaType(attachment.Header.Get("Content-Disposition"))
+	if err != nil || disposition != "attachment" || params["filename"] != "ztmail-report.json" {
+		t.Fatalf("bad JSON attachment disposition: %v, %v", attachment.Header, err)
+	}
+	jsonData, err := io.ReadAll(quotedprintable.NewReader(attachment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(jsonData) {
+		t.Fatalf("attachment is not valid JSON: %s", jsonData)
+	}
+	if _, err := mixed.NextRawPart(); err != io.EOF {
+		t.Fatalf("expected mixed multipart end, got %v", err)
+	}
+	return bodies, jsonData
 }
 
 func TestTestmailEscapesHTMLAndPreservesPlainValues(t *testing.T) {

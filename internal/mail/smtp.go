@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/otuschhoff/adbind/ad/kerberos"
 )
 
 var ErrDeliveryUncertain = errors.New("SMTP delivery status uncertain")
@@ -108,7 +110,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	if err != nil {
 		return fmt.Errorf("connect to relay: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		done := o.report.Measure("SMTP connection cleanup")
+		defer done()
+		conn.Close()
+	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			return fmt.Errorf("set SMTP deadline: %w", err)
@@ -137,7 +143,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	if err != nil {
 		return fmt.Errorf("SMTP greeting: %w", err)
 	}
-	defer c.Close()
+	defer func() {
+		done := o.report.Measure("SMTP connection cleanup")
+		defer done()
+		c.Close()
+	}()
 	helloDone := o.report.Measure("SMTP EHLO")
 	err = c.Hello(o.hello)
 	helloDone()
@@ -171,6 +181,8 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		return fmt.Errorf("AD SMTP security context: %w", err)
 	}
 	defer func() {
+		done := o.report.Measure("GSSAPI cleanup")
+		defer done()
 		if closeErr := security.Close(); closeErr != nil {
 			if err != nil || o.testMode {
 				err = errors.Join(err, closeErr)
@@ -186,6 +198,11 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	authDone := o.report.Measure("SMTP GSSAPI authentication")
 	err = c.Auth(auth)
 	authDone()
+	if provider, ok := security.(kerberos.TicketMetadataProvider); ok {
+		o.report.KerberosTicket(provider.TicketMetadata())
+	} else {
+		o.report.KerberosTicket(kerberos.Ticket{}.Metadata())
+	}
 	if err == nil && !auth.confirmed {
 		err = errors.New("relay did not confirm SMTP authentication")
 	}
@@ -232,7 +249,10 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		o.report.Step("SMTP DATA", nil, "testmail accepted by relay")
 	}
 	// A QUIT failure after a positive DATA reply must not cause the caller to resend.
-	if err := c.Quit(); err != nil {
+	quitDone := o.report.Measure("SMTP QUIT")
+	quitErr := c.Quit()
+	quitDone()
+	if err := quitErr; err != nil {
 		warn(o, log, fmt.Errorf("message accepted, but SMTP QUIT failed: %w", err))
 		if o.testMail {
 			o.report.Line("WARN", "SMTP QUIT", "testmail accepted, but disconnect failed: "+err.Error())

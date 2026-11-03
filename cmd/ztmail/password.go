@@ -40,14 +40,18 @@ func (t *consoleTerminal) Close() error {
 
 func openADPassword(ctx context.Context, o options) (*adSession, error) {
 	// Build the common AD configuration before asking for a secret.
+	configDone := o.report.Measure("AD source configuration")
 	settings, err := adOptionsForCredentials(o, kerberos.Options{Source: kerberos.SourcePassword, Realm: o.realm})
+	configDone()
 	if err != nil {
 		return nil, err
 	}
 	explicit := o.principal
 	guess := explicit
 	if guess == "" {
+		userDone := o.report.Measure("Local user lookup")
 		current, err := user.Current()
+		userDone()
 		if err != nil {
 			return nil, fmt.Errorf("cannot guess the current user principal; specify --principal: %w", err)
 		}
@@ -61,7 +65,7 @@ func openADPassword(ctx context.Context, o options) (*adSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("password fallback requires a controlling terminal; message stdin is never used for credentials: %w", err)
 	}
-	principal, password, promptErr := readPasswordCredentials(ctx, terminal, guess, explicit != "", o.realm)
+	principal, password, promptErr := readPasswordCredentials(ctx, terminal, guess, explicit != "", o.realm, o.report)
 	closeErr := terminal.Close()
 	if promptErr != nil || closeErr != nil {
 		clear(password)
@@ -94,7 +98,9 @@ func promptPrincipal(principal, realm string) (string, error) {
 	return strings.Join(components, "/") + "@" + strings.ToUpper(realm), nil
 }
 
-func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, guess string, pinned bool, realm string) (principal string, password []byte, err error) {
+func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, guess string, pinned bool, realm string, report *testReport) (principal string, password []byte, err error) {
+	done := report.Measure("Credential prompt")
+	defer done()
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
@@ -128,6 +134,7 @@ func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, gue
 	if _, err := fmt.Fprintf(terminal, "Password for %s: ", principal); err != nil {
 		return "", nil, err
 	}
+	report.MarkPasswordPrompted()
 	password, err = terminal.ReadPassword()
 	_, newlineErr := fmt.Fprintln(terminal)
 	err = errors.Join(err, newlineErr, ctx.Err())

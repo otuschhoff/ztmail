@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/otuschhoff/adbind/ad/adclient"
@@ -109,13 +110,14 @@ var _ ADSearcher = (*adclient.Client)(nil)
 
 type fakeADContext struct {
 	kerberos.SecurityContext
-	target  string
-	options []int
-	more    bool
-	fail    error
-	offer   []byte
-	authzid string
-	closed  bool
+	target   string
+	options  []int
+	more     bool
+	fail     error
+	offer    []byte
+	authzid  string
+	closed   bool
+	metadata kerberos.TicketMetadata
 }
 
 func (f *fakeADContext) InitSecContextWithOptions(target string, input []byte, options []int) ([]byte, bool, error) {
@@ -132,8 +134,10 @@ func (f *fakeADContext) NegotiateSaslAuth(input []byte, authzid string) ([]byte,
 }
 func (f *fakeADContext) DeleteSecContext() error { f.closed = true; return f.fail }
 
+func (f *fakeADContext) TicketMetadata() kerberos.TicketMetadata { return f.metadata }
+
 func TestADSecurityContextDelegatesToSDK(t *testing.T) {
-	fake := &fakeADContext{more: true}
+	fake := &fakeADContext{more: true, metadata: testTicketMetadata(time.Now())}
 	c := &adSecurityContext{context: fake, target: "smtp/mailgw.example.com"}
 	token, err := c.Start()
 	if err != nil || string(token) != "request" || fake.target != c.target || !reflect.DeepEqual(fake.options, []int{2}) {
@@ -149,6 +153,9 @@ func TestADSecurityContextDelegatesToSDK(t *testing.T) {
 	}
 	if err := c.Close(); err != nil || !fake.closed {
 		t.Fatalf("Close=%v closed=%v", err, fake.closed)
+	}
+	if got := c.TicketMetadata(); got != fake.metadata {
+		t.Fatal("metadata did not delegate to the actual SDK context or survive deletion")
 	}
 	if _, err := c.Start(); err == nil {
 		t.Fatal("premature context completion accepted")

@@ -5,6 +5,47 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-11-03
+
+### Added
+
+- Always attach `ztmail-report.json` to testmail using multipart/mixed around
+  the existing text/HTML alternatives. Export a versioned schema with stable
+  table IDs, unstyled columns/rows, notes and one shared pre-DATA snapshot time.
+  Follow debug/verbose table selection and exclude final delivery/cleanup.
+- Add separate debug TLS certificate/connection, TLS/Kerberos cryptography,
+  and validity tables. Show the actual SMTP authentication ticket's encryption
+  and session-key enctypes, nominal key sizes, supported AES key-strength
+  estimates, and weakest-component totals rather than sums.
+- Show UTC start/end, relative age/remaining validity and effective-start
+  provenance for unique TLS certificates and the SMTP ticket. Keep unavailable
+  metadata explicit, legacy/unknown algorithms unrated, and SSPI context
+  crypto/lifetime separate from OS-managed ticket metadata. Include the
+  `crypto` and `validity` tables and limitations in JSON attachments.
+- Add Execution runtime directly after Total runtime when a password was
+  actually prompted. Exclude the principal/password prompt interval while
+  preserving total wall time, including without debug and in testmail JSON.
+
+### Changed
+
+- Upgrade `github.com/otuschhoff/adbind/ad` to v0.7.0 and consume safe metadata
+  from the actual SMTP GSSAPI context after authentication, without additional
+  credential reads, ticket acquisition or network/native queries.
+- Move User directly below AD domain and Authentication method below Cred
+  source in test reports. Include resolved keytab or FILE-cache paths,
+  including default/environment cache paths, in grey beside the source.
+- Separate SMTP QUIT and measured security-context, connection, and credential
+  cleanup from Other / untracked. Add host/domain discovery, local user lookup,
+  credential prompting, report preparation/output and AD setup/orchestration
+  categories; count overlapping work once. Show credential prompting first
+  when applicable, followed by AD setup/orchestration, and classify preliminary
+  keytab inspection/principal selection under Kerberos.
+- Omit entire runtime breakdown rows below 0.1 ms using unrounded durations.
+  Values at or above the threshold remain visible.
+- Right-align mainly numerical columns, including bit strengths and relative
+  durations, in terminal and HTML tables. Keep NIST strength, Age and Remaining
+  right-aligned even when values are unavailable or status-bearing.
+
 ## [0.2.12] - 2026-11-02
 
 ### Changed

@@ -23,6 +23,8 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	if r == nil {
 		return nil, errors.New("testmail report is required")
 	}
+	done := r.Measure("Report preparation")
+	defer done()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.outputErr != nil {
@@ -46,24 +48,34 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		}
 		to = append(to, address.String())
 	}
-	copyReport := &TestReport{values: r.values, started: r.started, rows: r.rows, debug: r.debug, verbose: r.verbose,
-		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory, tlsDetails: r.tlsDetails}
+	snapshotAt := time.Now()
+	copyReport := &TestReport{values: r.values, started: r.started, snapshotAt: snapshotAt, rows: r.rows, debug: r.debug, verbose: r.verbose,
+		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory, tlsDetails: r.tlsDetails,
+		tlsCrypto: r.tlsCrypto, tlsValidity: r.tlsValidity, tlsStrength: r.tlsStrength,
+		tlsStrengthReason: r.tlsStrengthReason, ticketMetadata: r.ticketMetadata,
+		passwordPrompted: r.passwordPrompted, promptDuration: r.promptDuration}
+	jsonData, err := copyReport.jsonSnapshot()
+	if err != nil {
+		return nil, err
+	}
 	var message bytes.Buffer
 	multipartWriter := multipart.NewWriter(&message)
+	var alternatives bytes.Buffer
+	alternativeWriter := multipart.NewWriter(&alternatives)
 	subject := "ztmail diagnostic test"
 	if r.debug {
 		subject += " (debug)"
 	}
 	fmt.Fprintf(&message, "Date: %s\r\nMessage-ID: <%s@ztmail.invalid>\r\nFrom: %s\r\nTo: %s\r\n"+
 		"Subject: %s\r\nMIME-Version: 1.0\r\n"+
-		"Content-Type: multipart/alternative; boundary=%q\r\n\r\n",
-		time.Now().Format(time.RFC1123Z), rand.Text(), sender.String(), strings.Join(to, ", "), subject, multipartWriter.Boundary())
+		"Content-Type: multipart/mixed; boundary=%q\r\n\r\n",
+		snapshotAt.Format(time.RFC1123Z), rand.Text(), sender.String(), strings.Join(to, ", "), subject, multipartWriter.Boundary())
 	for _, format := range []reportFormat{reportPlain, reportHTML} {
 		contentType := "text/plain; charset=UTF-8"
 		if format == reportHTML {
 			contentType = "text/html; charset=UTF-8"
 		}
-		part, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+		part, err := alternativeWriter.CreatePart(textproto.MIMEHeader{
 			"Content-Type": {contentType}, "Content-Transfer-Encoding": {"quoted-printable"},
 		})
 		if err != nil {
@@ -85,6 +97,33 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		if err := writer.Close(); err != nil {
 			return nil, fmt.Errorf("finish testmail part: %w", err)
 		}
+	}
+	if err := alternativeWriter.Close(); err != nil {
+		return nil, fmt.Errorf("finish testmail alternatives: %w", err)
+	}
+	bodyPart, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {fmt.Sprintf("multipart/alternative; boundary=%q", alternativeWriter.Boundary())},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create testmail body: %w", err)
+	}
+	if _, err := bodyPart.Write(alternatives.Bytes()); err != nil {
+		return nil, fmt.Errorf("write testmail body: %w", err)
+	}
+	attachment, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {"application/json; charset=UTF-8; name=ztmail-report.json"},
+		"Content-Disposition":       {"attachment; filename=ztmail-report.json"},
+		"Content-Transfer-Encoding": {"quoted-printable"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create testmail JSON attachment: %w", err)
+	}
+	writer := quotedprintable.NewWriter(attachment)
+	if _, err := writer.Write(jsonData); err != nil {
+		return nil, fmt.Errorf("encode testmail JSON attachment: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("finish testmail JSON attachment: %w", err)
 	}
 	if err := multipartWriter.Close(); err != nil {
 		return nil, fmt.Errorf("finish testmail: %w", err)

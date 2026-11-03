@@ -49,15 +49,33 @@ func (r *TestReport) Inventory(event discovery.InventoryEvent) {
 func (r *TestReport) Measure(step string) func() {
 	started := time.Now()
 	return func() {
-		if r == nil || !r.debug {
+		if r == nil {
+			return
+		}
+		duration := time.Since(started)
+		if step == "Credential prompt" {
+			r.mu.Lock()
+			r.promptDuration += duration
+			r.mu.Unlock()
+		}
+		if !r.debug {
 			return
 		}
 		r.Trace(context.Background(), observe.TraceEvent{Kind: observe.OperationTrace,
-			Phase: observe.TraceCompleted, Operation: step, Duration: time.Since(started)})
+			Phase: observe.TraceCompleted, Operation: step, Duration: duration})
 	}
 }
 
-func (r *TestReport) renderDebug(format reportFormat) string {
+func (r *TestReport) MarkPasswordPrompted() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.passwordPrompted = true
+}
+
+func (r *TestReport) dcObservationTable() reportTable {
 	dcs := reportTable{header: table.Row{"Discovered DC / service", "Protocol", "Observed reachability", "Avg response", "Replies"}}
 	seen := make(map[string]discovery.Endpoint)
 	for _, event := range r.inventory {
@@ -142,11 +160,20 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 		rightNumber, _ := strconv.Atoi(rightPort)
 		return leftNumber < rightNumber
 	})
+	return dcs
+}
+
+func (r *TestReport) stepTimingsTable() reportTable {
 	timings := reportTable{header: table.Row{"Step", "Kind", "Scope / parent", "Duration", "Outcome"}}
 	for _, event := range r.traces {
 		timings.rows = append(timings.rows, table.Row{event.Operation, event.Kind, fmt.Sprintf("%d / %d", event.ID, event.ParentID),
 			formatDuration(event.Duration), event.Outcome})
 	}
+	return timings
+}
+
+func (r *TestReport) renderDebug(format reportFormat) string {
+	dcs := r.dcObservationTable()
 	dcResults := dcs.render(format, r.color, r.values["AD domain"])
 	if len(dcs.rows) == 0 {
 		dcResults = reportNote(format, "No completed DC responses, failures or connections observed.")
@@ -156,7 +183,7 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs.") +
 		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
-		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + timings.render(format, r.color, r.values["AD domain"])
+		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + r.stepTimingsTable().render(format, r.color, r.values["AD domain"])
 	}
 	result += "\n" + r.renderTLSDetails(format)
 	return result
@@ -220,22 +247,54 @@ func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.E
 	return table.Row{key, protocol, status, avg, count}
 }
 
+const (
+	runtimeDNS = iota
+	runtimeKerberos
+	runtimeLDAP
+	runtimeSMTPHandshake
+	runtimeSMTPAuth
+	runtimeSMTPQuit
+	runtimeCleanup
+	runtimeHostDiscovery
+	runtimeUserLookup
+	runtimeCredentialPrompt
+	runtimeReportPreparation
+	runtimeADSetup
+	runtimeOther
+)
+
 func runtimeCategory(event observe.TraceEvent) int {
 	op := strings.ToLower(event.Operation)
 	switch {
+	case op == "credential prompt":
+		return runtimeCredentialPrompt
+	case op == "local user lookup":
+		return runtimeUserLookup
+	case op == "host/domain discovery":
+		return runtimeHostDiscovery
+	case op == "report preparation" || op == "report output":
+		return runtimeReportPreparation
+	case op == "ad identity and canonical mail" || op == "ad client setup" || op == "ad source configuration":
+		return runtimeADSetup
+	case op == "keytab inspection" || op == "keytab principal selection":
+		return runtimeKerberos
+	case op == "smtp quit":
+		return runtimeSMTPQuit
+	case op == "gssapi cleanup" || op == "smtp connection cleanup" || op == "ad credential cleanup":
+		return runtimeCleanup
 	case event.Protocol == "dns" || strings.Contains(op, "dns"):
-		return 0
+		return runtimeDNS
 	case event.Protocol == "kerberos" || strings.HasPrefix(op, "credential") ||
 		strings.HasPrefix(op, "principal") || op == "service_ticket" || op == "security_context":
-		return 1
+		return runtimeKerberos
 	case event.Protocol == "ldap" || strings.HasPrefix(op, "ldap") || op == "ad_search":
-		return 2
+		return runtimeLDAP
 	case op == "smtp gssapi authentication":
-		return 4
-	case strings.HasPrefix(op, "smtp") && op != "smtp quit":
-		return 3
+		return runtimeSMTPAuth
+	case strings.HasPrefix(op, "smtp"):
+		return runtimeSMTPHandshake
 	default:
-		return 5
+		return runtimeOther
 	}
 }
 
@@ -243,17 +302,17 @@ func (r *TestReport) runtimeBreakdown() string {
 	return r.runtimeBreakdownFormat(reportTerminal)
 }
 
-func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
+func (r *TestReport) runtimeBreakdownTable() reportTable {
 	type interval struct {
 		start, end time.Time
 		category   int
 	}
-	end := time.Now()
+	end := r.snapshotTime()
 	points := []time.Time{r.started, end}
 	var spans []interval
 	for i, event := range r.traces {
 		category := runtimeCategory(event)
-		if category == 5 {
+		if category == runtimeOther {
 			continue
 		}
 		finish := r.traceEnds[i]
@@ -265,9 +324,9 @@ func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 		points = append(points, start, finish)
 	}
 	sort.Slice(points, func(i, j int) bool { return points[i].Before(points[j]) })
-	durations := make([]time.Duration, 6)
+	durations := make([]time.Duration, runtimeOther+1)
 	for i := 1; i < len(points); i++ {
-		category := 5
+		category := runtimeOther
 		for _, span := range spans {
 			if !points[i-1].Before(span.start) && !points[i].After(span.end) && span.category < category {
 				category = span.category
@@ -276,9 +335,23 @@ func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 		durations[category] += points[i].Sub(points[i-1])
 	}
 	t := reportTable{header: table.Row{"Runtime breakdown", "Elapsed"}}
-	for i, label := range []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth", "Other / cleanup"} {
-		t.rows = append(t.rows, table.Row{label, formatDuration(durations[i])})
+	labels := []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth",
+		"SMTP QUIT", "Cleanup", "Host/domain discovery", "Local user lookup", "Credential prompting",
+		"Report preparation / output", "AD setup / orchestration", "Other / untracked"}
+	order := []int{runtimeCredentialPrompt, runtimeADSetup, runtimeDNS, runtimeKerberos, runtimeLDAP, runtimeSMTPHandshake,
+		runtimeSMTPAuth, runtimeSMTPQuit, runtimeCleanup, runtimeHostDiscovery, runtimeUserLookup,
+		runtimeReportPreparation, runtimeOther}
+	for _, category := range order {
+		if durations[category] < 100*time.Microsecond {
+			continue
+		}
+		t.rows = append(t.rows, table.Row{labels[category], formatDuration(durations[category])})
 	}
+	return t
+}
+
+func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
+	t := r.runtimeBreakdownTable()
 	if format == reportPlain {
 		t.header = nil
 	}
@@ -287,5 +360,6 @@ func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
 		heading = "Runtime breakdown\n"
 	}
 	return heading + t.render(format, r.color, r.values["AD domain"]) + "\n" +
-		reportNote(format, "Observed wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence).")
+		reportNote(format, "Observed wall-time estimate; concurrent work counted once (DNS, then Kerberos, then LDAP precedence). "+
+			"Specific operations take precedence over enclosing AD setup/orchestration. Final report rendering/output is outside this snapshot.")
 }

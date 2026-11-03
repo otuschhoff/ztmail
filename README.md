@@ -217,7 +217,7 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.5.1`, which includes read-only discovery inventory,
+The SDK is pinned to `v0.7.0`, which includes read-only discovery inventory,
 correlated attempt/stage observations, optimistic DNS qualification,
 explicit bounded failure diagnostics, opt-in per-question DNS summaries,
 server-attributed
@@ -225,6 +225,13 @@ DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
 external credential sources, and OS DNS bootstrap. It also handles unpaged
 RootDSE/base-object LDAP responses while preserving strict subtree paging, and
 provides explicit per-search naming-context confinement.
+The debug report reads safe ticket metadata from the actual SMTP GSSAPI
+security context after authentication, not from the TGT or a separately
+acquired service ticket. The SDK snapshot distinguishes ticket encryption
+from the ticket session key and reports authoritative validity, availability,
+and provenance without exporting key bytes, tickets or tokens. Reading these
+diagnostics performs no extra credential-file reads or DNS/KDC/LDAP/native
+queries and does not change the borrowed owner's policies.
 The CLI's `NewAD` path automatically uses bounded, owner-local discovery
 caching: fresh DC lists and address answers are reused across sequential
 operations, with shared DC address questions across LDAP and Kerberos.
@@ -308,11 +315,15 @@ must not terminate AUTH early. A final `535` is reported as an authentication
 failure, not as a QUIT failure.
 
 The report is written to stderr as a rounded go-pretty key/value table:
-Hostname, Target relay (including port), AD domain, Mail (from),
-Authentication method, User, Cred source, SPN, Transport security,
+Hostname, Target relay (including port), AD domain, User, Mail (from),
+Cred source, Authentication method, SPN, Transport security,
 Authentication, and Total runtime. The method is currently `GSSAPI`; User,
 Cred source and SPN are shown only for GSSAPI. This does not enable mTLS
 authentication.
+For keytab and FILE-cache credentials, the CLI includes the resolved file path
+in Cred source, for example `ccache (/tmp/krb5cc_1000)`. This includes the default
+or environment-selected cache path. Borrowed library owners do not expose their
+credential file paths through the identity API, so library reports omit them.
 The table has no redundant column-header row. Successful authentication displays
 `OK`; healthy transport displays
 `OK (CN=smtp.corp.example; +69 days; TLS1.3 ~112bit)`.
@@ -334,6 +345,12 @@ the CN retains normal text colour. AD-domain suffixes (including the leading
 `.` or `@`, case-insensitive) in hostnames, UPNs, and mail addresses are grey.
 Unreached values are marked unavailable rather than guessed. Total runtime is
 elapsed wall-clock time through test/credential cleanup, before report rendering.
+If the CLI actually prompted for a password, **Execution runtime** appears
+immediately after **Total runtime**. It is elapsed wall-clock time minus the
+principal/password prompt interval, not CPU time. Credential acquisition,
+local user lookup and AD setup still count as execution. Prompt duration is
+captured even without `--debug`; testmail text, HTML and JSON use the same
+prompt-excluded snapshot value.
 Failed checks, skipped protection, supplementary diagnostics, and warnings are
 shown separately. Authentication acceptance does not hide a later cleanup/test
 failure. No email is sent.
@@ -342,13 +359,54 @@ Use `--test --debug` for additional tables containing observed DC service
 activity matched against discovered advertisements, observed LDAP/Kerberos
 reachability and average completed-exchange response times, and SDK/application
 runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
-SMTP auth, and other/cleanup. A separate TLS certificate/connection table shows
-the certificate key type/size and equivalent strength, subject/issuer, SANs,
-validity, certificate signature, negotiated key exchange, full cipher suite,
-and strength-estimate limitations. It uses the existing verified connection,
-not a second handshake. The runtime breakdown estimates elapsed time from observed intervals:
+SMTP auth, SMTP QUIT, cleanup, host/domain discovery, local user lookup,
+credential prompting, report preparation/output, AD setup/orchestration, and
+other/untracked. Runtime breakdown rows below 0.1 ms are omitted.
+When visible, **Credential prompting** is the first runtime category, followed
+by **AD setup / orchestration**.
+Cleanup measures security-context,
+connection, and CLI AD credential-owner teardown (the library releases only its
+borrowed lease). Security diagnostics are split into three tables:
+
+- **Server TLS certificate / connection:** TLS version, subject, issuer and SANs.
+- **Cryptography (TLS / Kerberos):** cipher suite, key exchange, certificate
+  key/signature and verified-chain estimate; the SMTP ticket's encryption and
+  session-key enctypes, names and nominal encoded key sizes; and separate
+  SSPI context-protection attributes where available.
+- **Validity (TLS certificates / Kerberos):** UTC start/end, relative age,
+  remaining validity and start provenance for each unique presented/verified
+  TLS certificate and the actual SMTP service ticket. Future starts and expired
+  intervals are explicit.
+
+The cryptography table's third column lists estimated NIST-equivalent classical
+key strengths. TLS and Kerberos encryption-key estimates are shown separately,
+with an overall weakest-component estimate only when both can be assessed;
+strengths are never added. Kerberos AES enctypes are rated by encryption-key
+strength, not by MAC strength, password entropy or overall protocol security.
+Legacy DES/3DES/RC4 and unknown/unassessed enctypes are not rated. Non-applicable
+cells show `-`; unavailable applicable estimates are explicitly marked.
+Certificate signature strength is included in the verified-chain estimate
+rather than rated separately. Plain-text mail keeps estimates beside the
+corresponding details. No second TLS handshake or extra ticket acquisition
+is performed.
+
+Ticket validity uses the SDK's effective `ValidFrom`, not acquisition time.
+`auth_time_fallback` means omitted StartTime used AuthTime;
+`start_time_or_auth_time` means the dependency normalized StartTime and the
+original optional field was not retained. Windows SSPI ticket enctypes and
+validity remain explicitly OS-managed/unavailable. Available SSPI context
+crypto/lifetime is listed separately and is never substituted for ticket
+metadata or used to invent an overall ticket strength.
+The runtime breakdown estimates elapsed time from observed intervals:
 overlapping work is counted once, with DNS then Kerberos then LDAP taking
-precedence. Missing observations remain in other/cleanup; OS-internal SSPI DNS
+precedence. Specific operations take precedence over the enclosing AD
+setup/orchestration interval, which includes local setup and coordination not
+covered by more specific measurements. Credential-file acquisition, preliminary
+keytab inspection, and principal selection are included in Kerberos. Credential
+prompting includes time spent entering the principal and password, separately
+from local user lookup. Report preparation/output covers testmail generation
+and report event recording/streaming; final report rendering/output is outside
+its own snapshot. Missing observations remain in other/untracked. OS-internal SSPI DNS
 and KDC times cannot be separated from their enclosing call. Detailed step
 durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
@@ -368,8 +426,10 @@ to a DC. Native SSPI KDC endpoints
 and wire timing are OS-managed/unavailable. Response latency is not authentication
 proof. Nested/concurrent step durations overlap and must not be summed.
 DC rows are sorted case-insensitively by hostname, then protocol, then port.
-Numeric columns (including duration measurements, ignoring missing-value dashes)
-are right-aligned in terminal and HTML tables. Plain-text email remains `Key: Value`.
+Mainly numerical columns (including bit strengths and relative durations,
+ignoring missing-value dashes) are right-aligned in terminal and HTML tables.
+NIST strength, Age and Remaining columns stay right-aligned even when their
+values are unavailable or contain status text. Plain-text email remains `Key: Value`.
 Displayed response times and runtimes use one decimal place: milliseconds below
 one second (for example `12.3ms`), otherwise seconds (for example `1.2s`).
 `--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
@@ -448,13 +508,28 @@ The canonical AD address is looked up even with `-f`. Sender overrides still
 apply; with `-f '<>'`, the envelope is null but the generated From header uses
 the canonical address.
 
-The UTF-8 multipart email contains styled HTML tables and a plain-text fallback
-using `Key: Value` lines without table borders. Both show the report as observed
+The UTF-8 `multipart/mixed` email contains a `multipart/alternative` body with
+styled HTML tables and a plain-text fallback using `Key: Value` lines without
+table borders. Every testmail also attaches `ztmail-report.json` as
+`application/json`. All three representations use the same snapshot as observed
 immediately after SMTP authentication. `--debug` adds the DC inventory and
 runtime breakdown; `--verbose` streams local events, and with `--debug` also
 includes detailed timing rows in the email. Passwords, security tokens and
 message payloads from other submissions are never included. The report does
-contain account names and internal topology: choose recipients accordingly.
+contain account names, credential paths and internal topology: choose recipients
+accordingly.
+
+The JSON attachment uses `schema_version: 1`, a UTC `snapshot_at`, the
+`snapshot_phase` value `after_smtp_authentication_before_data`, explanatory
+`notes`, and an ordered `tables` array. Each table has a stable `id`, `title`,
+`columns`, and `rows`; each row is an array of unstyled strings corresponding
+to the columns. Values preserve the displayed units, unavailable markers and
+unrounded-threshold row filtering; terminal colours and HTML styling are not
+included. The `summary` table is always present; `issues` appears when needed.
+With `--debug`, tables also include `runtime`, `dc_observations` when nonempty,
+and `tls`, `crypto`, and `validity`; `--debug --verbose` additionally includes
+`step_timings`.
+Attachment contents follow the same table selection as the email body.
 
 HTML uses the same bold green `OK`, grey AD-domain suffixes and status colours
 as the CLI, regardless of terminal colour settings. Tables have grey borders

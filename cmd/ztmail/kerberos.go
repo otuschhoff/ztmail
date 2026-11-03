@@ -214,19 +214,25 @@ func stopCredentialFallback(ctx context.Context, err error) bool {
 }
 
 func openADSource(ctx context.Context, o options) (*adSession, error) {
+	configDone := o.report.Measure("AD source configuration")
 	settings, err := adOptions(o)
+	configDone()
 	o.report.Step("AD source configuration", err, fmt.Sprintf("source=%q principal=%q", settings.Credentials.Source, settings.Credentials.Principal))
 	if err != nil {
 		return nil, err
 	}
 	candidates := []string{settings.Credentials.Principal}
 	if settings.Credentials.Source == kerberos.SourceKeytab && settings.Credentials.Principal == "" {
+		inspectDone := o.report.Measure("Keytab inspection")
 		entries, err := keytab.Inspect(settings.Credentials.Keytab)
+		inspectDone()
 		o.report.Step("Keytab inspection", err, fmt.Sprintf("%d entries", len(entries)))
 		if err != nil {
 			return nil, fmt.Errorf("inspect keytab: %w", err)
 		}
+		principalDone := o.report.Measure("Keytab principal selection")
 		candidates, err = principalCandidates(entries, o.realm)
+		principalDone()
 		o.report.Step("Keytab principal selection", err, fmt.Sprintf("candidates=%q", candidates))
 		if err != nil {
 			return nil, err
@@ -280,7 +286,9 @@ func selectADSession(ctx context.Context, candidates []string, try func(context.
 func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) (_ *adSession, err error) {
 	o.report.Line("INFO", "AD identity attempt", fmt.Sprintf("source=%q principal=%q realm=%q (empty principal means auto-selection)",
 		settings.Credentials.Source, settings.Credentials.Principal, settings.Credentials.Realm))
+	setupDone := o.report.Measure("AD client setup")
 	client, err := adclient.NewAD(settings)
+	setupDone()
 	o.report.Step("AD client configuration", err, "SDK DNS, KDC discovery and verified LDAP TLS configured")
 	if err != nil {
 		return nil, err
@@ -303,7 +311,7 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	}
 	session.identity, err = session.lease.Identity()
 	o.report.Value("User", session.identity.Principal)
-	o.report.Value("Cred source", string(session.identity.Source))
+	reportCredentialSource(o.report, session.identity.Source, settings.Credentials)
 	o.report.Step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source))
 	if err != nil {
@@ -339,7 +347,21 @@ func (s *adSession) diagnoseDNS(ctx context.Context, lookupErr error) {
 	dns.Diagnose(ctx, lookupErr)
 }
 
+func reportCredentialSource(report *testReport, source kerberos.Source, credentials kerberos.Options) {
+	path := ""
+	switch source {
+	case kerberos.SourceKeytab:
+		path = credentials.Keytab
+	case kerberos.SourceCCache:
+		path = credentials.CCache
+	}
+	report.Value("Cred source", string(source))
+	report.Value("Cred source path", path)
+}
+
 func (s *adSession) Close() error {
+	done := s.report.Measure("AD credential cleanup")
+	defer done()
 	if s.lease != nil {
 		s.lease.Release()
 	}

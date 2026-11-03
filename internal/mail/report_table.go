@@ -29,6 +29,23 @@ type reportTable struct {
 
 func (t reportTable) render(format reportFormat, color bool, domain string) string {
 	numeric := t.numericColumns()
+	for _, config := range t.configs {
+		if config.Align != text.AlignRight {
+			continue
+		}
+		column := config.Number - 1
+		if config.Number == 0 {
+			for i, name := range t.header {
+				if config.Name == fmt.Sprint(name) {
+					column = i
+					break
+				}
+			}
+		}
+		if column >= 0 && column < len(numeric) {
+			numeric[column] = true
+		}
+	}
 	if format == reportTerminal {
 		writer := table.NewWriter()
 		style := table.StyleRounded
@@ -112,6 +129,8 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 	return strings.TrimSuffix(result.String(), "\n")
 }
 
+var reportNumericDuration = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]+)?|<1) (?:days?|hours?|minutes?)$`)
+
 func (t reportTable) numericColumns() []bool {
 	columns := len(t.header)
 	for _, row := range t.rows {
@@ -119,29 +138,33 @@ func (t reportTable) numericColumns() []bool {
 	}
 	numeric := make([]bool, columns)
 	for column := range numeric {
-		valid, found := true, false
+		numbers, labels := 0, 0
 		for _, row := range t.rows {
 			if column >= len(row) {
-				valid = false
-				break
+				labels++
+				continue
 			}
 			value := strings.TrimSpace(fmt.Sprint(row[column]))
 			if value == "" || value == "-" {
 				continue
 			}
-			number, err := strconv.ParseFloat(value, 64)
+			value = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(value, "Starts in "), "Expired "), " ago")
+			number, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimPrefix(value, "~"), "bit"), 64)
 			if err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) {
-				found = true
+				numbers++
 				continue
 			}
 			if _, err := time.ParseDuration(value); err == nil {
-				found = true
+				numbers++
 				continue
 			}
-			valid = false
-			break
+			if reportNumericDuration.MatchString(value) {
+				numbers++
+				continue
+			}
+			labels++
 		}
-		numeric[column] = valid && found
+		numeric[column] = numbers > labels
 	}
 	return numeric
 }
@@ -164,6 +187,17 @@ func formatReportCell(value, key string, format reportFormat, color bool, domain
 	styled := formatDomain(value, format, color, domain)
 	if format == reportPlain || (format == reportTerminal && !color) {
 		return styled
+	}
+	if key == "Cred source" {
+		source, path, found := strings.Cut(value, " (")
+		if found && strings.HasSuffix(path, ")") &&
+			(strings.EqualFold(source, "ccache") || strings.EqualFold(source, "keytab")) {
+			path = "(" + path
+			if format == reportHTML {
+				return html.EscapeString(source) + ` <span style="color:#6b7280">` + html.EscapeString(path) + "</span>"
+			}
+			return source + " " + text.FgHiBlack.EscapeSeq() + path + text.Reset.EscapeSeq()
+		}
 	}
 	if value == "-" {
 		if format == reportHTML {
