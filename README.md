@@ -1,897 +1,235 @@
 # ztmail
 
-A sendmail-style SMTP submission client written in Go, using Cobra and
-Kerberos **SASL GSSAPI** (RFC 4752). Builds for Linux, Windows, and macOS without CGO.
-Password authentication is available only through an opt-in terminal prompt.
-It does not use NTLM, HTTP Negotiate, or anonymous SMTP fallback.
-On Linux, the CLI can instead delegate safe pre-submission failures to the
-host's own sendmail; no such behavior is added to the Go library.
+## Objective
 
-## Build
+Submit email to an Active Directory mail gateway using **Kerberos SASL GSSAPI**
+with a sendmail-style command-line interface.
 
-Requires Go 1.26 or later; the module selects toolchain Go 1.26.9.
-`make build` produces all six combinations of Linux, Windows, and macOS
-(`darwin`) with `amd64` and `arm64`:
+ztmail discovers the host's AD domain, authenticates with a keytab, an existing
+FILE credential cache, or Windows SSPI, and normally rewrites the sender to the
+authenticated principal's canonical AD mailbox. No `krb5.conf`, external `kinit`,
+or credential-cache writes are required. Password prompting is opt-in.
 
-- `dist/ztmail-linux-amd64`
-- `dist/ztmail-linux-arm64`
-- `dist/ztmail-windows-amd64.exe`
-- `dist/ztmail-windows-arm64.exe`
-- `dist/ztmail-darwin-amd64`
-- `dist/ztmail-darwin-arm64`
+The application builds for Linux, Windows and macOS without CGO. On Linux,
+eligible pre-submission failures can use the host's own sendmail. It is not a
+complete MTA and has no queue of its own; it does not use NTLM or anonymous
+SMTP fallback.
 
-To build just one target with the same CGO-free and version metadata settings:
+[Get a release binary](https://github.com/otuschhoff/ztmail/releases) or follow
+the [build guide](docs/build.md).
 
-```sh
-make build-one TARGET_OS=darwin TARGET_ARCH=arm64
-make test
-./dist/ztmail-linux-amd64 --version
-# 0.2.14+20261101-110716.abcdef0
-```
+## Use cases
 
-The semantic version is **0.2.14**. Every supported build includes UTC build time
-and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.2.14+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
-timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
-Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
-The executable now lives in `cmd/ztmail`; `go build ./cmd/ztmail` builds the CLI,
-while the repository root is an importable library. Raw CLI builds without
-linker metadata have no trustworthy build timestamp:
-`--version` reports an explicit error rather than inventing one. Use the
-Makefile or inject `-X main.buildTime=... -X main.commitSHA=...` yourself.
+- **Scripts and scheduled jobs:** submit an existing RFC 5322 message from
+  stdin using the familiar `-oi`, `-t`, `-f` and recipient arguments.
+- **AD service accounts:** authenticate with a keytab, automatically select a
+  usable principal, and use its canonical mailbox or an explicit sender.
+- **Windows domain users:** use the logged-in user's Kerberos credentials
+  through SSPI without configuring a keytab or cache.
+- **Interactive users:** use an existing credential cache, optionally prompt
+  for a password, and save a preferred sender for later submissions.
+- **Troubleshooting:** test AD/TLS/GSSAPI authentication without sending email,
+  or send a diagnostic email with human-readable tables and a JSON attachment.
+- **Go applications:** submit mail through an application-owned AD client
+  using the [library API](docs/library.md), without CLI prompting or native
+  sendmail fallback.
 
-## Go library with an application-owned AD client
+## Typical usage
 
-Import `github.com/otuschhoff/ztmail`. The application supplies an existing
-`*adclient.Client` created with `adclient.NewAD`; ztmail does not create another
-AD owner or duplicate its DNS, discovery, credential, or LDAP state.
+Examples below assume the downloaded executable is available as `ztmail`.
+On Linux/macOS, mark the binary executable with `chmod +x` before using it.
+Windows examples use the executable under `dist`.
 
-```go
-import (
-    "context"
-    "errors"
-    "fmt"
+### Prerequisites and defaults
 
-    "github.com/otuschhoff/adbind/ad/adclient"
-    "github.com/otuschhoff/ztmail"
-)
+The normal AD submission path needs working AD DNS and clock synchronization,
+usable Kerberos credentials, and a gateway advertising AUTH GSSAPI. The gateway
+must have a registered SMTP SPN and a system-trusted TLS certificate.
 
-func sendNotification(ctx context.Context, appAD *adclient.Client) error {
-    mailer, err := ztmail.New(ztmail.Options{
-        AD:       appAD,
-        Domain:   "corp.example.com",
-        Relay:    "mailgw.corp.example.com", // optional: this is the default
-        Hostname: "worker.corp.example.com", // optional EHLO override
-    })
-    if err != nil {
-        return err
-    }
-
-    result, err := mailer.Send(ctx, ztmail.Message{
-        Recipients: []string{"recipient@example.com"},
-        Data:       []byte("Subject: Notification\r\n\r\nHello.\r\n"),
-    })
-    if err != nil {
-        if errors.Is(err, ztmail.ErrDeliveryUncertain) {
-            return fmt.Errorf("check relay acceptance before retrying: %w", err)
-        }
-        return err
-    }
-    for _, warning := range result.Warnings {
-        // The relay already accepted DATA; log this without resending.
-        fmt.Printf("SMTP cleanup warning: %v\n", warning)
-    }
-    return nil
-}
-```
-
-### Ownership, defaults, and concurrency
-
-- `New` validates options without network I/O. `Domain` is required and must
-  describe the borrowed client's AD domain. `Realm` defaults to uppercase
-  `Domain` and must match the acquired identity. The library does not inspect
-  host configuration, credentials files, environment variables, or terminals;
-  credential sourcing remains entirely with the supplied AD owner.
-- The default relay is `mailgw.<Domain>`, port 25, EHLO `localhost`, and SPN
-  `smtp/<Relay>`. TLS defaults to verified STARTTLS (`TLSRequired`). Use
-  `TLSImplicit` with an explicit appropriate port, or deliberately opt out with
-  `TLSOff`. `Timeout` defaults to 60 seconds for the complete operation; caller
-  context cancellation/deadlines also apply.
-- Each `Send` borrows a separate credential lease, uses AD DNS for relay
-  resolution, and creates a fresh SMTP connection and TLS-bound GSSAPI context.
-  The lease is released on every outcome and the security context is closed.
-  Shared tickets and LDAP sessions remain managed by the application's SDK.
-- A mailer supports concurrent calls, subject to SDK credential/LDAP capacity
-  limits. Do not modify message slices until the call returns. There is no
-  mailer `Close`: the application closes the shared AD client only after all
-  in-flight operations complete. No credentials fallback or interactive
-  password prompting is initiated by the library. It neither reads the CLI's
-  saved sender nor executes host sendmail.
-- The CLI and library share message validation, sender rewriting, canonical
-  LDAP lookup, AD DNS/GSSAPI adapters, TLS and SMTP transport code. Cobra,
-  sendmail stdin handling, source probing and password prompts belong to the
-  CLI, not the public library API.
-
-### Message and result semantics
-
-`Message.Data` is a complete RFC 5322 message, not a dot-terminated SMTP stream.
-Dot-only body lines are preserved. `Recipients` supplies envelope recipients;
-when empty, recipients are read from headers automatically. If headers provide
-none, delivery uses the authenticated user's canonical AD mail address. This
-fallback requires canonical lookup even when `From` is overridden or null.
-`ReadRecipients: true` also reads To/Cc/Bcc (or the latest Resent block).
-Bcc/Resent-Bcc headers are always stripped, and duplicate recipients are
-deduplicated. Message structure and envelope addresses are validated before
-credential acquisition.
-
-By default, the canonical AD mail address becomes the envelope sender and
-From/Sender headers. `Message.From` explicitly overrides them and skips the
-mail lookup. `Message.From: "<>"` uses the null envelope and preserves sender
-headers. Input byte/slice contents are not mutated.
-
-`Result` contains the acquired `Identity`, selected envelope `From`, recipients,
-`Accepted`, and post-acceptance `Warnings`. A nil error with `Accepted: true`
-means the relay confirmed DATA acceptance, not ultimate mailbox delivery.
-QUIT/context-cleanup failures after acceptance are warnings, not send failures.
-Before acceptance, errors are returned normally. An error matching
-`ErrDeliveryUncertain` means DATA started but acceptance could not be confirmed;
-do not blindly retry. Neither API performs automatic SMTP retries.
-
-`mailer.Test(ctx, reportWriter)` checks canonical mail and SMTP authentication
-without sending email; it always leaves `Accepted` false. It returns cleanup
-and report-writing failures as errors. It writes only to the supplied writer.
-For AD exchange-level endpoint diagnostics, configure observation hooks when
-constructing your application's AD client; borrowing a client does not replace
-its hooks. For per-question DNS summaries, set `adclient.ADOptions.DNSSummary`
-when constructing that owner. The callback remains application-owned; `Test`
-does not install or replace it. Normal `Send` does not write to stdout/stderr.
-
-### GitHub Actions
-
-The build workflow runs on main pushes, `v*` tags, pull requests, and manual
-dispatch. Its official checkout, Go setup, and artifact actions use the Node.js
-24 runtime rather than deprecated Node.js 20. Node.js 24 requires Actions Runner
-2.327.1 or later; all jobs use GitHub-hosted `ubuntu-26.04` runners, pinning the
-OS release to avoid automatic `ubuntu-latest` migrations. Runner images still
-receive regular security and tool updates.
-It shares one timestamp/SHA across its six-target matrix, sets
-`CGO_ENABLED=0`, checks build metadata, runs Linux regression tests, and uploads
-each binary as a separately named Actions artifact. macOS binaries are
-cross-compiled, not signed or notarized; cross-compilation does not imply native
-runtime testing on every target.
-
-Version-tag pushes automatically publish a GitHub Release after all six builds
-succeed, attaching the binaries and `SHA256SUMS`. The release is created as a
-draft and published only after asset uploads succeed. Its release-page body is
-the matching curated section of [CHANGELOG.md](CHANGELOG.md), not GitHub-generated
-PR notes. Reruns update both release notes and assets rather than failing on
-duplicate releases; prerelease tags such as
-`v0.2.0-rc.1` are marked as prereleases. Only the publication job receives
-`contents: write`; build and pull-request jobs retain read-only permissions.
-
-Before creating a new version tag:
-
-1. Bump the semantic version and its tests/documentation.
-2. Move the relevant `Unreleased` changes into a dated section such as
-   `## [0.1.4] - 2026-11-01`, using headings like `Added`, `Changed`, and `Fixed`.
-3. Include user-visible behavior changes, compatibility notes, and known
-   limitations. Each entry must contain at least one change bullet.
-4. Commit the changelog with the code, then tag that commit as `v0.1.4`.
-
-CI validates the tag against the application version and extracts exactly one
-matching changelog section before building a new release. Missing, duplicate,
-undated, or empty entries fail explicitly. Prerelease tags use their complete
-prerelease version in the heading (for example `[0.1.4-rc.1]`); optional tag
-build metadata does not affect the changelog heading. The section is taken from
-the tagged source, never a later revision on `main`.
-
-To rebuild and publish an existing tag without moving it, manually dispatch:
-
-```sh
-gh workflow run build.yml --repo otuschhoff/ztmail -f release_tag=v0.1.0
-```
-
-Metadata and binary builds check out that tag, so its commit SHA and source are
-preserved. The release-note extraction script comes from the workflow revision.
-For a manual rebuild of a historical tag that predates `CHANGELOG.md`, CI
-explicitly retains the existing published release notes; an unpublished tag or
-a release with empty notes cannot use this exception. New tag pushes always
-require their own curated entry. Existing published releases are not modified
-merely by adding the changelog on `main`.
-An empty manual `release_tag` performs a build only. Main pushes and pull requests
-never publish releases.
-
-The private AD SDK requires an Actions secret named `ADBIND_READ_TOKEN` with
-repository read access. Prefer a read-only token scoped to that dependency.
-The default `GITHUB_TOKEN` cannot read another private repository.
-Missing credentials fail explicitly; fork PRs normally have no access to the
-secret and cannot run the dependency build. The workflow deliberately does not
-use `pull_request_target` to expose credentials to untrusted fork code.
-Tags use plain SemVer, starting with `v0.1.0`; timestamps belong in binaries,
-not release tags. Download binaries from the repository's GitHub Releases page;
-Actions artifacts are also retained for individual builds. On Linux/macOS,
-mark a downloaded bare executable as executable with `chmod +x`.
-
-All DNS, Kerberos, and LDAP queries use the combined
-[`github.com/otuschhoff/adbind/ad/adclient`](https://github.com/otuschhoff/adbind)
-SDK. The application owns one selected AD client and borrows its DNS and
-credential lease; SMTP connections are made only to numeric IPs returned by
-that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
-Windows SSPI are delegated to the SDK. It uses
-`github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
-
-The SDK is pinned to `v0.7.0`, which includes read-only discovery inventory,
-correlated attempt/stage observations, optimistic DNS qualification,
-explicit bounded failure diagnostics, opt-in per-question DNS summaries,
-server-attributed
-DNS/LDAP/Kerberos exchange diagnostics, password-based TGT acquisition,
-external credential sources, and OS DNS bootstrap. It also handles unpaged
-RootDSE/base-object LDAP responses while preserving strict subtree paging, and
-provides explicit per-search naming-context confinement.
-The debug report reads safe ticket metadata from the actual SMTP GSSAPI
-security context after authentication, not from the TGT or a separately
-acquired service ticket. The SDK snapshot distinguishes ticket encryption
-from the ticket session key and reports authoritative validity, availability,
-and provenance without exporting key bytes, tickets or tokens. Reading these
-diagnostics performs no extra credential-file reads or DNS/KDC/LDAP/native
-queries and does not change the borrowed owner's policies.
-The CLI's `NewAD` path automatically uses bounded, owner-local discovery
-caching: fresh DC lists and address answers are reused across sequential
-operations, with shared DC address questions across LDAP and Kerberos.
-TTL expiry, DNS topology changes and explicit refresh invalidate reuse.
-Cache hits do not replay DNS wire observations, so debug reply counts continue
-to reflect actual traffic. Direct `DNS()` queries, including the SMTP relay
-lookup, remain cache-free. Borrowed library clients retain their owner's policy.
-The repository is private: configure GitHub
-access and `GOPRIVATE=github.com/otuschhoff/*` before fetching dependencies.
-There is no local-path module replacement.
-
-## Defaults and discovery
-
-For a machine named `worker.corp.example.com`:
+For a host named `worker.corp.example.com`:
 
 | Setting | Default |
 | --- | --- |
-| Host DNS domain | `corp.example.com` |
-| AD Kerberos realm | `CORP.EXAMPLE.COM` |
-| Relay | `mailgw.corp.example.com` |
-| Port | `25` |
-| Service principal (SPN) | `smtp/mailgw.corp.example.com` |
-| TLS | Required STARTTLS, certificate/hostname verified, TLS >= 1.2 |
-| Envelope sender and From | Authenticated principal's canonical AD mail address |
-| DNS bootstrap | OS DNS servers, discovered by adclient |
-| DNS diagnostic probe zone | `example.com` (outside the AD domain; used only for eligible `--test` failures) |
+| AD domain / realm | `corp.example.com` / `CORP.EXAMPLE.COM` |
+| Relay / port | `mailgw.corp.example.com` / `25` |
+| SMTP SPN | `smtp/mailgw.corp.example.com` |
+| Transport | Verified STARTTLS; TLS 1.2 or newer |
+| Sender | Explicit `-f`, then saved default, then canonical AD mailbox |
 
-Domain inference uses local host configuration, without ambient DNS queries.
-Discovery uses the host FQDN. Linux and macOS additionally
-uses the first suffix from the last `search`/`domain` directive in
-`/etc/resolv.conf`; Windows reads the machine's primary DNS suffix using
-`GetComputerNameExW`, not the logged-in user's domain. Search suffixes
-are heuristics: specify `--domain` on multihomed hosts, containers, or
-machines whose resolver search domain differs from their AD domain.
-Discovery fails explicitly if no domain is available.
+Use `--domain corp.example.com` when the host's DNS suffix does not identify
+its AD domain, particularly in containers or on multihomed machines.
 
-Override with `--domain`, `--realm`, `--relay`, `--port`, `--hostname` (EHLO),
-and/or `--spn`. The relay must be a DNS hostname, not a URL, IP literal, or
-`host:port`. The SPN must be registered to the relay's AD service account;
-an alias may require an explicit `--spn`.
+### Submit a message on Linux or macOS
 
-The SDK discovers AD DNS servers from OS resolver configuration and qualifies
-their AD namespace service, then uses that DNS path for DC/KDC and relay
-resolution. CLI-owned clients select `QualificationOptimistic`: resolve actual
-required internal/external names and alias targets without advance proof of
-external recursion. Successful lookups do not trigger synthetic recursion
-probes, including during topology refresh. Namespace and response validation
-remain enforced. There is no application
-`net.DefaultResolver`, alternate LDAP client, or direct Kerberos network client.
-Override bootstrap with repeatable `--dns-server IP[:port]` (IPv6 ports require
-brackets); this disables OS bootstrap fallback. Configure an external
-`--dns-probe-zone` if `example.com` is in your AD domain or unsuitable for your
-DNS policy. This zone is used only for optional failure diagnostics in `--test`,
-not for normal sends or server admission. Such probes can generate upstream
-external DNS traffic. Bootstrap servers are discovery hints, not automatically
-trusted AD data servers. Library clients retain the qualification policy and
-diagnostic configuration of their application-owned AD client.
-
-## Authentication test (no email)
+Input is a complete RFC 5322 message. Include a blank line between headers and
+body; supply Date, Message-ID and MIME headers yourself when needed.
 
 ```sh
-./dist/ztmail-linux-amd64 --test --keytab /etc/ztmail/mailer.keytab
-./dist/ztmail-linux-amd64 --test --ccache /tmp/krb5cc_1000 \
-  --domain corp.example.com --relay mailgw.corp.example.com
-# Use Windows SSPI, with optional password fallback:
-ztmail-windows-amd64.exe --test --password-prompt
+ztmail -oi -t < message.eml
+
+# Authenticate with a service-account keytab:
+ztmail --keytab /etc/ztmail/mailer.keytab -oi -t < message.eml
+
+# Use an existing, read-only FILE credential cache:
+ztmail --ccache /path/to/existing.ccache -oi -t < message.eml
+
+# Supply envelope recipients explicitly:
+ztmail --keytab /etc/ztmail/mailer.keytab -oi recipient@example.com < message.eml
 ```
 
-`--test` does not read message stdin and does not accept recipient arguments.
-It follows the normal credential-selection and AD discovery path, obtains the
-SMTP service ticket, and performs the canonical AD mail lookup (unless `-f`
-explicitly bypasses that lookup). It then resolves and connects to the relay,
-verifies TLS according to `--tls`, exchanges SMTP greetings/EHLO, completes
-GSSAPI mutual authentication and signed SASL negotiation, and sends `QUIT`.
-It never sends `MAIL FROM`, `RCPT TO`, `DATA`, or message content.
+Without an explicit keytab/cache, Linux and macOS use `KRB5CCNAME` or
+`/tmp/krb5cc_<uid>`. Only FILE caches with an unexpired TGT are supported.
+Protect keytabs and caches as credentials; on Linux use owner-private files.
 
-SMTP authentication is successful only after GSSAPI mutual authentication,
-signed SASL negotiation, and the relay's final `235` response. A GSSAPI step
-that produces no output token still requires an empty SMTP continuation; it
-must not terminate AUTH early. A final `535` is reported as an authentication
-failure, not as a QUIT failure.
+`-t` reads recipients from To/Cc/Bcc or the latest Resent block. Without
+recipient arguments, headers are read automatically. Bcc headers are removed
+before submission. If neither arguments nor headers provide recipients,
+the authenticated user's canonical AD mailbox is required.
 
-The report is written to stderr as a rounded go-pretty key/value table:
-Hostname, Target relay (including port), AD domain, User, Mail (from),
-Cred source, Authentication method, SPN, Transport security,
-Authentication, and Total runtime. The method is currently `GSSAPI`; User,
-Cred source and SPN are shown only for GSSAPI. This does not enable mTLS
-authentication.
-For keytab and FILE-cache credentials, the CLI includes the resolved file path
-in Cred source, for example `ccache (/tmp/krb5cc_1000)`. This includes the default
-or environment-selected cache path. Borrowed library owners do not expose their
-credential file paths through the identity API, so library reports omit them.
-The table has no redundant column-header row. Successful authentication displays
-`OK`; healthy transport displays
-`OK (CN=smtp.corp.example; +69 days; TLS1.3 ~112bit)`.
-The trailing rating is a conservative classical key-strength estimate based on
-the weakest observable cipher, key exchange, certificate-chain key or certificate
-signature. For example, RSA-2048 limits the estimate to 112 bits even with
-AES-256. Missing or unsupported required metadata produces `strength unavailable`.
-RSA/ECC tiers follow [NIST SP 800-57 Part 1 Rev. 5, Tables 2-3](https://doi.org/10.6028/NIST.SP.800-57pt1r5);
-intermediate RSA sizes round down to a published tier.
-This is not NIST certification, a post-quantum rating, or a full protocol-security
-assessment. Hybrid key exchange is rated on its classical component only.
-TLS handshake signature schemes are not exposed by Go and are not assessed;
-the estimate is not a bound on per-record authentication or message-volume risks.
-The remaining leaf-certificate lifetime uses whole days, hours or minutes,
-with a leading `+`, or `+<1 minute`. Certificate validation
-still uses the relay hostname/SANs, not the displayed CN. Certificates without a
-CN display `CN unavailable`. On colour-enabled terminals only `OK` is bold green;
-the CN retains normal text colour. AD-domain suffixes (including the leading
-`.` or `@`, case-insensitive) in hostnames, UPNs, and mail addresses are grey.
-Unreached values are marked unavailable rather than guessed. Total runtime is
-elapsed wall-clock time through test/credential cleanup, before report rendering.
-If the CLI actually prompted for a password, **Execution runtime** appears
-immediately after **Total runtime**. It is elapsed wall-clock time minus the
-principal/password prompt interval, not CPU time. Credential acquisition,
-local user lookup and AD setup still count as execution. Prompt duration is
-captured even without `--debug`; testmail text, HTML and JSON use the same
-prompt-excluded snapshot value.
-Failed checks, skipped protection, supplementary diagnostics, and warnings are
-shown separately. Authentication acceptance does not hide a later cleanup/test
-failure. No email is sent.
+`-oi` (or `-i`) preserves dot-only body lines. Without it, a line containing
+only `.` terminates input. Ctrl+C cancels incomplete message input without
+submitting it.
 
-Use `--test --debug` for additional tables containing observed DC service
-activity matched against discovered advertisements, observed LDAP/Kerberos
-reachability and average completed-exchange response times, and SDK/application
-runtime breakdown for DNS, Kerberos credentials/tickets, LDAP, SMTP handshake,
-SMTP auth, SMTP QUIT, cleanup, host/domain discovery, local user lookup,
-credential prompting, report preparation/output, AD setup/orchestration, and
-other/untracked. Runtime breakdown rows below 0.1 ms are omitted.
-When visible, **Credential prompting** is the first runtime category, followed
-by **AD setup / orchestration**.
-Cleanup measures security-context,
-connection, and CLI AD credential-owner teardown (the library releases only its
-borrowed lease). Security diagnostics are split into three tables:
+### Submit using Windows SSPI
 
-- **Server TLS certificate / connection:** TLS version, subject, issuer and SANs.
-- **Cryptography (TLS / Kerberos):** cipher suite, key exchange, certificate
-  key/signature and verified-chain estimate; the SMTP ticket's encryption and
-  session-key enctypes, names and nominal encoded key sizes; and separate
-  SSPI context-protection attributes where available.
-- **Validity (TLS certificates / Kerberos):** UTC start/end, relative age,
-  remaining validity and start provenance for each unique presented/verified
-  TLS certificate and the actual SMTP service ticket. Future starts and expired
-  intervals are explicit.
+Windows defaults to the logged-in user's SSPI credentials. Use Command Prompt
+redirection for byte-preserving input:
 
-The cryptography table's third column lists estimated NIST-equivalent classical
-key strengths. TLS and Kerberos encryption-key estimates are shown separately,
-with an overall weakest-component estimate only when both can be assessed;
-strengths are never added. Kerberos AES enctypes are rated by encryption-key
-strength, not by MAC strength, password entropy or overall protocol security.
-Legacy DES/3DES/RC4 and unknown/unassessed enctypes are not rated. Non-applicable
-cells show `-`; unavailable applicable estimates are explicitly marked.
-Certificate signature strength is included in the verified-chain estimate
-rather than rated separately. Plain-text mail keeps estimates beside the
-corresponding details. No second TLS handshake or extra ticket acquisition
-is performed.
-
-Ticket validity uses the SDK's effective `ValidFrom`, not acquisition time.
-`auth_time_fallback` means omitted StartTime used AuthTime;
-`start_time_or_auth_time` means the dependency normalized StartTime and the
-original optional field was not retained. Windows SSPI ticket enctypes and
-validity remain explicitly OS-managed/unavailable. Available SSPI context
-crypto/lifetime is listed separately and is never substituted for ticket
-metadata or used to invent an overall ticket strength.
-The runtime breakdown estimates elapsed time from observed intervals:
-overlapping work is counted once, with DNS then Kerberos then LDAP taking
-precedence. Specific operations take precedence over the enclosing AD
-setup/orchestration interval, which includes local setup and coordination not
-covered by more specific measurements. Credential-file acquisition, preliminary
-keytab inspection, and principal selection are included in Kerberos. Credential
-prompting includes time spent entering the principal and password, separately
-from local user lookup. Report preparation/output covers testmail generation
-and report event recording/streaming; final report rendering/output is outside
-its own snapshot. Missing observations remain in other/untracked. OS-internal SSPI DNS
-and KDC times cannot be separated from their enclosing call. Detailed step
-durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
-refresh, connections, or reachability probes are initiated for the report.
-Untested and canceled-only service rows are omitted; canceled race losers do
-not prove unreachability. Completed connections and failed attempts remain visible.
-Only observed protocol/port combinations appear; no LDAP/Kerberos cross-product
-is displayed for each advertised port. `Responded` means a complete protocol
-reply was received (possibly an error), not successful authentication; the main
-Authentication row reports the authentication result.
-Missing response times and zero reply counts display a grey `-`
-(unstyled when colours are disabled). With SSPI credentials, per-DC Kerberos rows
-are omitted because Windows manages ticket routing. Observed DNS exchange latency
-is included only where resolver endpoints match discovered DC names or addresses,
-deduplicated across advertised services; no DNS probes are added. DNS replies do
-not prove LDAP/Kerberos reachability, and unmatched resolvers are not attributed
-to a DC. Native SSPI KDC endpoints
-and wire timing are OS-managed/unavailable. Response latency is not authentication
-proof. Nested/concurrent step durations overlap and must not be summed.
-DC rows are sorted case-insensitively by hostname, then protocol, then port.
-Mainly numerical columns (including bit strengths and relative durations,
-ignoring missing-value dashes) are right-aligned in terminal and HTML tables.
-NIST strength, Age and Remaining columns stay right-aligned even when their
-values are unavailable or contain status text. Plain-text email remains `Key: Value`.
-Displayed response times and runtimes use one decimal place: milliseconds below
-one second (for example `12.3ms`), otherwise seconds (for example `1.2s`).
-`--debug` requires `--test` or `--testmail` and does not imply verbose event streaming.
-
-Colours highlight successful checks in green, failures in red, and
-warnings/skips in yellow only when the report writer is an interactive terminal.
-`NO_COLOR` (nonempty) and `TERM=dumb` disable colours. Files, pipes, and
-library report buffers receive uncoloured tables. The library's `Test` method
-uses the same final-table format without changing its borrowed AD owner's hooks.
-
-Add `--verbose` (or `-v`) for live step-by-step output before the final table,
-including SDK operations, LDAP/Kerberos endpoint exchanges, and one DNS summary
-per question/race. For example:
-
-```text
-[OK] DNS: name="mailgw.corp.example." type=A duration=42ms winner=192.0.2.10:53 transport=udp servers_queried=3 outcome=answered purpose=application
+```bat
+dist\ztmail-windows-amd64.exe -oi -t < message.eml
 ```
 
-Verbose summaries also include correlation IDs, attempt counts, and response
-peer/status details. Counts exclude unscheduled candidates and deduplicate
-endpoints across retries/UDP-to-TCP fallback. Duration includes budget waits,
-attempts, fallback, and started losing-worker cleanup; it is not the whole
-AD discovery or multi-question lookup duration. A/AAAA and alias questions
-have separate summaries. When there is no unique winner, the summary says
-`winner=none`; consensus negatives list contributing responders instead.
+PowerShell can also supply text input:
 
-After a DNS lookup failure carrying SDK failure evidence, test mode explicitly
-requests supplementary diagnostics before credential cleanup. The SDK probes
-only eligible failed external resolution, at one endpoint, within the original
-remaining deadline and its bounded timeout/cooldown. Valid negatives, internal-only
-failures, cancellation, and expired operations do not cause external probes;
-successful A resolution with no AAAA records is not a failure. Skipped
-diagnostics have an explicit reason. Probe work is labeled
-`diagnostic_recursion`. Probe results never replace the original error, replay
-the lookup, or change server selection. Success proves only that the probe
-worked; failure does not establish the original failure's cause. Normal sends
-do not enable or invoke these additional diagnostics.
+```powershell
+Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe -oi -t
+```
 
-Only real SDK exchanges identify used AD servers; discovered candidates are not
-presented as contacted servers. Cached DNS results/TGTs/service tickets emit no
-new network exchange. Windows SSPI manages its own KDC traffic, so the SDK
-cannot report its used KDC endpoint. An exchange marked `SUCCESS` means a
-response was received, not necessarily successful authentication: a KDC
-preauthentication challenge or error reply is still a completed exchange.
-The separate credential and SMTP authentication steps establish success.
-Passwords, security tokens, LDAP filters, and payloads are not included.
-DNS query names are included in verbose summaries and in failed-question
-rows even without `--verbose`.
-The report contains account names, queried internal DNS names, and network
-topology; review it before sharing. Normal submissions do not enable DNS
-summary hooks, even with `--verbose`.
+The Windows logon must be suitable for Kerberos authentication to the AD
+domain. SSPI does not fall back to NTLM.
 
-Authentication failures stop the test with a nonzero exit status and retain
-step diagnostics; configured credential/principal fallback may first try other
-identities. QUIT, security/credential cleanup, and diagnostic-output failures
-also fail test mode rather than claiming that a message was accepted.
-Normal submission semantics, TLS requirements, authentication flags, and
-password-prompt timeout behavior remain unchanged. `--test` does not check
-sender/recipient acceptance or permission to submit message data.
-
-## Send a diagnostic test email
-
-Use `--testmail` to run the same AD, DNS, TLS and SMTP authentication checks
-and then submit a generated diagnostic email on that authenticated connection:
+### Test authentication or send a diagnostic report
 
 ```sh
-ztmail --testmail
+# Authenticate and check TLS without reading stdin or sending email:
+ztmail --test
+ztmail --test --keytab /etc/ztmail/mailer.keytab
+
+# Add observed DC activity, runtime, crypto and validity tables:
+ztmail --test --debug
+
+# Send a generated report to your canonical AD mailbox or an explicit recipient:
 ztmail --testmail --debug
 ztmail --testmail --debug recipient@example.com
 ```
 
-No message input is read from stdin. Without recipient arguments, the recipient
-is the authenticated user's canonical AD mail address, not the overridden
-sender. Arguments override that recipient; unqualified names use the AD domain.
-The canonical AD address is looked up even with `-f`. Sender overrides still
-apply; with `-f '<>'`, the envelope is null but the generated From header uses
-the canonical address.
+`--test` accepts no recipients and never sends MAIL FROM, RCPT TO or DATA.
+`--testmail` reads no stdin and always attaches `ztmail-report.json`, alongside
+text and HTML report bodies. `--test` and `--testmail` are mutually exclusive.
+Neither mode uses Linux native-sendmail fallback.
 
-The UTF-8 `multipart/mixed` email contains a `multipart/alternative` body with
-styled HTML tables and a plain-text fallback using `Key: Value` lines without
-table borders. Every testmail also attaches `ztmail-report.json` as
-`application/json`. All three representations use the same snapshot as observed
-immediately after SMTP authentication. `--debug` adds the DC inventory and
-runtime breakdown; `--verbose` streams local events, and with `--debug` also
-includes detailed timing rows in the email. Passwords, security tokens and
-message payloads from other submissions are never included. The report does
-contain account names, credential paths and internal topology: choose recipients
-accordingly.
+Reports contain account names, credential paths, queried DNS names and internal
+topology. Review them before sharing. See the
+[diagnostics guide](docs/diagnostics.md) for table meanings, timing limitations,
+crypto estimates and the JSON schema.
 
-The JSON attachment uses `schema_version: 1`, a UTC `snapshot_at`, the
-`snapshot_phase` value `after_smtp_authentication_before_data`, explanatory
-`notes`, and an ordered `tables` array. Each table has a stable `id`, `title`,
-`columns`, and `rows`; each row is an array of unstyled strings corresponding
-to the columns. Values preserve the displayed units, unavailable markers and
-unrounded-threshold row filtering; terminal colours and HTML styling are not
-included. The `summary` table is always present; `issues` appears when needed.
-With `--debug`, tables also include `runtime`, `dc_observations` when nonempty,
-and `tls`, `crypto`, and `validity`; `--debug --verbose` additionally includes
-`step_timings`.
-Attachment contents follow the same table selection as the email body.
-
-HTML uses the same bold green `OK`, grey AD-domain suffixes and status colours
-as the CLI, regardless of terminal colour settings. Tables have grey borders
-and rounded corners where supported by the email client; other clients may
-show square corners. Colour-enabled CLI tables also use grey borders.
-
-The email cannot include its own DATA acceptance, subsequent QUIT or final
-cleanup outcomes. These are reported locally after submission. Relay acceptance
-does not prove mailbox delivery. Failures before DATA prevent sending; an
-uncertain DATA outcome must not be blindly retried. Post-acceptance QUIT or
-cleanup warnings do not undo delivery and must not trigger automatic resends.
-Report-output failures remain errors, even when delivery has already succeeded.
-
-`--test` and `--testmail` are mutually exclusive. `--test` remains strictly
-no-email. `--debug` works with either mode. This is a CLI convenience; library
-`Test` remains no-email and normal library `Send` behavior is unchanged.
-
-## Credentials
-
-### Linux, macOS, or Windows: keytab
+### Select or save a sender
 
 ```sh
-./dist/ztmail-linux-amd64 \
-  --keytab /etc/ztmail/mailer.keytab \
-  --domain corp.example.com -oi -t < message.eml
-# Restrict selection to one identity and explicitly override the sender:
-./dist/ztmail-linux-amd64 \
-  --keytab /etc/ztmail/mailer.keytab --principal mailer@CORP.EXAMPLE.COM \
-  -f automation@corp.example.com -oi -t < message.eml
-```
+# Override the sender for one submission:
+ztmail -f automation@example.com -oi -t < message.eml
 
-Without `--principal`, distinct keytab principals in the selected realm are
-tried in file order. Multiple encryption keys for one identity count as one
-candidate. Selection requires credential acquisition and an SMTP service
-ticket; by default it also requires an authenticated LDAP lookup with a valid,
-unique canonical mail address. Failed attempts are cleaned up before trying
-the next candidate. Skipped identities produce warnings; if all fail, the
-error retains every failure. Capacity, owner-close, cleanup failure, or the
-overall deadline stops probing. SMTP submission itself is never replayed.
-
-An explicit principal disables probing other identities. Its realm must match
-`--realm` or the inferred realm. Principals in other realms are not tried:
-the combined AD client is scoped to one domain/realm. Use AES-enabled AD
-accounts; software SMTP contexts support AES128/AES256 RFC 4121 wrap tokens,
-not legacy RC4/DES tokens.
-
-**No krb5.conf is required or read.** `KRB5_CONFIG` is ignored and the former
-`--krb5-config` flag is removed. The SDK discovers KDCs through its AD DNS path
-and owns its in-memory ticket configuration and cache. ztmail never launches
-external `kinit` commands, writes a keytab, exports a TGT, or writes an external
-credential cache. DNS and Kerberos clock synchronization must work.
-
-### Linux, macOS, or Windows: existing FILE credential cache
-
-```sh
-./dist/ztmail-linux-amd64 --ccache /path/to/existing.ccache -oi -t < message.eml
-```
-
-`--ccache` is an alternative to `--keytab`, not an output file. Optional `FILE:`
-prefixes are accepted; relative paths are resolved before passing them to the
-SDK. Linux and macOS default to `KRB5CCNAME` or `/tmp/krb5cc_<uid>` when no keytab is
-specified. Explicit cache mode on Windows requires `--ccache` or `KRB5CCNAME`.
-Only FILE caches are supported, not DIR, KCM, or KEYRING. An external provisioner
-must supply a valid cache with an unexpired TGT. It is read-only and is not
-renewed. Its default principal is the authenticated identity; an optional
-`--principal` constrains that identity rather than switching it.
-
-Protect keytabs and caches as credentials. The SDK applies bounded private-file
-reads; on Linux use owner-private regular files (for example mode `0600`).
-Cache/keytab identities must match the selected AD realm; arbitrary cross-realm
-and directory referral routing are not inferred.
-
-### Windows: integrated SSPI
-
-Windows defaults to the logged-in user's credentials, with no keytab or cache:
-
-```powershell
-Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe -oi -t
-Get-Content -Raw .\message.eml | .\dist\ztmail-windows-amd64.exe `
-  --cred-source sspi --domain corp.example.com --relay relay.corp.example.com -t
-```
-
-For byte-preserving file redirection on Windows, use Command Prompt:
-
-```bat
-dist\ztmail-windows-amd64.exe --cred-source sspi -oi -t < message.eml
-```
-
-The SDK obtains the current Windows logon principal through SSPI and uses it
-for both LDAP and SMTP Kerberos authentication. `--principal`, if supplied,
-must match that identity. `--realm` constrains the identity/domain rather than
-switching Windows identities or overriding Windows ticket routing.
-Verified SMTP TLS state is passed to the SDK for SSPI channel binding.
-No NTLM fallback occurs. Windows SSPI requires an appropriate domain logon,
-reachable domain controllers, and the registered SMTP SPN.
-
-`--cred-source auto` chooses an explicit keytab first, then an explicit cache, then
-Windows SSPI or the non-Windows default FILE cache. Use `--cred-source keytab|ccache|sspi` to
-require a backend. Explicit backends never try other credential backends on
-failure; eligible Linux CLI failures may instead use the documented native
-sendmail path with a warning.
-
-### Opt-in password fallback
-
-```sh
-./dist/ztmail-linux-amd64 --password-prompt -oi -t < message.eml
-# Pin the password identity instead of accepting an editable guess:
-./dist/ztmail-linux-amd64 --password-prompt \
-  --principal alice@CORP.EXAMPLE.COM -oi -t < message.eml
-```
-
-`--password-prompt` requires `--cred-source auto`. It first tries the configured keytab
-(including its principal candidates), then a configured/default FILE cache,
-then Windows SSPI. Only if those methods fail does it prompt for a password.
-Successful earlier methods never prompt. With this flag, both `--keytab` and
-`--ccache` may be provided to try them in that order; without it, the original
-mutually exclusive, no-fallback source policy remains unchanged.
-
-When password fallback succeeds, its introductory notice is sufficient:
-earlier credential-source failures are not repeated as failures/warnings in
-the concise report or normal send output. Use `--verbose` for those details.
-If password fallback fails, the original source errors remain part of the final
-error. Unrelated warnings and later SMTP/cleanup failures are still reported.
-
-The prompt shows a guessed `current-user@REALM` principal. Press Enter to accept
-it or type a replacement account, optionally including `@REALM`. An explicit
-`--principal` is shown and enforced without offering interactive replacement.
-The password principal must remain in the configured/discovered realm; use
-`--realm` to select a different AD realm before starting the program.
-
-Credentials are read from the controlling terminal (`/dev/tty` on Linux/macOS,
-`CONIN$`/`CONOUT$` on Windows), never from message stdin. Password echo is disabled;
-passwords are not accepted in command-line flags or printed in logs. A missing
-terminal, EOF, an empty password, or failed authentication produces an explicit
-error. There are no automatic password retries, avoiding repeated lockout-prone
-attempts. Fatal cancellation, credential-capacity, or cleanup errors stop fallback.
-
-The AD SDK obtains a TGT from the supplied password, then obtains SMTP/LDAP
-service tickets and performs the same canonical-mail lookup and SMTP GSSAPI
-authentication. No external commands or credential-cache writes are used.
-The prompt byte buffer is cleared after use. The SDK retains an in-memory Go
-password string for on-demand TGT reacquisition until its credential owner closes;
-Go does not guarantee zeroization of immutable strings or runtime copies.
-
-Interactive input does not consume the network timeout. With
-`--password-prompt`, `--timeout` applies separately to each existing credential
-source stage, the password-based AD stage, and SMTP submission. Cancellation is
-checked before and after terminal reads; an already-blocked terminal read may
-need input/EOF to return. Without the flag, the existing overall AD/SMTP timeout
-is unchanged.
-
-## Canonical sender
-
-The CLI's sender precedence is explicit `-f` > saved default sender >
-the selected principal's canonical AD address. Without a configured override,
-the selected principal is looked up through authenticated,
-certificate-verified LDAP TLS. The base comes from
-verified RootDSE `defaultNamingContext`, never from an assumed DN.
-RootDSE is read without a scope policy; the subsequent canonical-user search
-uses `adclient.SearchWithOptions` with `SingleNamingContext: true`. This asks
-AD to suppress continuation referrals and confines the search to that naming
-context without changing the shared client's policy or observation hooks.
-It is not referral chasing or forest-wide lookup: "not found" means absent in
-the selected naming context. An unsupported critical control or an unexpected
-referral remains an error; ztmail never retries without the policy or accepts
-partial results. The same shared helper serves the CLI and Go library.
-The search matches `userPrincipalName` plus `sAMAccountName` for simple
-principals, or `servicePrincipalName` for service principals. LDAP filter values
-are escaped; absent, ambiguous, incomplete, or failed searches are errors.
-
-The SDK's `directory.CanonicalMail` selects exactly one uppercase `SMTP:`
-primary from `proxyAddresses`, falling back to the single `mail` value if no
-primary exists. Lowercase `smtp:` aliases are not substituted. Missing,
-ambiguous, or malformed mail is an error, not a guessed `user@domain` address.
-
-The chosen mailbox becomes both SMTP `MAIL FROM` and the message `From`.
-An existing `Sender` field is also rewritten to avoid retaining a different
-sender identity. Old folded/duplicate From/Sender fields are removed; the MIME
-body and unrelated headers remain unchanged. Resent headers remain unchanged.
-Rewriting invalidates signatures that cover changed headers; sign the resulting
-message downstream rather than relying on a preexisting DKIM header.
-
-`-f address` explicitly overrides both envelope and From/Sender, takes precedence
-over the saved default, and skips canonical mail lookup when recipients are
-already known (useful for service accounts without mailboxes).
-`-f '<>'` retains a null envelope sender and preserves the original sender
-headers. Override addresses are still validated, and gateway relay permissions
-still apply. Use `--ldap-ca bundle.pem` to add enterprise LDAP trust anchors;
-there is no LDAP certificate-verification bypass.
-
-### Saved default sender
-
-```sh
+# Set a default manually or fetch your canonical address once from AD:
 ztmail --set-default-from alice@example.com
 ztmail --set-default-from-ad
+
 ztmail --show-default-from
 ztmail --unset-default-from
 ```
 
-The address is stored as one plaintext mailbox plus a newline in
-`$XDG_CONFIG_HOME/ztmail/default-from.txt` on Linux, defaulting to
-`~/.config/ztmail/default-from.txt`. Windows uses
-`%APPDATA%\ztmail\default-from.txt`; macOS uses
-`~/Library/Application Support/ztmail/default-from.txt`.
-The file contains no credentials. New directories/files use user-only Unix
-permissions, and writes use a temporary file in the same directory before
-replacement. Setting again replaces the old default; unsetting a missing file
-is harmless. Malformed or unreadable files are errors rather than silently
-ignored. Explicit `-f` bypasses reading the saved file.
+`-f` wins over the saved default; either replaces the normal canonical sender
+and rewrites From/Sender headers. `-f '<>'` uses a null envelope and preserves
+the original sender headers.
 
-Manual set, show and unset do not read message stdin or contact AD/the relay.
-`--set-default-from-ad` looks up the canonical mailbox once and stores it only
-after successful lookup and credential cleanup. It uses `--cred-source auto`
-and automatically permits password prompting if existing keytab/cache/SSPI
-credentials are unavailable; `--keytab`, `--ccache`, `--principal`, `--domain`,
-`--realm`, `--dns-server` and `--ldap-ca` apply as usual. This action obtains
-only the tickets needed by LDAP, not an SMTP ticket, and does not contact the
-mail gateway. Normal submissions still never prompt unless
-`--password-prompt` is explicitly supplied.
+The saved address is plaintext under Linux XDG configuration, Windows AppData,
+or macOS Application Support; it contains no credentials. Manual management
+does not read stdin or contact AD. AD-based setting permits password prompting
+if existing credentials are unavailable, and does not need a reachable gateway.
 
-The saved address is a sender override, not an authenticated identity or a
-self-recipient substitute. It skips canonical LDAP lookup only when recipients
-are already known; the user's canonical AD mailbox is still required for
-self-recipient fallback. Management actions are mutually exclusive and cannot
-be combined with recipients, `-f`, `-t`, `--test`, `--testmail` or `--debug`.
+See [saved default sender](docs/advanced-usage.md#saved-default-sender) for exact
+paths, management constraints and error handling.
 
-### Linux host-sendmail fallback
-
-For normal Linux submissions, fallback is enabled by default when no usable
-credentials can be acquired, the host AD domain cannot be discovered, or relay
-DNS lookup/TCP connection fails. Disable it with `--no-sendmail-fallback`.
-`--sendmail-path /absolute/path/to/sendmail` explicitly selects the native
-executable; otherwise ztmail tries `/usr/sbin/sendmail`, `/usr/lib/sendmail`,
-`/sbin/sendmail`, then `/usr/libexec/sendmail`. It never searches `PATH`, and
-rejects its own executable, including symlink/hardlink aliases, to prevent
-recursion when installed under the name sendmail. A child-process environment
-guard also prevents recursive fallback through separately installed copies.
-
-Fallback never follows SMTP/TLS/authentication rejection, uncertain DATA,
-credential-owner cleanup/capacity errors, caller cancellation, or AD
-configuration/post-acquisition errors. A failed explicitly requested password
-prompt/authentication also remains an error. If any credential attempt has
-already failed after acquisition, earlier missing-credential errors do not
-make fallback eligible. `--test`, `--testmail`, AD-default management, Windows,
-macOS and the Go library never use this fallback.
-
-The same message validation, dot-input handling, recipient extraction and
-Bcc stripping run before native submission. Without credentials, no canonical
-AD sender is guessed: original From/Sender are preserved unless `-f` or a
-saved default explicitly selects a rewrite. A known canonical sender is
-retained when only the relay is unreachable. `-f '<>'` always preserves headers
-and is forwarded as a null envelope sender.
-
-Native sendmail receives `-i`, an optional `-f`, `--` and the validated
-recipients, not `-t`; the already-prepared message goes directly to its stdin
-without a shell. If the host domain is unknown, simple local aliases such as
-`root` are permitted in recipient arguments; otherwise unqualified arguments
-retain their normal AD-domain qualification. Headers require full mailbox
-addresses. File, pipe and include recipients are rejected. With neither
-explicit/header recipients nor an authenticated canonical mailbox, fallback
-fails rather than inventing a self-recipient. Use a fully qualified sender
-override if the host domain cannot be discovered.
-
-A warning identifies native fallback. The process gets a fresh `--timeout`
-budget, but caller cancellation/deadlines still apply. Exit zero means the
-host MTA accepted the message, possibly into its queue, not that a mailbox
-received it. Failure after native process startup is conservatively reported
-as uncertain: check local MTA logs/queue before retrying. Native failure retains
-the original AD/relay error. ztmail never submits again automatically.
-
-## Sendmail compatibility
-
-Input is a complete RFC 5322 message on stdin, with a blank line separating
-headers and body. `Date`, `Message-ID`, and MIME content must be supplied by the
-caller. From/Sender rewriting follows the policy above.
-
-For interactive input, press Enter twice after the last header to insert that
-blank line, then type the body and finish with a line containing only `.`:
-
-```text
-Subject: test
-
-This is a testmail
-.
-```
-
-Press Ctrl+C to cancel while waiting for message input, including when started
-without arguments or when a pipe remains open. The CLI exits with an error
-without acquiring credentials or submitting a partially entered message.
-
-Without the blank line, body text is interpreted as another header. A formatting
-error reports the offending line and how to correct it; the message is rejected
-locally before any AD authentication or SMTP submission.
+### Allow an interactive credential prompt
 
 ```sh
-printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject: Test\n\nHello\n' |
-  ./dist/ztmail-linux-amd64 -oi -t
+ztmail --password-prompt -oi -t < message.eml
+ztmail --password-prompt --principal alice@CORP.EXAMPLE.COM -oi -t < message.eml
 ```
 
-- Positional arguments are envelope recipients; unqualified CLI addresses
-  such as `bob` are qualified with the host domain.
-- `-t` adds recipients from `To`, `Cc`, and `Bcc`. When Resent fields exist,
-  only the newest contiguous Resent block's recipients are selected.
-  Header recipient syntax must use complete RFC mailbox addresses.
-- All `Bcc` and `Resent-Bcc` fields, including folded continuation lines, are
-  removed from the transmitted message even without `-t`. Other header bytes
-  (except From/Sender) and body content are preserved, apart from SMTP
-  line-ending normalization.
-- Without positional recipients, headers are read automatically as with `-t`.
-  If neither supplies recipients, the authenticated user's canonical AD mail
-  becomes the recipient, independently of any sender override. A missing or
-  invalid canonical address fails explicitly. Test mode still sends no mail.
-- With `-t`, CLI and header recipients are combined; exact duplicates are removed.
-- `-f address` overrides both the envelope sender and message From/Sender.
-  `-f '<>'` sends a null envelope sender without rewriting sender headers.
-- `-i` or legacy `-oi` preserves lone-dot lines; otherwise a line containing
-  only `.` terminates input. SMTP dot-stuffing is handled automatically.
-- `-F name` is accepted for caller compatibility, but does not change headers.
-- `-v` prints status to stderr, never the message or authentication tokens.
-- `--` ends flag processing, as in other Cobra commands.
+Existing credentials are tried first; the password is read from the controlling
+terminal, never message stdin. Normal sends do not prompt automatically.
+`--password-prompt` requires `--cred-source auto`. See
+[password fallback](docs/advanced-usage.md#opt-in-password-fallback) for source
+order and timeout behavior.
 
-Only the documented sendmail subset is implemented. Native Linux fallback
-delegates to a separately installed MTA; ztmail itself implements no queue management,
-daemon modes, aliases, local delivery, DSNs, arbitrary `-o` options, and a local
-retry spool are not implemented. Unknown options fail rather than being ignored.
-The tool is not a setuid program or a complete drop-in MTA replacement.
+### Understand acceptance and Linux fallback
 
-## Transport and failure behavior
+On Linux, native-sendmail fallback is enabled for unavailable credentials,
+undiscoverable host AD domain, or relay DNS/TCP failures. A warning identifies
+fallback. Without credentials or a sender override, original sender headers
+are preserved rather than using a guessed AD mailbox.
 
-The relay must advertise **AUTH GSSAPI** after TLS. Mutual Kerberos
-authentication and the signed SASL security-layer negotiation are mandatory.
-The client selects the SASL **no security layer** option; TLS protects the
-subsequent SMTP envelope and message. Relays requiring a SASL
-integrity/confidentiality layer rather than TLS are not supported.
+```sh
+# Require the AD gateway path, with no native fallback:
+ztmail --no-sendmail-fallback -oi -t < message.eml
 
-- Default: `--tls required` (STARTTLS); no downgrade if unavailable.
-- Port 465: `--tls implicit --port 465`.
-- Explicit opt-out: `--tls off`. This authenticates with Kerberos but exposes
-  the message and envelope in plaintext; only use on a suitably protected network.
-- Uses system-trusted CA certificates; there is no certificate-verification bypass.
-- `--timeout 60s` bounds AD discovery, principal probing, mail lookup, and SMTP
-  submission after stdin has been read. Individual SDK operations also have
-  their own bounded timeouts. Opt-in password fallback uses the per-stage
-  timeouts described above. Cleanup has a separate five-second bound.
+# Select the host MTA executable explicitly:
+ztmail --sendmail-path /usr/sbin/sendmail -oi -t < message.eml
+```
 
-Exit status is zero only after the relay confirms DATA acceptance or, on eligible
-Linux fallback, host sendmail exits zero. It is nonzero for unrecovered
-validation, credential, authentication, recipient, or submission failures.
-All recipients must be accepted before DATA is sent. A failed QUIT or credential
-cleanup after confirmed acceptance produces a warning, not a retry-inducing
-failure. A lost connection during DATA/final acknowledgement can leave delivery
-uncertain; the error says so. There are no automatic retries.
+Fallback never follows TLS/SMTP authentication rejection, uncertain submission,
+caller cancellation, or fatal credential lifecycle errors. It is Linux
+CLI-only, not a Windows/macOS or library feature. See
+[native fallback details](docs/advanced-usage.md#linux-host-sendmail-fallback).
 
-Tests cover argument validation, message privacy, Resent handling, domain
-parsing, ordered principal probing, source configuration, canonical mail lookup,
-sender rewriting and overrides, SDK GSSAPI delegation, and a local SMTP protocol
-exchange. Default-sender management and Linux fallback tests use isolated
-configuration directories and fake sendmail executables, never the host MTA.
-Cryptographic and native credential operations belong to the SDK.
-Tests do not replace an end-to-end check against your AD KDC, protected LDAP
-service, and GSSAPI-enabled SMTP gateway.
-Windows SSPI must also be exercised on a domain-joined Windows machine.
+**Acceptance is not mailbox delivery.** Exit zero means the relay confirmed
+DATA acceptance or native sendmail exited zero. If an error says delivery is
+uncertain, check the relay/local MTA before retrying; ztmail never automatically
+replays a submission.
+
+## Advanced usage
+
+### Override discovery, identity or transport
+
+```sh
+ztmail --domain corp.example.com --realm CORP.EXAMPLE.COM \
+  --relay relay.corp.example.com --spn smtp/relay.corp.example.com \
+  --keytab /etc/ztmail/mailer.keytab --principal mailer@CORP.EXAMPLE.COM \
+  --ldap-ca /etc/ztmail/ad-ca.pem -oi -t < message.eml
+
+# Use implicit TLS on the appropriate relay port:
+ztmail --tls implicit --port 465 -oi -t < message.eml
+
+ztmail --help
+```
+
+Use a DNS hostname for `--relay`, not a URL, IP literal or `host:port`.
+`--hostname` overrides SMTP EHLO. Repeatable `--dns-server IP[:port]` selects
+bootstrap resolvers; these are discovery hints, not automatically trusted AD
+data servers. `--timeout` defaults to 60 seconds.
+
+STARTTLS is required by default and never silently downgraded. `--tls off`
+deliberately exposes the envelope and message in plaintext; use it only on a
+suitably protected network. There is no TLS certificate-verification bypass.
+
+### Detailed documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Advanced usage reference](docs/advanced-usage.md) | Discovery overrides, credential selection, sender configuration, native fallback, sendmail compatibility and failure semantics |
+| [Diagnostics](docs/diagnostics.md) | No-email checks, testmail, JSON tables, DC observations, timings, crypto/validity and sharing precautions |
+| [Implementation](docs/implementation.md) | Package layout, submission flow, AD ownership, LDAP canonical-mail lookup and transport safety |
+| [Go library](docs/library.md) | Application-owned AD client example, defaults, concurrency, message/result semantics and no-email testing |
+| [Build, test and release](docs/build.md) | Toolchain, private dependencies, platform targets, version metadata, validation and GitHub Actions |
+
+Release history is maintained in [CHANGELOG.md](CHANGELOG.md).

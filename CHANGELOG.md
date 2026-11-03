@@ -5,6 +5,12 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+### Changed
+
+- Reorganize the README around objective, use cases, typical usage and advanced
+  usage. Move detailed operational, diagnostic, library, implementation and
+  build/release documentation into linked topic guides.
+
 ## [0.2.14] - 2026-11-03
 
 ### Added
