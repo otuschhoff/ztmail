@@ -4,6 +4,8 @@ A sendmail-style SMTP submission client written in Go, using Cobra and
 Kerberos **SASL GSSAPI** (RFC 4752). Builds for Linux, Windows, and macOS without CGO.
 Password authentication is available only through an opt-in terminal prompt.
 It does not use NTLM, HTTP Negotiate, or anonymous SMTP fallback.
+On Linux, the CLI can instead delegate safe pre-submission failures to the
+host's own sendmail; no such behavior is added to the Go library.
 
 ## Build
 
@@ -24,12 +26,12 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=darwin TARGET_ARCH=arm64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.2.1+20261101-110716.abcdef0
+# 0.2.14+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.2.1**. Every supported build includes UTC build time
+The semantic version is **0.2.14**. Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.2.1+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.2.14+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 The executable now lives in `cmd/ztmail`; `go build ./cmd/ztmail` builds the CLI,
@@ -103,7 +105,8 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
   limits. Do not modify message slices until the call returns. There is no
   mailer `Close`: the application closes the shared AD client only after all
   in-flight operations complete. No credentials fallback or interactive
-  password prompting is initiated by the library.
+  password prompting is initiated by the library. It neither reads the CLI's
+  saved sender nor executes host sendmail.
 - The CLI and library share message validation, sender rewriting, canonical
   LDAP lookup, AD DNS/GSSAPI adapters, TLS and SMTP transport code. Cobra,
   sendmail stdin handling, source probing and password prompts belong to the
@@ -628,7 +631,9 @@ reachable domain controllers, and the registered SMTP SPN.
 
 `--cred-source auto` chooses an explicit keytab first, then an explicit cache, then
 Windows SSPI or the non-Windows default FILE cache. Use `--cred-source keytab|ccache|sspi` to
-require a backend. Explicit backends never silently fall back on failure.
+require a backend. Explicit backends never try other credential backends on
+failure; eligible Linux CLI failures may instead use the documented native
+sendmail path with a warning.
 
 ### Opt-in password fallback
 
@@ -681,7 +686,9 @@ is unchanged.
 
 ## Canonical sender
 
-By default, the selected principal is looked up through authenticated,
+The CLI's sender precedence is explicit `-f` > saved default sender >
+the selected principal's canonical AD address. Without a configured override,
+the selected principal is looked up through authenticated,
 certificate-verified LDAP TLS. The base comes from
 verified RootDSE `defaultNamingContext`, never from an assumed DN.
 RootDSE is read without a scope policy; the subsequent canonical-user search
@@ -708,12 +715,93 @@ body and unrelated headers remain unchanged. Resent headers remain unchanged.
 Rewriting invalidates signatures that cover changed headers; sign the resulting
 message downstream rather than relying on a preexisting DKIM header.
 
-`-f address` explicitly overrides both envelope and From/Sender, and skips
-canonical mail lookup (useful for service accounts without mailboxes).
+`-f address` explicitly overrides both envelope and From/Sender, takes precedence
+over the saved default, and skips canonical mail lookup when recipients are
+already known (useful for service accounts without mailboxes).
 `-f '<>'` retains a null envelope sender and preserves the original sender
 headers. Override addresses are still validated, and gateway relay permissions
 still apply. Use `--ldap-ca bundle.pem` to add enterprise LDAP trust anchors;
 there is no LDAP certificate-verification bypass.
+
+### Saved default sender
+
+```sh
+ztmail --set-default-from alice@example.com
+ztmail --set-default-from-ad
+ztmail --show-default-from
+ztmail --unset-default-from
+```
+
+The address is stored as one plaintext mailbox plus a newline in
+`$XDG_CONFIG_HOME/ztmail/default-from.txt` on Linux, defaulting to
+`~/.config/ztmail/default-from.txt`. Windows uses
+`%APPDATA%\ztmail\default-from.txt`; macOS uses
+`~/Library/Application Support/ztmail/default-from.txt`.
+The file contains no credentials. New directories/files use user-only Unix
+permissions, and writes use a temporary file in the same directory before
+replacement. Setting again replaces the old default; unsetting a missing file
+is harmless. Malformed or unreadable files are errors rather than silently
+ignored. Explicit `-f` bypasses reading the saved file.
+
+Manual set, show and unset do not read message stdin or contact AD/the relay.
+`--set-default-from-ad` looks up the canonical mailbox once and stores it only
+after successful lookup and credential cleanup. It uses `--cred-source auto`
+and automatically permits password prompting if existing keytab/cache/SSPI
+credentials are unavailable; `--keytab`, `--ccache`, `--principal`, `--domain`,
+`--realm`, `--dns-server` and `--ldap-ca` apply as usual. This action obtains
+only the tickets needed by LDAP, not an SMTP ticket, and does not contact the
+mail gateway. Normal submissions still never prompt unless
+`--password-prompt` is explicitly supplied.
+
+The saved address is a sender override, not an authenticated identity or a
+self-recipient substitute. It skips canonical LDAP lookup only when recipients
+are already known; the user's canonical AD mailbox is still required for
+self-recipient fallback. Management actions are mutually exclusive and cannot
+be combined with recipients, `-f`, `-t`, `--test`, `--testmail` or `--debug`.
+
+### Linux host-sendmail fallback
+
+For normal Linux submissions, fallback is enabled by default when no usable
+credentials can be acquired, the host AD domain cannot be discovered, or relay
+DNS lookup/TCP connection fails. Disable it with `--no-sendmail-fallback`.
+`--sendmail-path /absolute/path/to/sendmail` explicitly selects the native
+executable; otherwise ztmail tries `/usr/sbin/sendmail`, `/usr/lib/sendmail`,
+`/sbin/sendmail`, then `/usr/libexec/sendmail`. It never searches `PATH`, and
+rejects its own executable, including symlink/hardlink aliases, to prevent
+recursion when installed under the name sendmail. A child-process environment
+guard also prevents recursive fallback through separately installed copies.
+
+Fallback never follows SMTP/TLS/authentication rejection, uncertain DATA,
+credential-owner cleanup/capacity errors, caller cancellation, or AD
+configuration/post-acquisition errors. A failed explicitly requested password
+prompt/authentication also remains an error. If any credential attempt has
+already failed after acquisition, earlier missing-credential errors do not
+make fallback eligible. `--test`, `--testmail`, AD-default management, Windows,
+macOS and the Go library never use this fallback.
+
+The same message validation, dot-input handling, recipient extraction and
+Bcc stripping run before native submission. Without credentials, no canonical
+AD sender is guessed: original From/Sender are preserved unless `-f` or a
+saved default explicitly selects a rewrite. A known canonical sender is
+retained when only the relay is unreachable. `-f '<>'` always preserves headers
+and is forwarded as a null envelope sender.
+
+Native sendmail receives `-i`, an optional `-f`, `--` and the validated
+recipients, not `-t`; the already-prepared message goes directly to its stdin
+without a shell. If the host domain is unknown, simple local aliases such as
+`root` are permitted in recipient arguments; otherwise unqualified arguments
+retain their normal AD-domain qualification. Headers require full mailbox
+addresses. File, pipe and include recipients are rejected. With neither
+explicit/header recipients nor an authenticated canonical mailbox, fallback
+fails rather than inventing a self-recipient. Use a fully qualified sender
+override if the host domain cannot be discovered.
+
+A warning identifies native fallback. The process gets a fresh `--timeout`
+budget, but caller cancellation/deadlines still apply. Exit zero means the
+host MTA accepted the message, possibly into its queue, not that a mailbox
+received it. Failure after native process startup is conservatively reported
+as uncertain: check local MTA logs/queue before retrying. Native failure retains
+the original AD/relay error. ztmail never submits again automatically.
 
 ## Sendmail compatibility
 
@@ -766,7 +854,8 @@ printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject:
 - `-v` prints status to stderr, never the message or authentication tokens.
 - `--` ends flag processing, as in other Cobra commands.
 
-Only the documented sendmail subset is implemented. Queue management,
+Only the documented sendmail subset is implemented. Native Linux fallback
+delegates to a separately installed MTA; ztmail itself implements no queue management,
 daemon modes, aliases, local delivery, DSNs, arbitrary `-o` options, and a local
 retry spool are not implemented. Unknown options fail rather than being ignored.
 The tool is not a setuid program or a complete drop-in MTA replacement.
@@ -789,8 +878,9 @@ integrity/confidentiality layer rather than TLS are not supported.
   their own bounded timeouts. Opt-in password fallback uses the per-stage
   timeouts described above. Cleanup has a separate five-second bound.
 
-Exit status is zero only after the relay confirms DATA acceptance; it is nonzero
-for validation, credential, authentication, recipient, or submission failures.
+Exit status is zero only after the relay confirms DATA acceptance or, on eligible
+Linux fallback, host sendmail exits zero. It is nonzero for unrecovered
+validation, credential, authentication, recipient, or submission failures.
 All recipients must be accepted before DATA is sent. A failed QUIT or credential
 cleanup after confirmed acceptance produces a warning, not a retry-inducing
 failure. A lost connection during DATA/final acknowledgement can leave delivery
@@ -799,7 +889,9 @@ uncertain; the error says so. There are no automatic retries.
 Tests cover argument validation, message privacy, Resent handling, domain
 parsing, ordered principal probing, source configuration, canonical mail lookup,
 sender rewriting and overrides, SDK GSSAPI delegation, and a local SMTP protocol
-exchange. Cryptographic and native credential operations belong to the SDK.
+exchange. Default-sender management and Linux fallback tests use isolated
+configuration directories and fake sendmail executables, never the host MTA.
+Cryptographic and native credential operations belong to the SDK.
 Tests do not replace an end-to-end check against your AD KDC, protected LDAP
 service, and GSSAPI-enabled SMTP gateway.
 Windows SSPI must also be exercised on a domain-joined Windows machine.

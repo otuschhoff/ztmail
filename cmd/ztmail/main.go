@@ -15,20 +15,24 @@ import (
 )
 
 type options struct {
-	domain, realm, relay, hello, spn string
-	auth, keytab, principal, ccache  string
-	dnsProbeZone, ldapCA             string
-	dnsServers                       []string
-	from, fullName, tlsMode          string
-	port                             int
-	timeout                          time.Duration
-	readHeaders, ignoreDots, verbose bool
-	passwordPrompt                   bool
-	testMode                         bool
-	testMail                         bool
-	debug                            bool
-	needOwnMail                      bool
-	report                           *testReport
+	domain, realm, relay, hello, spn     string
+	auth, keytab, principal, ccache      string
+	dnsProbeZone, ldapCA                 string
+	dnsServers                           []string
+	from, fullName, tlsMode              string
+	port                                 int
+	timeout                              time.Duration
+	readHeaders, ignoreDots, verbose     bool
+	passwordPrompt                       bool
+	testMode                             bool
+	testMail                             bool
+	debug                                bool
+	needOwnMail                          bool
+	report                               *testReport
+	setDefaultFrom, sendmailPath         string
+	setDefaultFromRequested              bool
+	setDefaultFromAD, showDefaultFrom    bool
+	unsetDefaultFrom, noSendmailFallback bool
 }
 
 func main() {
@@ -63,7 +67,7 @@ func newCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ztmail [flags] [recipient ...]",
 		Short:         "Send an RFC 5322 message from stdin using SMTP and Kerberos GSSAPI",
-		Long:          "A sendmail-style submission client. Defaults: mailgw.<host-domain>:25,\nAD realm <HOST-DOMAIN>, SMTP service principal smtp/<relay>, required STARTTLS.\nThis is not a queueing MTA; failed submissions must be handled by the caller.",
+		Long:          "A sendmail-style submission client. Defaults: mailgw.<host-domain>:25,\nAD realm <HOST-DOMAIN>, SMTP service principal smtp/<relay>, required STARTTLS.\nOn Linux, unavailable credentials or relay DNS/TCP failures can use host sendmail.\nztmail has no queue of its own; never blindly retry uncertain submissions.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
@@ -75,6 +79,19 @@ func newCommand() *cobra.Command {
 				}
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), version)
 				return err
+			}
+			o.setDefaultFromRequested = cmd.Flags().Changed("set-default-from")
+			if defaultSenderActionCount(o) > 0 {
+				if err := validateDefaultSenderAction(o, recipients); err != nil {
+					return err
+				}
+				if o.setDefaultFromAD {
+					o.passwordPrompt = true
+					if err := validateOptions(o); err != nil {
+						return err
+					}
+				}
+				return manageDefaultSender(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr(), lookupDefaultSender)
 			}
 			if err := validateOptions(o); err != nil {
 				return err
@@ -104,7 +121,13 @@ func newCommand() *cobra.Command {
 	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
 	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
 	f.StringVar(&o.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
-	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: principal's canonical AD mail); <> keeps null envelope and original headers")
+	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: saved sender, then canonical AD mail); <> keeps null envelope and original headers")
+	f.StringVar(&o.setDefaultFrom, "set-default-from", "", "Save a fully qualified default sender in the user OS config directory; do not send mail")
+	f.BoolVar(&o.setDefaultFromAD, "set-default-from-ad", false, "Look up and save canonical AD mail once; prompt for a password if existing credentials fail; do not send mail")
+	f.BoolVar(&o.showDefaultFrom, "show-default-from", false, "Print the saved default sender; do not read message input or contact AD")
+	f.BoolVar(&o.unsetDefaultFrom, "unset-default-from", false, "Remove the saved default sender; do not send mail")
+	f.BoolVar(&o.noSendmailFallback, "no-sendmail-fallback", false, "Disable Linux local-sendmail fallback when credentials or relay reachability are unavailable")
+	f.StringVar(&o.sendmailPath, "sendmail-path", "", "Linux fallback sendmail executable (default: standard system locations; never this executable)")
 	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
 	f.BoolVarP(&o.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
 	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
@@ -115,6 +138,22 @@ func newCommand() *cobra.Command {
 }
 
 func validateOptions(o options) error {
+	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
+		return errors.New("invalid Kerberos realm")
+	}
+	if strings.ContainsAny(o.spn, "\r\n\x00") {
+		return errors.New("invalid service principal")
+	}
+	for _, target := range []struct{ flag, value string }{{"relay", o.relay}, {"hostname", o.hello}} {
+		if target.value != "" {
+			if _, err := dnsName(target.value); err != nil {
+				return fmt.Errorf("invalid --%s: %w", target.flag, err)
+			}
+		}
+	}
+	if o.sendmailPath != "" && o.noSendmailFallback {
+		return errors.New("--sendmail-path conflicts with --no-sendmail-fallback")
+	}
 	if o.testMode && o.testMail {
 		return errors.New("--test and --testmail are mutually exclusive")
 	}
@@ -156,6 +195,11 @@ func validateOptions(o options) error {
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+	parentCtx := ctx
+	o, err = applyDefaultSender(o)
+	if err != nil {
+		return err
+	}
 	if o.testMode || o.testMail {
 		o.report = newTestReport(log, o.verbose)
 		if o.testMail {
@@ -178,6 +222,13 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	o.report.Value("AD domain", domain)
 	o.report.Step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
 	if err != nil {
+		if shouldFallbackToSendmail(parentCtx, o, err) {
+			message, localRecipients, readErr := prepareLocalMessageContext(parentCtx, in, recipients, o.readHeaders, o.ignoreDots)
+			if readErr != nil {
+				return readErr
+			}
+			return sendmailFallback(parentCtx, o, localRecipients, message, o.from, err, log)
+		}
 		return err
 	}
 	o.domain = domain
@@ -216,6 +267,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.from = sender
 		}
 	}
+	configuredFrom := o.from
 	o.report.Step("Target configuration", nil, fmt.Sprintf("AD domain=%q realm=%q relay=%q port=%d EHLO=%q SPN=%q TLS=%q cred-source=%q requested principal=%q",
 		o.domain, o.realm, o.relay, o.port, o.hello, o.spn, o.tlsMode, o.auth, o.principal))
 	o.report.Value("Target relay", fmt.Sprintf("%s:%d", o.relay, o.port))
@@ -248,9 +300,16 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	adDone()
 	o.report.Step("AD identity selection", err, "credential source and identity selected")
 	if err != nil {
+		if shouldFallbackToSendmail(parentCtx, o, err) {
+			return sendmailFallback(parentCtx, o, recipients, message, configuredFrom, err, log)
+		}
 		return fmt.Errorf("AD identity selection: %w", err)
 	}
+	sessionClosed := false
 	defer func() {
+		if sessionClosed {
+			return
+		}
 		if closeErr := session.Close(); closeErr != nil {
 			if err != nil || o.testMode {
 				err = errors.Join(err, closeErr)
@@ -262,7 +321,9 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.report.Step("AD credential cleanup", nil, "credential owner closed")
 		}
 	}()
-	reportCredentialFailures(o, session, log)
+	if err := reportCredentialFailures(o, session, log); err != nil {
+		return err
+	}
 	o.report.Step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
 	o.report.Value("User", session.identity.Principal)
@@ -298,6 +359,17 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.relay, o.port, session.identity.Principal, session.identity.Source, o.spn, o.tlsMode)
 	}
 	if err := deliver(ctx, o, recipients, message, session, log); err != nil {
+		if shouldFallbackToSendmail(parentCtx, o, err) {
+			sessionClosed = true
+			if closeErr := session.Close(); closeErr != nil {
+				return errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
+			}
+			from := o.from
+			if configuredFrom == "<>" {
+				from = "<>"
+			}
+			return sendmailFallback(parentCtx, o, recipients, message, from, err, log)
+		}
 		return err
 	}
 	if o.verbose && !o.testMode {

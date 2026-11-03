@@ -16,7 +16,7 @@ func setBuildMetadata(t *testing.T, stamp, sha string) {
 func TestFullVersion(t *testing.T) {
 	setBuildMetadata(t, "20261101-110716", "abcdef0")
 	got, err := fullVersion()
-	if err != nil || got != "0.2.13+20261101-110716.abcdef0" {
+	if err != nil || got != "0.2.14+20261101-110716.abcdef0" {
 		t.Fatalf("version=%q err=%v", got, err)
 	}
 }
@@ -50,7 +50,7 @@ func TestVersionFlagDoesNotReadMessageOrAcquireCredentials(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != "0.2.13+20261101-110716.123abcd\n" {
+	if out.String() != "0.2.14+20261101-110716.123abcd\n" {
 		t.Fatalf("output=%q", out.String())
 	}
 }

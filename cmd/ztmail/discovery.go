@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var errHostDomainUnavailable = errors.New("host AD domain unavailable")
+
 func hostDomain(host string) string {
 	_, domain, found := strings.Cut(host, ".")
 	if !found || domain == "localdomain" || domain == "localhost" {
@@ -49,5 +51,5 @@ func discoverHost(ctx context.Context, override string) (string, string, error) 
 		suffixErr = err
 	}
 	return "", "", fmt.Errorf("cannot discover host DNS domain; specify --domain: %w",
-		errors.Join(errors.New("no fully qualified host name or usable DNS suffix"), suffixErr))
+		errors.Join(errHostDomainUnavailable, errors.New("no fully qualified host name or usable DNS suffix"), suffixErr))
 }

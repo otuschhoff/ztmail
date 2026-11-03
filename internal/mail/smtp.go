@@ -17,6 +17,7 @@ import (
 )
 
 var ErrDeliveryUncertain = errors.New("SMTP delivery status uncertain")
+var ErrRelayUnavailable = errors.New("SMTP relay unreachable")
 
 func warn(o options, log io.Writer, err error) {
 	if o.warning != nil {
@@ -311,12 +312,12 @@ func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error
 	dnsDone()
 	if err != nil {
 		o.report.Step("Relay DNS lookup", err, "")
-		return nil, fmt.Errorf("AD DNS relay lookup: %w", err)
+		return nil, fmt.Errorf("AD DNS relay lookup: %w: %w", ErrRelayUnavailable, err)
 	}
 	if len(addresses) == 0 {
 		err := errors.New("AD DNS relay lookup returned no addresses")
 		o.report.Step("Relay DNS lookup", err, "")
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrRelayUnavailable, err)
 	}
 	o.report.Step("Relay DNS lookup", nil, fmt.Sprintf("host=%q addresses=%v", o.relay, addresses))
 	var failures []error
@@ -348,7 +349,7 @@ func dialRelay(ctx context.Context, o options, backend Backend) (net.Conn, error
 			break
 		}
 	}
-	return nil, errors.Join(failures...)
+	return nil, fmt.Errorf("%w: %w", ErrRelayUnavailable, errors.Join(failures...))
 }
 
 var _ smtp.Auth = (*gssAuth)(nil)

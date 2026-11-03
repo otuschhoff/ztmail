@@ -5,6 +5,27 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-11-03
+
+### Added
+
+- Add per-user plaintext default-sender configuration with
+  `--set-default-from`, `--set-default-from-ad`, `--show-default-from` and
+  `--unset-default-from`. Explicit `-f` wins over the saved default, which wins
+  over canonical AD mail. AD setting permits password prompting only for that
+  management action and needs LDAP tickets, not a reachable SMTP gateway.
+- Enable Linux CLI fallback to the host's sendmail for unavailable credentials,
+  undiscoverable host AD domain and relay DNS/TCP failures, with
+  `--no-sendmail-fallback` and `--sendmail-path` controls. Preserve original
+  sender headers when no configured/authenticated sender exists, retain
+  explicit null envelopes, and allow simple local recipient aliases when the
+  host domain is unknown.
+- Prevent recursive native invocation and unsafe file/pipe/include recipients.
+  Never fall back after SMTP/TLS/auth rejection, uncertain submission,
+  cancellation, fatal credential lifecycle errors or AD post-acquisition
+  failure. Keep diagnostics and the library strict; preserve primary errors
+  and flag native failures after startup as uncertain.
+
 ## [0.2.13] - 2026-11-03
 
 ### Added

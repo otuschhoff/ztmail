@@ -94,6 +94,10 @@ func TestRelayDNSFailuresDoNotCreateContext(t *testing.T) {
 		if err == nil || backend.contexts != 0 {
 			t.Fatalf("err=%v contexts=%d", err, backend.contexts)
 		}
+		wantUnavailable := backend.resolveErr != nil || len(backend.addresses) == 0
+		if errors.Is(err, ErrRelayUnavailable) != wantUnavailable {
+			t.Fatalf("invalid IPs must not be treated as network unavailability: %v", err)
+		}
 	}
 }
 
@@ -101,6 +105,31 @@ func (f *fakeBackend) NewSecurityContext(_ context.Context, _ string, state *tls
 	f.contexts++
 	f.state = state
 	return f.security, nil
+}
+
+func TestRelayTCPFailureIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		listener.Close()
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeBackend{address: netip.MustParseAddr("127.0.0.1")}
+	o := options{relay: "relay.example.com", port: n, timeout: time.Second}
+	err = deliver(context.Background(), o, []string{"user@example.com"}, nil, backend, io.Discard)
+	if !errors.Is(err, ErrRelayUnavailable) || backend.contexts != 0 {
+		t.Fatalf("TCP failure not safely classified: %v, contexts=%d", err, backend.contexts)
+	}
 }
 
 func TestGSSAPIAuth(t *testing.T) {
@@ -328,6 +357,9 @@ func TestSMTPSubmission(t *testing.T) {
 			backend := &fakeBackend{security: f, address: netip.MustParseAddr(host)}
 			var log bytes.Buffer
 			err = deliver(context.Background(), o, []string{"one@example.com", "two@example.com"}, []byte("Subject: test\n\nline\n.dot\n"), backend, &log)
+			if errors.Is(err, ErrRelayUnavailable) {
+				t.Fatalf("post-connect SMTP/TLS failure classified as relay unreachable: %v", err)
+			}
 			result := <-results
 			if mode == "starttls-required" {
 				if err == nil || !strings.Contains(err.Error(), "STARTTLS") {

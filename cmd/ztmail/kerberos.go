@@ -29,6 +29,8 @@ type adSession struct {
 }
 
 var errADCleanup = errors.New("AD credential cleanup failed")
+var errADCredentialsUnavailable = errors.New("AD credential acquisition unavailable")
+var errADNonCredentialFailure = errors.New("AD configuration or post-acquisition failure")
 
 func credentialOptions(o options) (kerberos.Options, error) {
 	credentials := kerberos.Options{Realm: o.realm, Principal: o.principal}
@@ -188,24 +190,27 @@ func chooseADCredentials(ctx context.Context, o options,
 	issuesEnd := o.report.IssueCheckpoint()
 	session, err := tryPassword(ctx, o)
 	if err != nil {
-		return nil, errors.Join(append(failures, fmt.Errorf("password prompt: %w", err))...)
+		return nil, errors.Join(append(failures, fmt.Errorf("password prompt: %w: %w", errADNonCredentialFailure, err))...)
 	}
 	o.report.RecoverIssues(issuesStart, issuesEnd)
 	session.failures = append(failures, session.failures...)
 	return session, nil
 }
 
-func reportCredentialFailures(o options, session *adSession, log io.Writer) {
+func reportCredentialFailures(o options, session *adSession, log io.Writer) error {
 	if o.passwordPrompt && session.identity.Source == kerberos.SourcePassword && !o.verbose {
-		return
+		return nil
 	}
 	for _, failure := range session.failures {
 		if o.report != nil {
 			o.report.Line("WARN", "Skipped credential identity", failure.Error())
 		} else {
-			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
+			if _, err := fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure); err != nil {
+				return fmt.Errorf("report skipped credential identity: %w", err)
+			}
 		}
 	}
+	return nil
 }
 
 func stopCredentialFallback(ctx context.Context, err error) bool {
@@ -219,7 +224,7 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 	configDone()
 	o.report.Step("AD source configuration", err, fmt.Sprintf("source=%q principal=%q", settings.Credentials.Source, settings.Credentials.Principal))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
 	}
 	candidates := []string{settings.Credentials.Principal}
 	if settings.Credentials.Source == kerberos.SourceKeytab && settings.Credentials.Principal == "" {
@@ -228,14 +233,14 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 		inspectDone()
 		o.report.Step("Keytab inspection", err, fmt.Sprintf("%d entries", len(entries)))
 		if err != nil {
-			return nil, fmt.Errorf("inspect keytab: %w", err)
+			return nil, fmt.Errorf("inspect keytab: %w: %w", errADCredentialsUnavailable, err)
 		}
 		principalDone := o.report.Measure("Keytab principal selection")
 		candidates, err = principalCandidates(entries, o.realm)
 		principalDone()
 		o.report.Step("Keytab principal selection", err, fmt.Sprintf("candidates=%q", candidates))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("keytab principal selection: %w: %w", errADCredentialsUnavailable, err)
 		}
 	}
 	return selectADSession(ctx, candidates, func(ctx context.Context, principal string) (*adSession, error) {
@@ -291,7 +296,7 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	setupDone()
 	o.report.Step("AD client configuration", err, "SDK DNS, KDC discovery and verified LDAP TLS configured")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
 	}
 	session := &adSession{client: client, report: o.report}
 	defer func() {
@@ -307,7 +312,7 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	session.lease, err = client.Credentials().Acquire(ctx)
 	o.report.Step("Acquire credential lease", err, "credentials acquired")
 	if err != nil {
-		return nil, fmt.Errorf("acquire AD credentials: %w", err)
+		return nil, fmt.Errorf("acquire AD credentials: %w: %w", errADCredentialsUnavailable, err)
 	}
 	session.identity, err = session.lease.Identity()
 	o.report.Value("User", session.identity.Principal)
@@ -315,21 +320,23 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	o.report.Step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("credential identity: %w: %w", errADNonCredentialFailure, err)
 	}
-	_, err = session.lease.ServiceTicket(ctx, o.spn)
-	o.report.Step("SMTP service ticket", err, fmt.Sprintf("SPN=%q", o.spn))
-	if err != nil {
-		return nil, fmt.Errorf("get SMTP service ticket: %w", err)
+	if !o.setDefaultFromAD {
+		_, err = session.lease.ServiceTicket(ctx, o.spn)
+		o.report.Step("SMTP service ticket", err, fmt.Sprintf("SPN=%q", o.spn))
+		if err != nil {
+			return nil, fmt.Errorf("get SMTP service ticket: %w: %w", errADNonCredentialFailure, err)
+		}
 	}
 	if o.from == "" || o.needOwnMail {
 		session.mail, err = canonicalMail(ctx, client, session.identity)
 		o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
 		if err != nil {
-			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w", session.identity.Principal, err)
+			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w: %w", session.identity.Principal, errADNonCredentialFailure, err)
 		}
 	} else {
-		o.report.Line("SKIP", "Canonical AD mail lookup", "explicit -f override; LDAP lookup is not required by this authentication path")
+		o.report.Line("SKIP", "Canonical AD mail lookup", "configured sender override; LDAP lookup is not required by this authentication path")
 	}
 	return session, nil
 }

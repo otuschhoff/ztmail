@@ -4,9 +4,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/otuschhoff/ztmail/internal/mail"
 )
 
 func prepareMessageContext(ctx context.Context, in io.Reader, recipients []string, domain string, readHeaders, ignoreDots bool) ([]byte, []string, error) {
+	return prepareMessageReadContext(ctx, func() ([]byte, []string, error) {
+		return prepareMessage(in, recipients, domain, readHeaders, ignoreDots)
+	})
+}
+
+func prepareLocalMessageContext(ctx context.Context, in io.Reader, recipients []string, readHeaders, ignoreDots bool) ([]byte, []string, error) {
+	return prepareMessageReadContext(ctx, func() ([]byte, []string, error) {
+		return mail.PrepareLocalMessage(in, recipients, readHeaders, ignoreDots)
+	})
+}
+
+func prepareMessageReadContext(ctx context.Context, read func() ([]byte, []string, error)) ([]byte, []string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, fmt.Errorf("read message: %w", err)
 	}
@@ -19,7 +33,7 @@ func prepareMessageContext(ctx context.Context, in io.Reader, recipients []strin
 	// Arbitrary readers cannot be interrupted safely. Keep the read isolated
 	// from submission; on cancellation the CLI exits without waiting for stdin.
 	go func() {
-		message, recipients, err := prepareMessage(in, recipients, domain, readHeaders, ignoreDots)
+		message, recipients, err := read()
 		done <- result{message, recipients, err}
 	}()
 	select {

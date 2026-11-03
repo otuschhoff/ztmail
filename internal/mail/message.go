@@ -44,6 +44,24 @@ func invalidMessage(err error) error {
 }
 
 func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
+	return prepareMessage(in, args, domain, fromHeaders, ignoreDots, false)
+}
+
+func PrepareLocalMessage(in io.Reader, args []string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
+	return prepareMessage(in, args, "", fromHeaders, ignoreDots, true)
+}
+
+func LocalEnvelopeAddress(s string) (string, error) {
+	if strings.ContainsAny(s, "\r\n\x00/|:") {
+		return "", errors.New("native recipients must be mailboxes or simple local aliases, not file, pipe or include targets")
+	}
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.+-") == "" {
+		return s, nil
+	}
+	return EnvelopeAddress(s, "", false)
+}
+
+func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots, local bool) ([]byte, []string, error) {
 	r := bufio.NewReader(in)
 	var raw bytes.Buffer
 	for {
@@ -152,7 +170,13 @@ func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 	seen := make(map[string]bool)
 	var envelope []string
 	for _, s := range recipients {
-		a, err := EnvelopeAddress(s, domain, false)
+		var a string
+		var err error
+		if local {
+			a, err = LocalEnvelopeAddress(s)
+		} else {
+			a, err = EnvelopeAddress(s, domain, false)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("recipient: %w", err)
 		}
