@@ -2,9 +2,59 @@
 
 [README](../README.md) | [Implementation](implementation.md) | [Go library](library.md) | [Diagnostics](diagnostics.md) | [Build](build.md)
 
-**Status:** proposed; not implemented. Baseline: ztmail v0.2.17.
+**Status:** Phase 0 prerequisites and contract established; production mTLS
+submission is not yet wired. Baseline: ztmail v0.2.17.
 This document defines a bounded implementation plan for an LLM coding agent.
 The proposed flags and API fields below do not exist yet.
+
+### Approved platform scope amendment
+
+On 2026-11-03 the user authorized implementing supported behavior and omitting
+features limited by the OS environment or Go APIs. Unsupported combinations
+must return explicit errors, never silently ignore configuration.
+
+Go 1.26.9 Windows/macOS system verification consumes signed certificate DER,
+not an adjusted parsed leaf. Accordingly, expiry grace with system/append roots
+is unsupported there; PEM replacement roots use the Go verifier. Linux also
+supports grace with system/append roots. The verifier may adjust only a private
+parsed leaf's NotAfter after proving its original expiry lies within grace;
+signed DER, verification time and every other certificate remain unchanged.
+Reports always use the original certificate metadata.
+
+An opaque caller root pool cannot be enumerated/merged through public Go APIs.
+The library therefore supplies copied DER root certificates in typed trust
+configuration instead of an opaque pool, enabling identical append/replace
+semantics without global root changes.
+
+Native runtime/pilot checks unavailable in this environment must be identified
+as not performed, with runnable fixtures/operator steps retained; no production
+policy verification may be claimed from cross-compilation or loopback tests.
+
+### Frozen implementation contract
+
+- Authentication uses `AuthMode` with `AuthGSSAPI`, `AuthMTLS`,
+  `AuthMTLSExternal`; empty resolves to GSSAPI.
+- Shared/public configuration uses `Auth`, `ClientCertificate` (in-memory
+  `*tls.Certificate`) and `ServerTrust`. The CLI loads PEM into those types.
+- `ServerTrust` contains `Mode`, copied DER `Certificates`, typed `Allow`/`Deny`
+  selectors, `ExpiredServerCertificateGrace`, and
+  `InsecureAllowUnverifiableIssuer`. Empty mode selects system without supplied
+  certificates and append otherwise. Explicit system plus certificates is an error.
+- `CASelector` contains `Kind` and a 32-byte `Digest`. Supported kinds are
+  complete certificate SHA-256 and SPKI SHA-256. Hex is case-insensitive and
+  colons may be omitted; all other invalid input is rejected.
+- A resolver capability is independent of security-context creation. DNS-only
+  CLI owners use explicit empty SDK credential/principal method allow-lists.
+- EXTERNAL uses the existing SMTP client's text-protocol sequencing API, sends
+  literal `AUTH EXTERNAL =`, allows at most one empty `334` challenge answered
+  by literal `=`, and requires `235`.
+- Results/report schema v2 carry `Authentication` with method, safe client
+  certificate metadata, request/presentation evidence, SMTP AUTH confirmation,
+  and server verification/exception evidence. No TLS certificate/private-key
+  object is serialized.
+- GSSAPI-specific CLI options are detected by explicitly changed Cobra flags;
+  the same restrictions are applied to non-zero library options. Manual local
+  sender management and version reporting remain side-effect-free.
 
 ## Objective
 
