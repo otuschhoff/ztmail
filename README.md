@@ -156,6 +156,12 @@ or macOS Application Support; it contains no credentials. Manual management
 does not read stdin or contact AD. AD-based setting permits password prompting
 if existing credentials are unavailable, and does not need a reachable gateway.
 
+Host/computer accounts without an AD mailbox may authenticate with a warning.
+For testmail, specify a non-null sender with `-f` or a saved default; if no
+recipient is supplied and the host has no mailbox, that configured sender is
+also the report recipient. Normal submissions still need a sender and
+explicit/header recipients when the host has no mailbox.
+
 See [saved default sender](docs/advanced-usage.md#saved-default-sender) for exact
 paths, management constraints and error handling.
 

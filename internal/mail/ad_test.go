@@ -50,16 +50,16 @@ func TestCanonicalLookupUsesSDKUniquePrincipalSelector(t *testing.T) {
 			fixture := &uniqueFixture{rows: tt.rows, err: tt.err}
 			address, err := CanonicalMail(context.Background(), fixture, kerberos.Identity{
 				Principal: "alice@EXAMPLE.TEST", Realm: "EXAMPLE.TEST"})
-			if (tt.want == nil && (err != nil || address != "alice@example.test")) ||
-				(tt.want != nil && (!errors.Is(err, tt.want) || address != "")) {
-				t.Fatalf("mail=%q err=%v want=%v", address, err, tt.want)
+			if (tt.want == nil && (err != nil || address.Address != "alice@example.test")) ||
+				(tt.want != nil && (!errors.Is(err, tt.want) || address != (CanonicalMailbox{}))) {
+				t.Fatalf("mail=%+v err=%v want=%v", address, err, tt.want)
 			}
 			if fixture.calls != 1 || len(fixture.requests) != 1 {
 				t.Fatalf("lookup retried: calls=%d requests=%d", fixture.calls, len(fixture.requests))
 			}
 			request := fixture.requests[0]
 			if request.Filter != "(&(objectClass=user)(|(userPrincipalName=alice@EXAMPLE.TEST)(sAMAccountName=alice)))" ||
-				request.SizeLimit != 2 || !reflect.DeepEqual(request.Attributes, []string{"mail", "proxyAddresses"}) {
+				request.SizeLimit != 2 || !reflect.DeepEqual(request.Attributes, []string{"mail", "proxyAddresses", "objectClass"}) {
 				t.Fatalf("principal lookup policy changed: %+v", request)
 			}
 		})
@@ -75,6 +75,54 @@ func TestCanonicalLookupRejectsInvalidIdentityBeforeLDAP(t *testing.T) {
 		if err == nil || fixture.calls != 0 {
 			t.Fatalf("invalid identity performed LDAP work: %q calls=%d err=%v", principal, fixture.calls, err)
 		}
+	}
+}
+
+func TestCanonicalHostMailboxIsOptionalOnlyForComputerObjects(t *testing.T) {
+	classes := func(name string, values ...string) adldap.Attribute {
+		attribute := adldap.Attribute{Name: name}
+		for _, value := range values {
+			attribute.Values = append(attribute.Values, []byte(value))
+		}
+		return attribute
+	}
+	for _, tt := range []struct {
+		name, principal string
+		attributes      []adldap.Attribute
+		want            CanonicalMailbox
+		err             error
+	}{
+		{"machine", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "top", "person", "user", "computer")},
+			CanonicalMailbox{HostWithoutMail: true}, nil},
+		{"host-spn", "host/relay.example.test@EXAMPLE.TEST", []adldap.Attribute{classes("OBJECTCLASS", "USER", "COMPUTER")},
+			CanonicalMailbox{HostWithoutMail: true}, nil},
+		{"user-dollar", "USER$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "user")},
+			CanonicalMailbox{}, directory.ErrMissingAttribute},
+		{"unknown-class", "HOST$@EXAMPLE.TEST", nil, CanonicalMailbox{}, directory.ErrMissingAttribute},
+		{"host-has-mail", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("mail", "host@example.test")},
+			CanonicalMailbox{Address: "host@example.test"}, nil},
+		{"host-alias-only", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("proxyAddresses", "smtp:alias@example.test")},
+			CanonicalMailbox{HostWithoutMail: true}, nil},
+		{"host-bad-mail", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("mail", "bad\n@example.test")},
+			CanonicalMailbox{}, directory.ErrInvalidMail},
+		{"host-ambiguous-mail", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("mail", "one@example.test", "two@example.test")},
+			CanonicalMailbox{}, directory.ErrAmbiguousAttribute},
+		{"host-partial-mail", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("proxyAddresses;range=0-*", "SMTP:one@example.test")},
+			CanonicalMailbox{}, directory.ErrIncompleteAttribute},
+		{"partial-class", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass;range=0-*", "computer")},
+			CanonicalMailbox{}, directory.ErrIncompleteAttribute},
+		{"duplicate-class", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer"), classes("objectClass", "computer")},
+			CanonicalMailbox{}, directory.ErrAmbiguousAttribute},
+		{"malformed-class", "HOST$@EXAMPLE.TEST", []adldap.Attribute{classes("objectClass", "computer", "\xff")},
+			CanonicalMailbox{}, directory.ErrMalformed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := &uniqueFixture{rows: []adclient.Entry{{DN: "CN=Account,DC=example,DC=test", Attributes: tt.attributes}}}
+			result, err := CanonicalMail(t.Context(), fixture, kerberos.Identity{Principal: tt.principal, Realm: "EXAMPLE.TEST"})
+			if result != tt.want || !errors.Is(err, tt.err) {
+				t.Fatalf("mailbox=%+v err=%v, want=%+v err=%v", result, err, tt.want, tt.err)
+			}
+		})
 	}
 }
 

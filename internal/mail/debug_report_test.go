@@ -260,25 +260,20 @@ func TestDCObservationMissingResponses(t *testing.T) {
 	for _, tc := range []struct {
 		kind    observe.TraceKind
 		outcome observe.Outcome
-		want    string
 	}{
-		{observe.ExchangeTrace, observe.Canceled, ""},
-		{observe.ConnectionTrace, observe.Canceled, ""},
-		{observe.ExchangeTrace, observe.Failed, "Failed observed attempts"},
-		{observe.ConnectionTrace, observe.Success, "Connected; no complete reply"},
+		{observe.ExchangeTrace, observe.Canceled},
+		{observe.ConnectionTrace, observe.Canceled},
+		{observe.ExchangeTrace, observe.Failed},
+		{observe.ConnectionTrace, observe.Failed},
+		{observe.ConnectionTrace, observe.Success},
+		{observe.ExchangeTrace, observe.Success},
 	} {
 		report := NewTestReport(&bytes.Buffer{}, false)
 		report.Trace(context.Background(), observe.TraceEvent{Kind: tc.kind, Phase: observe.TraceCompleted,
 			Protocol: "ldap", Server: endpoint.Address(), Outcome: tc.outcome, Duration: time.Second})
 		row := report.dcObservationRow(endpoint.Address(), "ldap", endpoint)
-		if tc.want == "" {
-			if row != nil {
-				t.Fatalf("canceled-only row must be omitted: %v", row)
-			}
-			continue
-		}
-		if row[2] != tc.want || row[3] != "-" || row[4] != "-" {
-			t.Fatalf("incorrect unavailable response metrics: %v", row)
+		if row != nil {
+			t.Fatalf("row without response latency must be omitted: %v", row)
 		}
 	}
 }

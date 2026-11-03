@@ -96,11 +96,19 @@ reads; values 1-8 enable the same helper. See [library ownership](library.md#own
   -f automation@corp.example.com -oi -t < message.eml
 ```
 
-Without `--principal`, distinct keytab principals in the selected realm are
-tried in file order. Multiple encryption keys for one identity count as one
+Without `--principal`, distinct single-component account principals in the
+selected realm are tried in file order: user names and machine-account names
+such as `HOST$@REALM`. Service-form/SPN names are ignored, including
+`smtp/relay@REALM`, `ldap/dc@REALM` and `host/fqdn@REALM`. An explicitly supplied
+`--principal` is still honored, including a service principal.
+Multiple encryption keys for one identity count as one
 candidate. Selection requires credential acquisition and an SMTP service
 ticket; by default it also requires an authenticated LDAP lookup with a valid,
-unique canonical mail address. Failed attempts are cleaned up before trying
+unique canonical mail address. A matched AD computer account without mail
+instead produces a warning and retains its authenticated credentials; user
+mailbox requirements and real directory/cleanup failures stay strict.
+See [host testmail behavior](diagnostics.md#send-a-diagnostic-test-email).
+Failed attempts are cleaned up before trying
 the next candidate. Skipped identities produce warnings; if all fail, the
 error retains every failure. Capacity, owner-close, cleanup failure, or the
 overall deadline stops probing. SMTP submission itself is never replayed.
@@ -222,7 +230,11 @@ Sender precedence is explicit `-f` > saved default > canonical AD mail. The
 selected mailbox becomes the envelope sender and From/Sender headers.
 `-f '<>'` preserves the original sender headers and uses a null envelope.
 An override skips canonical lookup only when recipients are already known;
-self-recipient fallback always requires the authenticated canonical mailbox.
+self-recipient fallback in normal submission requires the authenticated
+canonical mailbox. CLI testmail has a narrow exception for LDAP-confirmed
+hosts without mail: a non-null configured sender becomes the recipient when
+none was supplied, with an explicit warning. Sender overrides do not create
+or save an AD mailbox.
 For LDAP lookup, primary-address selection and rewriting details, see
 [the implementation guide](implementation.md#canonical-sender-lookup-and-rewriting).
 

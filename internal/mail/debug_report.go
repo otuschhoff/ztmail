@@ -15,6 +15,8 @@ import (
 	"github.com/otuschhoff/adbind/ad/observe"
 )
 
+const noDCResponseLatencies = "No completed DC response latencies observed."
+
 func (r *TestReport) Value(key, value string) {
 	if r == nil {
 		return
@@ -176,10 +178,10 @@ func (r *TestReport) renderDebug(format reportFormat) string {
 	dcs := r.dcObservationTable()
 	dcResults := dcs.render(format, r.color, r.values["AD domain"])
 	if len(dcs.rows) == 0 {
-		dcResults = reportNote(format, "No completed DC responses, failures or connections observed.")
+		dcResults = reportNote(format, noDCResponseLatencies)
 	}
 	result := r.runtimeBreakdownFormat(format) + "\n" +
-		reportNote(format, "DC observations (untested and canceled-only endpoints omitted)") + "\n" + dcResults +
+		reportNote(format, "DC observations (only endpoints with completed response latency)") + "\n" + dcResults +
 		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs.") +
 		"\n" + reportNote(format, "Detailed step timings require --verbose.")
 	if r.verbose {
@@ -209,18 +211,10 @@ func matchesDCEndpoint(event observe.TraceEvent, endpoint discovery.Endpoint) bo
 
 func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.Endpoint) table.Row {
 	var total time.Duration
-	replies, failed, connected, connectionFailures := 0, 0, 0, 0
+	replies, failed := 0, 0
 	for _, event := range r.traces {
-		if (event.Kind != observe.ExchangeTrace && event.Kind != observe.ConnectionTrace) ||
+		if event.Kind != observe.ExchangeTrace ||
 			event.Protocol != protocol || !matchesDCEndpoint(event, endpoint) {
-			continue
-		}
-		if event.Kind == observe.ConnectionTrace {
-			if event.Outcome == observe.Success {
-				connected++
-			} else if event.Outcome != observe.Canceled {
-				connectionFailures++
-			}
 			continue
 		}
 		if event.Response {
@@ -230,21 +224,14 @@ func (r *TestReport) dcObservationRow(key, protocol string, endpoint discovery.E
 			failed++
 		}
 	}
-	if replies == 0 && failed == 0 && connected == 0 && connectionFailures == 0 {
+	if replies == 0 {
 		return nil
 	}
-	status, avg, count := "Connected; no complete reply", "-", "-"
-	if replies > 0 {
-		status = "Responded"
-		avg = formatDuration(total / time.Duration(replies))
-		count = fmt.Sprint(replies)
-	} else if failed > 0 || connectionFailures > 0 {
-		status = "Failed observed attempts"
-	}
-	if replies > 0 && failed > 0 {
+	status := "Responded"
+	if failed > 0 {
 		status += fmt.Sprintf("; %d failed attempts", failed)
 	}
-	return table.Row{key, protocol, status, avg, count}
+	return table.Row{key, protocol, status, formatDuration(total / time.Duration(replies)), fmt.Sprint(replies)}
 }
 
 const (

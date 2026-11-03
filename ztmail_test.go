@@ -136,6 +136,7 @@ type fakeSession struct {
 	identityValue                      kerberos.Identity
 	identityErr, ticketErr, mailErr    error
 	securityErr, cleanupErr            error
+	hostWithoutMail                    bool
 	ctxWork                            func(context.Context) error
 }
 
@@ -146,9 +147,12 @@ func (s *fakeSession) ticket(ctx context.Context, _ string) error {
 	}
 	return s.ticketErr
 }
-func (s *fakeSession) canonical(context.Context, kerberos.Identity) (string, error) {
+func (s *fakeSession) canonical(context.Context, kerberos.Identity) (mail.CanonicalMailbox, error) {
 	s.canonicalCalls.Add(1)
-	return "alice@corp.example", s.mailErr
+	if s.hostWithoutMail {
+		return mail.CanonicalMailbox{HostWithoutMail: true}, s.mailErr
+	}
+	return mail.CanonicalMailbox{Address: "alice@corp.example"}, s.mailErr
 }
 func (s *fakeSession) release() { s.releases.Add(1) }
 func (s *fakeSession) Resolve(context.Context, string) ([]netip.Addr, error) {
@@ -395,6 +399,87 @@ func TestRecipientFallbackSend(t *testing.T) {
 			}
 			if s.canonicalCalls.Load() != 1 {
 				t.Fatal("self fallback must obtain authenticated canonical mail even with sender override")
+			}
+		})
+	}
+}
+
+func TestHostWithoutMailboxCanAuthenticateWithoutEmail(t *testing.T) {
+	s := newSession()
+	s.identityValue.Principal = "HOST$@CORP.EXAMPLE"
+	s.hostWithoutMail = true
+	client := testClient(t, s)
+	port, wire := server(t, "canonical")
+	client.options.Port = port
+	var report bytes.Buffer
+	result, err := client.Test(t.Context(), &report)
+	record := <-wire
+	if err != nil || record.err != nil || result.Accepted || s.canonicalCalls.Load() != 1 || s.releases.Load() != 1 {
+		t.Fatalf("host authentication: result=%+v err=%v wire=%v calls=%d releases=%d",
+			result, err, record.err, s.canonicalCalls.Load(), s.releases.Load())
+	}
+	if !strings.Contains(report.String(), "[WARN] Canonical AD mail lookup") ||
+		strings.Contains(report.String(), "[FAIL] Canonical AD mail lookup") {
+		t.Fatalf("missing host mailbox warning or false failure: %s", &report)
+	}
+	for _, command := range record.commands {
+		if strings.HasPrefix(command, "MAIL FROM:") || command == "DATA" {
+			t.Fatalf("no-email host test submitted an envelope: %v", record.commands)
+		}
+	}
+}
+
+func TestHostMailboxLookupFailureIsStillFatal(t *testing.T) {
+	s := newSession()
+	s.hostWithoutMail = true
+	s.mailErr = errors.New("LDAP cleanup failed")
+	client := testClient(t, s)
+	var report bytes.Buffer
+	if _, err := client.Test(t.Context(), &report); !errors.Is(err, s.mailErr) {
+		t.Fatalf("host classification suppressed a real lookup/cleanup error: %v", err)
+	}
+	if strings.Contains(report.String(), "[WARN] Canonical AD mail lookup") ||
+		!strings.Contains(report.String(), "[FAIL] Canonical AD mail lookup") || s.releases.Load() != 1 {
+		t.Fatalf("real host lookup failure was not reported/released: %s", &report)
+	}
+}
+
+func TestHostMissingMailboxRequiresSenderForSubmission(t *testing.T) {
+	s := newSession()
+	s.hostWithoutMail = true
+	client := testClient(t, s)
+	result, err := client.Send(t.Context(), Message{Recipients: []string{"recipient@corp.example"},
+		Data: []byte("Subject: test\r\n\r\nBody.\r\n")})
+	if err == nil || !strings.Contains(err.Error(), "specify Message.From") || result.Accepted || s.contexts.Load() != 0 {
+		t.Fatalf("host submitted without a sender: %+v %v", result, err)
+	}
+}
+
+func TestHostSubmissionWithExplicitSenderAndRecipients(t *testing.T) {
+	for _, from := range []string{"sender@corp.example", "<>"} {
+		t.Run(from, func(t *testing.T) {
+			s := newSession()
+			s.identityValue.Principal = "HOST$@CORP.EXAMPLE"
+			s.hostWithoutMail = true
+			client := testClient(t, s)
+			port, wire := server(t, "canonical")
+			client.options.Port = port
+			result, err := client.Send(t.Context(), Message{
+				From: from, Recipients: []string{"recipient@corp.example"},
+				Data: []byte("From: original@corp.example\r\nSubject: test\r\n\r\nBody.\r\n"),
+			})
+			record := <-wire
+			want := from
+			if from == "<>" {
+				want = ""
+			}
+			if err != nil || record.err != nil || !result.Accepted || result.From != want ||
+				s.canonicalCalls.Load() != 0 || s.releases.Load() != 1 {
+				t.Fatalf("host submission with known sender/recipient: %+v err=%v wire=%v calls=%d",
+					result, err, record.err, s.canonicalCalls.Load())
+			}
+			if from == "<>" && !strings.Contains(string(record.message), "From: original@corp.example") {
+				t.Fatal("host null envelope rewrote the original sender")
 			}
 		})
 	}

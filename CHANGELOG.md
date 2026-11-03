@@ -5,6 +5,32 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-11-03
+
+### Fixed
+
+- Do not reject authenticated host/computer principals solely because their
+  matched AD object has no mailbox. Attempt canonical lookup, classify hosts
+  using complete LDAP `objectClass` metadata, and report missing host mail as a
+  warning in CLI/library diagnostics. Keep user mailbox requirements, missing
+  objects, malformed/ambiguous/incomplete data and LDAP/cleanup failures strict.
+- For mailbox-less host testmail, require a non-null configured sender and use
+  it as the recipient only when no explicit recipient was supplied. Preserve
+  canonical recipients for hosts with mail, normal user behavior and strict
+  normal-submission/library recipient requirements. Clarify lookup and
+  AD-default-sender errors instead of suggesting that `-f` supplies AD mail.
+
+### Changed
+
+- Restrict CLI keytab auto-selection to single-component user and machine-account
+  principals in the selected realm. Ignore all service-form/SPN entries,
+  including `host/fqdn`, while retaining explicit `--principal` overrides,
+  entry order and deduplication.
+- Show debug DC rows only when a complete protocol reply supplies a response
+  latency. Omit connection-only, unanswered-failure and canceled-only rows in
+  terminal, testmail and JSON; keep measured zero latency and protocol-error
+  replies, without substituting connection/failed-attempt timing.
+
 ## [0.2.15] - 2026-11-03
 
 ### Added

@@ -24,16 +24,42 @@ func TestPrincipalCandidates(t *testing.T) {
 		{Realm: "EXAMPLE.COM", Components: []string{"first"}},
 		{Realm: "EXAMPLE.COM", Components: []string{"first"}},
 		{Realm: "example.com", Components: []string{"smtp", "relay.example.com"}},
+		{Realm: "EXAMPLE.COM", Components: []string{"HOST$"}},
+		{Realm: "EXAMPLE.COM", Components: []string{"host", "relay.example.com"}},
+		{Realm: "EXAMPLE.COM", Components: []string{"ldap", "relay.example.com"}},
 		{Realm: "EXAMPLE.COM", Components: []string{"second"}},
 		{Realm: "OTHER.COM", Components: []string{"foreign"}},
 	}
 	got, err := principalCandidates(entries, "EXAMPLE.COM")
-	want := []string{"first@EXAMPLE.COM", "smtp/relay.example.com@EXAMPLE.COM", "second@EXAMPLE.COM"}
+	want := []string{"first@EXAMPLE.COM", "HOST$@EXAMPLE.COM", "second@EXAMPLE.COM"}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates=%v err=%v; want %v", got, err, want)
 	}
 	if _, err := principalCandidates(entries, "ABSENT.COM"); err == nil {
 		t.Fatal("empty realm selection accepted")
+	}
+}
+
+func TestPrincipalCandidatesRejectSPNOnlyKeytabs(t *testing.T) {
+	for _, entries := range [][]keytab.EntryMetadata{
+		{{Realm: "EXAMPLE.COM", Components: []string{"smtp", "relay.example.com"}}},
+		{{Realm: "EXAMPLE.COM", Components: []string{"host", "relay.example.com"}}},
+		{{Realm: "EXAMPLE.COM", Components: []string{"ldap/relay.example.com"}}},
+		{{Realm: "EXAMPLE.COM", Components: []string{""}}},
+		{{Realm: "EXAMPLE.COM"}},
+	} {
+		got, err := principalCandidates(entries, "EXAMPLE.COM")
+		if len(got) != 0 || err == nil || !strings.Contains(err.Error(), "service principals ignored") {
+			t.Fatalf("unsuitable principals accepted or not explained: %v %v", got, err)
+		}
+	}
+}
+
+func TestExplicitServicePrincipalIsPreserved(t *testing.T) {
+	credentials, err := credentialOptions(options{auth: "keytab", keytab: "mailer.keytab",
+		principal: "smtp/relay.example.com", realm: "EXAMPLE.COM"})
+	if err != nil || credentials.Principal != "smtp/relay.example.com@EXAMPLE.COM" {
+		t.Fatalf("explicit principal=%q err=%v", credentials.Principal, err)
 	}
 }
 
@@ -277,8 +303,8 @@ func TestCanonicalMailUsesAuthenticatedIdentity(t *testing.T) {
 			}
 			client := &fakeDirectory{t: t, entries: tt.entries, err: tt.err}
 			got, err := canonicalMail(context.Background(), client, identity)
-			if got != tt.want || (err != nil) != tt.fail {
-				t.Fatalf("got=%q err=%v", got, err)
+			if got.Address != tt.want || (err != nil) != tt.fail {
+				t.Fatalf("got=%+v err=%v", got, err)
 			}
 			if len(client.requests) != 2 || !strings.Contains(client.requests[1].Filter, "sAMAccountName=mailer") {
 				t.Fatalf("identity lookup requests=%v", client.requests)

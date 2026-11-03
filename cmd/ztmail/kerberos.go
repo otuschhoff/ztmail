@@ -21,12 +21,13 @@ import (
 )
 
 type adSession struct {
-	client   *adclient.Client
-	lease    *kerberos.Lease
-	identity kerberos.Identity
-	mail     string
-	failures []error
-	report   *testReport
+	client          *adclient.Client
+	lease           *kerberos.Lease
+	identity        kerberos.Identity
+	mail            string
+	hostWithoutMail bool
+	failures        []error
+	report          *testReport
 }
 
 var errADCleanup = errors.New("AD credential cleanup failed")
@@ -258,14 +259,17 @@ func principalCandidates(entries []keytab.EntryMetadata, realm string) ([]string
 		if !strings.EqualFold(entry.Realm, realm) {
 			continue
 		}
-		principal := strings.Join(entry.Components, "/") + "@" + strings.ToUpper(entry.Realm)
+		if len(entry.Components) != 1 || entry.Components[0] == "" || strings.Contains(entry.Components[0], "/") {
+			continue
+		}
+		principal := entry.Components[0] + "@" + strings.ToUpper(entry.Realm)
 		if !seen[principal] {
 			candidates = append(candidates, principal)
 			seen[principal] = true
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("keytab has no principals in %s; specify --realm", realm)
+		return nil, fmt.Errorf("keytab has no user or host account principals in %s (service principals ignored); check --realm or specify --principal explicitly", realm)
 	}
 	return candidates, nil
 }
@@ -335,10 +339,16 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		if o.noLDAPRace {
 			candidates = 0
 		}
-		session.mail, err = mail.LookupCanonicalMail(ctx, client, session.identity, candidates)
-		o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
+		var mailbox mail.CanonicalMailbox
+		mailbox, err = mail.LookupCanonicalMail(ctx, client, session.identity, candidates)
+		session.mail, session.hostWithoutMail = mailbox.Address, mailbox.HostWithoutMail
+		if err == nil && session.hostWithoutMail {
+			o.report.Line("WARN", "Canonical AD mail lookup", "host directory account has no canonical mailbox; authenticated host credentials retained")
+		} else {
+			o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
+		}
 		if err != nil {
-			return nil, fmt.Errorf("canonical AD mail for %s (or explicitly override with -f): %w: %w", session.identity.Principal, errADNonCredentialFailure, err)
+			return nil, fmt.Errorf("canonical AD mail for %s (a sender override does not supply an authenticated own-recipient address): %w: %w", session.identity.Principal, errADNonCredentialFailure, err)
 		}
 	} else {
 		o.report.Line("SKIP", "Canonical AD mail lookup", "configured sender override; LDAP lookup is not required by this authentication path")

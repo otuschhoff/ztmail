@@ -25,8 +25,10 @@ for the concurrency and lifetime contract.
    strip Bcc/Resent-Bcc before credential acquisition. Diagnostic modes never
    read message stdin.
 3. Configure an AD owner for a credential candidate, acquire a lease and
-   identify its principal. Keytab auto-selection tries distinct principals in
-   the selected realm; failed attempts close their owners before proceeding.
+   identify its principal. Keytab auto-selection tries distinct single-component
+   user/machine-account names in the selected realm, ignoring service-form
+   principals unless `--principal` explicitly selects one. Failed attempts
+   close their owners before proceeding.
    Optional password fallback is controlled by the CLI.
 4. Obtain an SMTP service ticket and, when needed, perform canonical AD mailbox
    lookup. The AD-default-sender management action skips the SMTP ticket and
@@ -127,8 +129,23 @@ metadata. Absent, ambiguous, incomplete, or failed searches are errors.
 
 The SDK's `directory.CanonicalMail` selects exactly one uppercase `SMTP:`
 primary from `proxyAddresses`, falling back to the single `mail` value if no
-primary exists. Lowercase `smtp:` aliases are not substituted. Missing,
-ambiguous, or malformed mail is an error, not a guessed `user@domain` address.
+primary exists. Lowercase `smtp:` aliases are not substituted. Ambiguous or
+malformed mail remains an error, not a guessed `user@domain` address.
+The same scoped read also requests `objectClass`. Only a matched computer
+object with missing mailbox attributes returns an explicit `HostWithoutMail`
+result. AD computer objects inherit `objectClass=user`, so the authenticated
+principal selector covers them without broadening the filter.
+Computer classification requires complete, non-repeated class metadata;
+principal suffixes and service-name spelling are not treated as proof of type.
+User/unknown-object mailbox absence and all directory/cleanup failures remain
+strict. Racing-view cleanup failures clear both the address and host metadata.
+
+CLI and library no-email diagnostics report a warning and retain host
+credentials when that result is returned. CLI testmail requires a configured
+non-null sender for a mailbox-less host; absent recipients then use that sender
+with an explicit warning. Normal submission still requires a configured sender
+and explicit/header recipients in this case. AD-based default-sender setting
+cannot save a nonexistent mailbox and instructs the user to set one manually.
 
 The chosen mailbox becomes both SMTP `MAIL FROM` and the message `From`.
 An existing `Sender` field is also rewritten to avoid retaining a different

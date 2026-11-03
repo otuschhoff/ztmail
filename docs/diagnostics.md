@@ -129,14 +129,20 @@ its own snapshot. Missing observations remain in other/untracked. OS-internal SS
 and KDC times cannot be separated from their enclosing call. Detailed step
 durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
-Untested and canceled-only service rows are omitted; canceled race losers do
-not prove unreachability. Completed connections and failed attempts remain visible.
+Only service rows with a completed protocol response latency are shown.
+Untested, connection-only, failure-only and canceled-only endpoints are omitted;
+canceled race losers do not prove unreachability. Connection durations and
+unanswered-attempt durations are not substituted for response latency.
+Failures remain available through checks and verbose observations/step timings.
 Only observed protocol/port combinations appear; no LDAP/Kerberos cross-product
 is displayed for each advertised port. `Responded` means a complete protocol
 reply was received (possibly an error), not successful authentication; the main
 Authentication row reports the authentication result.
-Missing response times and zero reply counts display a grey `-`
-(unstyled when colours are disabled). With SSPI credentials, per-DC Kerberos rows
+Every displayed DC row has an average response time and a positive reply count;
+a measured zero duration remains a valid `0.0ms` reading. With no qualifying
+rows, the report says no completed DC response latencies were observed.
+Terminal, HTML/plain testmail and JSON use the same row selection.
+With SSPI credentials, per-DC Kerberos rows
 are omitted because Windows manages ticket routing. Observed DNS exchange latency
 is included only where resolver endpoints match discovered DC names or addresses,
 deduplicated across advertised services; no DNS probes are added. DNS replies do
@@ -223,9 +229,30 @@ ztmail --testmail --debug recipient@example.com
 No message input is read from stdin. Without recipient arguments, the recipient
 is the authenticated user's canonical AD mail address, not the overridden
 sender. Arguments override that recipient; unqualified names use the AD domain.
-The canonical AD address is looked up even with `-f`. Sender overrides still
-apply; with `-f '<>'`, the envelope is null but the generated From header uses
-the canonical address.
+The canonical AD address is looked up even with `-f`. For an LDAP-confirmed
+host/computer account (`objectClass=computer`), an absent mailbox produces a
+warning, not an authentication/identity-selection failure. A trailing `$` or
+`host/...` spelling alone is not used to bypass user mailbox requirements.
+LDAP/search failures, missing directory objects, ambiguous or malformed mail,
+incomplete metadata and cleanup failures remain errors.
+
+For a host without a mailbox, a non-null `-f` or saved default sender supplies
+the generated From. With no recipient arguments it also supplies the report
+recipient, with a separate warning; explicit recipients take precedence.
+For example:
+
+```sh
+ztmail --testmail --debug --keytab krb5.keytab --principal 'HOST$' \
+  -f operator@example.com
+```
+
+Bare principals are qualified using the selected realm. If the host has an AD
+mailbox, its canonical address remains the default recipient, independently of
+the sender override. This sender-as-recipient fallback is CLI testmail-only;
+normal submissions and the library do not guess recipients from the sender.
+Sender overrides still apply; with `-f '<>'`, the envelope is null but the
+generated From header requires the canonical address, so a mailbox-less host
+must instead supply a non-null configured sender.
 
 The UTF-8 `multipart/mixed` email contains a `multipart/alternative` body with
 styled HTML tables and a plain-text fallback using `Key: Value` lines without

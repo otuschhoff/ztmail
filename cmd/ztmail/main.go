@@ -118,7 +118,7 @@ func newCommand() *cobra.Command {
 	f.StringVar(&o.auth, "cred-source", "auto", "Credential source: auto, keytab, ccache, sspi")
 	f.BoolVar(&o.passwordPrompt, "password-prompt", false, "In auto mode, prompt for principal/password only after keytab, cache, and SSPI fail")
 	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
-	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try keytab principals or use the cache/SSPI identity")
+	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try user/host account names from the keytab (not SPNs) or use the cache/SSPI identity")
 	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
 	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
 	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
@@ -341,9 +341,13 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	o.report.Value("Mail (from)", from)
 	if o.testMail {
-		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
+		hostRecipientFallback := session.hostWithoutMail && len(recipients) == 0
+		recipients, err = testmailRecipients(recipients, session.mail, o.from, domain, session.hostWithoutMail)
 		if err != nil {
 			return err
+		}
+		if hostRecipientFallback {
+			o.report.Line("WARN", "Testmail recipient fallback", "host account has no canonical mailbox; using configured sender as testmail recipient")
 		}
 		o.report.Value("Canonical mail", session.mail)
 		if o.from == "" {
@@ -352,10 +356,14 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.from = ""
 		}
 	} else if !o.testMode {
+		if session.hostWithoutMail && o.from == "" {
+			return errors.New("host account has no canonical AD mailbox; specify a sender with -f or save a default sender")
+		}
 		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
 		if err != nil {
 			return err
 		}
+
 		message, o.from, err = applySender(message, o.from, session.mail, domain)
 		if err != nil {
 			return err
@@ -383,4 +391,20 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		fmt.Fprintln(log, "Message accepted by relay")
 	}
 	return nil
+}
+
+func testmailRecipients(recipients []string, canonical, configuredFrom, domain string, hostWithoutMail bool) ([]string, error) {
+	if hostWithoutMail {
+		if configuredFrom == "" || configuredFrom == "<>" {
+			return nil, errors.New("host account has no canonical AD mailbox; testmail requires a non-null -f address or saved default sender")
+		}
+		address, err := envelopeAddress(configuredFrom, domain, false)
+		if err != nil {
+			return nil, fmt.Errorf("host testmail sender: %w", err)
+		}
+		if len(recipients) == 0 {
+			recipients = []string{address}
+		}
+	}
+	return mail.RecipientFallback(recipients, canonical, domain)
 }

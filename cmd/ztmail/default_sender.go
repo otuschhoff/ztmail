@@ -188,6 +188,9 @@ func lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string,
 	if err := reportCredentialFailures(o, session, log); err != nil {
 		return "", err
 	}
+	if session.hostWithoutMail {
+		return "", errors.New("host account has no canonical AD mailbox to save; use --set-default-from ADDRESS")
+	}
 	return defaultSenderAddress(address)
 }
 

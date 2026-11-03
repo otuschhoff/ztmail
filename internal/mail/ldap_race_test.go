@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/netip"
@@ -34,26 +35,28 @@ import (
 
 // These public-SDK fixtures use toy SASL contexts, not real Kerberos credentials.
 type ldapRaceFixture struct {
-	t          *testing.T
-	owner      *adclient.Client
-	locator    *discovery.Locator
-	identity   kerberos.Identity
-	tls        *tls.Config
-	validity   context.Context
-	dials      atomic.Int32
-	roots      atomic.Int32
-	searches   atomic.Int32
-	acquired   atomic.Int32
-	released   atomic.Int32
-	deleted    atomic.Int32
-	hold       atomic.Bool
-	entered    chan int
-	release    chan struct{}
-	winner     chan struct{}
-	stopOnce   sync.Once
-	workers    sync.WaitGroup
-	winnerRows int
-	invalidDN  bool
+	t              *testing.T
+	owner          *adclient.Client
+	locator        *discovery.Locator
+	identity       kerberos.Identity
+	tls            *tls.Config
+	validity       context.Context
+	dials          atomic.Int32
+	roots          atomic.Int32
+	searches       atomic.Int32
+	acquired       atomic.Int32
+	released       atomic.Int32
+	deleted        atomic.Int32
+	hold           atomic.Bool
+	entered        chan int
+	release        chan struct{}
+	winner         chan struct{}
+	stopOnce       sync.Once
+	workers        sync.WaitGroup
+	winnerRows     int
+	invalidDN      bool
+	mailboxMissing bool
+	objectClasses  []string
 }
 
 func (f *ldapRaceFixture) LookupSRV(ctx context.Context, name string) (string, []*net.SRV, error) {
@@ -162,15 +165,17 @@ func ldapReply(id int64, tag ber.Tag, code int64, token string) *ber.Packet {
 	return ldapEnvelope(id, result)
 }
 
-func ldapAttributeEntry(id int64, dn, name, value string) []byte {
+func ldapAttributeEntry(id int64, dn, name string, values ...string) []byte {
 	entry := ber.Encode(ber.ClassApplication, ber.TypeConstructed, 4, nil, "")
 	entry.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, dn, ""))
 	attributes := ber.NewSequence("")
 	attribute := ber.NewSequence("")
 	attribute.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, name, ""))
-	values := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSet, nil, "")
-	values.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, value, ""))
-	attribute.AppendChild(values)
+	set := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSet, nil, "")
+	for _, value := range values {
+		set.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, value, ""))
+	}
+	attribute.AppendChild(set)
 	attributes.AppendChild(attribute)
 	entry.AppendChild(attributes)
 	return ldapEnvelope(id, entry).Bytes()
@@ -179,7 +184,9 @@ func ldapAttributeEntry(id int64, dn, name, value string) []byte {
 func (f *ldapRaceFixture) serve(raw net.Conn, index int) {
 	defer raw.Close()
 	if err := raw.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		f.t.Error(err)
+		if !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+			f.t.Error(err)
+		}
 		return
 	}
 	request, err := ber.ReadPacket(raw)
@@ -272,7 +279,7 @@ func (f *ldapRaceFixture) serve(raw net.Conn, index int) {
 				attributes = append(attributes, attribute.Data.String())
 			}
 			if scoped != 1 || query.Children[0].Data.String() != base || filter != expected ||
-				query.Children[3].Value != int64(2) || !reflect.DeepEqual(attributes, []string{"mail", "proxyAddresses"}) {
+				query.Children[3].Value != int64(2) || !reflect.DeepEqual(attributes, []string{"mail", "proxyAddresses", "objectClass"}) {
 				f.t.Errorf("LDAP lookup escaped its candidate/policy: base=%q filter=%q scoped=%d attributes=%v",
 					query.Children[0].Data.String(), filter, scoped, attributes)
 			}
@@ -292,7 +299,12 @@ func (f *ldapRaceFixture) serve(raw net.Conn, index int) {
 				count = f.winnerRows
 			}
 			for row := range count {
-				body = append(body, ldapAttributeEntry(id, fmt.Sprintf("CN=User%d,%s", row, base), "proxyAddresses", "SMTP:alice@example.test")...)
+				dn := fmt.Sprintf("CN=User%d,%s", row, base)
+				if f.mailboxMissing {
+					body = append(body, ldapAttributeEntry(id, dn, "objectClass", f.objectClasses...)...)
+				} else {
+					body = append(body, ldapAttributeEntry(id, dn, "proxyAddresses", "SMTP:alice@example.test")...)
+				}
 			}
 		}
 		done := ldapReply(id, 5, 0, "")
@@ -395,7 +407,7 @@ func TestCanonicalLDAPRaceCompleteEightDCLookup(t *testing.T) {
 		done := make(chan lookupOutcome, 1)
 		go func() {
 			address, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, 8)
-			done <- lookupOutcome{address, err}
+			done <- lookupOutcome{address.Address, err}
 		}()
 		var seen [8]bool
 		for range 8 {
@@ -446,8 +458,8 @@ func TestCanonicalLDAPRaceFirstCompleteNegativeWins(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				address, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, 8)
-				if address != "" {
-					t.Errorf("negative election returned an address: %q", address)
+				if address != (CanonicalMailbox{}) {
+					t.Errorf("negative election returned a mailbox: %+v", address)
 				}
 				done <- err
 			}()
@@ -485,8 +497,8 @@ func TestCanonicalLDAPRaceCancellationPreservesOwner(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		address, err := LookupCanonicalMail(ctx, f.owner, f.identity, 8)
-		if address != "" {
-			t.Errorf("canceled race returned an address: %q", address)
+		if address != (CanonicalMailbox{}) {
+			t.Errorf("canceled race returned a mailbox: %+v", address)
 		}
 		done <- err
 	}()
@@ -513,8 +525,8 @@ func TestCanonicalLDAPRaceCancellationPreservesOwner(t *testing.T) {
 	f.workers.Wait()
 	f.hold.Store(false)
 	address, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, 0)
-	if err != nil || address != "alice@example.test" || f.validity.Err() != nil || f.locator.Inventory().Closed {
-		t.Fatalf("cancellation invalidated the borrowed owner: %q %v", address, err)
+	if err != nil || address.Address != "alice@example.test" || f.validity.Err() != nil || f.locator.Inventory().Closed {
+		t.Fatalf("cancellation invalidated the borrowed owner: %+v %v", address, err)
 	}
 }
 
@@ -530,9 +542,37 @@ func TestCanonicalLDAPRaceInvalidInputsAvoidIO(t *testing.T) {
 	} {
 		f := newLDAPRaceFixture(t, tt.principal)
 		address, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, tt.candidates)
-		if err == nil || address != "" || f.dials.Load() != 0 || f.acquired.Load() != 0 {
-			t.Fatalf("invalid lookup performed I/O: %+v address=%q err=%v dials=%d grants=%d",
+		if err == nil || address != (CanonicalMailbox{}) || f.dials.Load() != 0 || f.acquired.Load() != 0 {
+			t.Fatalf("invalid lookup performed I/O: %+v mailbox=%+v err=%v dials=%d grants=%d",
 				tt, address, err, f.dials.Load(), f.acquired.Load())
+		}
+	}
+}
+
+func TestCanonicalLDAPHostMailboxMissingInOrdinaryAndRacedReads(t *testing.T) {
+	for _, candidates := range []int{0, 8} {
+		for _, computer := range []bool{false, true} {
+			t.Run(fmt.Sprintf("candidates-%d/computer-%t", candidates, computer), func(t *testing.T) {
+				f := newLDAPRaceFixture(t, "SNEU1-AL04$@EXAMPLE.TEST")
+				f.mailboxMissing = true
+				f.objectClasses = []string{"top", "person", "user"}
+				if computer {
+					f.objectClasses = append(f.objectClasses, "computer")
+				}
+				result, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, candidates)
+				if computer {
+					if err != nil || result != (CanonicalMailbox{HostWithoutMail: true}) {
+						t.Fatalf("host mailbox absence failed the complete lookup: %+v %v", result, err)
+					}
+				} else if !errors.Is(err, directory.ErrMissingAttribute) || result != (CanonicalMailbox{}) {
+					t.Fatalf("a dollar-suffixed user bypassed required mail: %+v %v", result, err)
+				}
+				if f.searches.Load() == 0 || f.locator.Inventory().Closed || f.validity.Err() != nil ||
+					f.acquired.Load() != f.released.Load() {
+					t.Fatalf("lookup was skipped or changed owner/grant lifetime: searches=%d grants=%d/%d",
+						f.searches.Load(), f.acquired.Load(), f.released.Load())
+				}
+			})
 		}
 	}
 }
@@ -547,10 +587,10 @@ func TestCanonicalLDAPOrdinaryReadAndInvalidRoot(t *testing.T) {
 		address, err := LookupCanonicalMail(t.Context(), f.owner, f.identity, tt.candidates)
 		if tt.invalid {
 			if err == nil || f.searches.Load() != 0 {
-				t.Fatalf("invalid RootDSE reached the user search: %q %v", address, err)
+				t.Fatalf("invalid RootDSE reached the user search: %+v %v", address, err)
 			}
-		} else if err != nil || address != "alice@example.test" || f.dials.Load() != 1 {
-			t.Fatalf("ordinary LDAP selection changed: %q %v dials=%d", address, err, f.dials.Load())
+		} else if err != nil || address.Address != "alice@example.test" || f.dials.Load() != 1 {
+			t.Fatalf("ordinary LDAP selection changed: %+v %v dials=%d", address, err, f.dials.Load())
 		}
 		if f.locator.Inventory().Closed || f.validity.Err() != nil {
 			t.Fatal("ordinary lookup closed its owner")

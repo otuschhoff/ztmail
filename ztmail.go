@@ -93,7 +93,7 @@ type session interface {
 	mail.Backend
 	identity() (kerberos.Identity, error)
 	ticket(context.Context, string) error
-	canonical(context.Context, kerberos.Identity) (string, error)
+	canonical(context.Context, kerberos.Identity) (mail.CanonicalMailbox, error)
 	release()
 }
 
@@ -107,7 +107,7 @@ func (s *borrowedSession) ticket(ctx context.Context, spn string) error {
 	_, err := s.Lease.ServiceTicket(ctx, spn)
 	return err
 }
-func (s *borrowedSession) canonical(ctx context.Context, identity kerberos.Identity) (string, error) {
+func (s *borrowedSession) canonical(ctx context.Context, identity kerberos.Identity) (mail.CanonicalMailbox, error) {
 	return mail.LookupCanonicalMail(ctx, s.Client, identity, s.ldapRaceCandidates)
 }
 func (s *borrowedSession) release() { s.Lease.Release() }
@@ -275,10 +275,19 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	}
 	canonical := ""
 	if from == "" || (!test && len(result.Recipients) == 0) {
-		canonical, err = credentials.canonical(ctx, result.Identity)
-		report.Step("Canonical AD mail lookup", err, fmt.Sprintf("mail=%q", canonical))
+		var mailbox mail.CanonicalMailbox
+		mailbox, err = credentials.canonical(ctx, result.Identity)
+		canonical = mailbox.Address
+		if err == nil && mailbox.HostWithoutMail {
+			report.Line("WARN", "Canonical AD mail lookup", "host directory account has no canonical mailbox; authenticated host credentials retained")
+		} else {
+			report.Step("Canonical AD mail lookup", err, fmt.Sprintf("mail=%q", canonical))
+		}
 		if err != nil {
 			return result, fmt.Errorf("canonical AD mail: %w", err)
+		}
+		if !test && mailbox.HostWithoutMail && from == "" {
+			return result, errors.New("host account has no canonical AD mailbox; specify Message.From")
 		}
 	}
 	if !test {

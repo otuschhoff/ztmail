@@ -59,7 +59,7 @@ func (r *TestReport) jsonSnapshot() ([]byte, error) {
 		if len(dcs.rows) > 0 {
 			appendTable("dc_observations", "DC observations", dcs)
 		} else {
-			snapshot.Notes = append(snapshot.Notes, "No completed DC responses, failures or connections observed.")
+			snapshot.Notes = append(snapshot.Notes, noDCResponseLatencies)
 		}
 		if r.verbose {
 			appendTable("step_timings", "Step timings", r.stepTimingsTable())

@@ -36,7 +36,6 @@ func TestDCObservationsOnlyShowApplicableObservedServices(t *testing.T) {
 	plain := report.renderDebug(reportPlain)
 	for _, want := range []string{
 		"dc.corp.example:88\nProtocol: kerberos", "dc.corp.example:1389\nProtocol: ldap",
-		"Failed observed attempts", "Connected; no complete reply",
 	} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q:\n%s", want, plain)
@@ -50,7 +49,7 @@ func TestDCObservationsOnlyShowApplicableObservedServices(t *testing.T) {
 	for _, format := range []reportFormat{reportTerminal, reportPlain, reportHTML} {
 		result := report.renderDebug(format)
 		for _, unwanted := range []string{"canceled.corp.example", "untested.corp.example", "Not tested",
-			"Canceled; reachability unknown", "Responded (not authentication proof)"} {
+			"failed.corp.example", "connected.corp.example", "Canceled; reachability unknown", "Responded (not authentication proof)"} {
 			if strings.Contains(result, unwanted) {
 				t.Errorf("format %v includes %q:\n%s", format, unwanted, result)
 			}
@@ -69,9 +68,30 @@ func TestEmptyDCObservations(t *testing.T) {
 	}
 	for _, format := range []reportFormat{reportTerminal, reportPlain, reportHTML} {
 		result := report.renderDebug(format)
-		if !strings.Contains(result, "No completed DC responses, failures or connections observed.") ||
+		if !strings.Contains(result, noDCResponseLatencies) ||
 			strings.Contains(result, "dc.corp.example") {
 			t.Fatalf("incorrect empty observations for %v:\n%s", format, result)
+		}
+	}
+}
+
+func TestDCResponseLatenciesExcludeConnectionAndFailedAttemptDurations(t *testing.T) {
+	for _, duration := range []time.Duration{0, 20 * time.Millisecond} {
+		report := NewTestReport(io.Discard, false)
+		endpoint := discovery.Endpoint{FQDN: "dc.corp.example", Port: 389}
+		for _, event := range []observe.TraceEvent{
+			{Kind: observe.ConnectionTrace, Outcome: observe.Success, Duration: time.Hour},
+			{Kind: observe.ExchangeTrace, Outcome: observe.Failed, Duration: time.Hour},
+			{Kind: observe.ExchangeTrace, Outcome: observe.Canceled, Duration: time.Hour},
+			{Kind: observe.ExchangeTrace, Outcome: observe.Failed, Response: true, Duration: duration},
+		} {
+			event.Protocol, event.Server, event.Phase = "ldap", endpoint.Address(), observe.TraceCompleted
+			report.Trace(t.Context(), event)
+		}
+		row := report.dcObservationRow(endpoint.Address(), "ldap", endpoint)
+		if len(row) != 5 || row[2] != "Responded; 1 failed attempts" ||
+			row[3] != formatDuration(duration) || row[4] != "1" {
+			t.Fatalf("incorrect completed-reply latency/count: %v", row)
 		}
 	}
 }

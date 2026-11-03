@@ -100,6 +100,14 @@ From/Sender headers. `Message.From` explicitly overrides them and skips the
 mail lookup. `Message.From: "<>"` uses the null envelope and preserves sender
 headers. Input byte/slice contents are not mutated.
 
+An LDAP-confirmed computer account can have no canonical mailbox. `Test`
+attempts the lookup, emits a warning for that condition, and continues SMTP
+authentication. User mailbox absence, malformed/ambiguous/incomplete data,
+directory failures and cleanup errors remain fatal. Normal host submissions
+without a mailbox require an explicit `Message.From` and explicit/header
+recipients; the library never uses the sender as a recipient. A null envelope
+with existing sender headers and known recipients retains its existing behavior.
+
 `Result` contains the acquired `Identity`, selected envelope `From`, recipients,
 `Accepted`, and post-acceptance `Warnings`. A nil error with `Accepted: true`
 means the relay confirmed DATA acceptance, not ultimate mailbox delivery.

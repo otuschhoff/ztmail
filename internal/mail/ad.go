@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/directory"
 	"github.com/otuschhoff/adbind/ad/kerberos"
+	adldap "github.com/otuschhoff/adbind/ad/ldap"
 	"github.com/otuschhoff/gokrb5/v8/iana/flags"
 )
 
@@ -19,19 +22,59 @@ type ADBackend struct {
 	Lease  *kerberos.Lease
 }
 
-func CanonicalMail(ctx context.Context, client directory.UniqueFinder, identity kerberos.Identity) (string, error) {
-	selector, err := directory.UserByPrincipal(identity.Principal, identity.Realm)
-	if err != nil {
-		return "", err
-	}
-	entry, err := client.FindUnique(ctx, selector, []string{"mail", "proxyAddresses"})
-	if err != nil {
-		return "", err
-	}
-	return directory.CanonicalMail(entry)
+type CanonicalMailbox struct {
+	Address         string
+	HostWithoutMail bool
 }
 
-func LookupCanonicalMail(ctx context.Context, client *adclient.Client, identity kerberos.Identity, raceCandidates int) (address string, err error) {
+func CanonicalMail(ctx context.Context, client directory.UniqueFinder, identity kerberos.Identity) (CanonicalMailbox, error) {
+	selector, err := directory.UserByPrincipal(identity.Principal, identity.Realm)
+	if err != nil {
+		return CanonicalMailbox{}, err
+	}
+	entry, err := client.FindUnique(ctx, selector, []string{"mail", "proxyAddresses", "objectClass"})
+	if err != nil {
+		return CanonicalMailbox{}, err
+	}
+	address, mailErr := directory.CanonicalMail(entry)
+	if !errors.Is(mailErr, directory.ErrMissingAttribute) {
+		return CanonicalMailbox{Address: address}, mailErr
+	}
+	host, err := directoryComputer(entry)
+	if err != nil {
+		return CanonicalMailbox{}, fmt.Errorf("host objectClass metadata: %w", err)
+	}
+	if host {
+		return CanonicalMailbox{HostWithoutMail: true}, nil
+	}
+	return CanonicalMailbox{}, mailErr
+}
+
+func directoryComputer(entry *adldap.Entry) (bool, error) {
+	host, found := false, false
+	for _, attribute := range entry.Attributes {
+		name, _, optioned := strings.Cut(attribute.Name, ";")
+		if !strings.EqualFold(name, "objectClass") {
+			continue
+		}
+		if optioned {
+			return false, directory.ErrIncompleteAttribute
+		}
+		if found {
+			return false, directory.ErrAmbiguousAttribute
+		}
+		found = true
+		for _, value := range attribute.Values {
+			if len(value) == 0 || !utf8.Valid(value) || strings.ContainsAny(string(value), "\x00\r\n") {
+				return false, directory.ErrMalformed
+			}
+			host = host || strings.EqualFold(string(value), "computer")
+		}
+	}
+	return host, nil
+}
+
+func LookupCanonicalMail(ctx context.Context, client *adclient.Client, identity kerberos.Identity, raceCandidates int) (mailbox CanonicalMailbox, err error) {
 	policy := adclient.SearchOptions{SingleNamingContext: true}
 	if raceCandidates == 0 {
 		return CanonicalMail(ctx, client.WithSearchOptions(policy), identity)
@@ -40,14 +83,14 @@ func LookupCanonicalMail(ctx context.Context, client *adclient.Client, identity 
 		Mode: adclient.RaceSingleUse, MaxCandidates: raceCandidates, MaxConcurrentOperations: 1,
 	})
 	if err != nil {
-		return "", fmt.Errorf("create LDAP racing view: %w", err)
+		return CanonicalMailbox{}, fmt.Errorf("create LDAP racing view: %w", err)
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if closeErr := racer.Close(cleanup); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("close LDAP racing view: %w", closeErr))
-			address = ""
+			mailbox = CanonicalMailbox{}
 		}
 	}()
 	return CanonicalMail(ctx, racer.WithSearchOptions(policy), identity)

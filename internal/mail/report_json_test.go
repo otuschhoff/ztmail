@@ -169,6 +169,49 @@ func TestTestmailJSONTablesSnapshot(t *testing.T) {
 	}
 }
 
+func TestTestmailOmitsDCRowsWithoutResponseLatency(t *testing.T) {
+	report := NewTestReport(io.Discard, false)
+	report.EnableDebug()
+	report.Inventory(discovery.InventoryEvent{Advertised: []discovery.Endpoint{
+		{FQDN: "connected.corp.example", Port: 389},
+		{FQDN: "failed.corp.example", Port: 389},
+	}})
+	for _, event := range []observe.TraceEvent{
+		{Kind: observe.ConnectionTrace, Protocol: "ldap", Server: "connected.corp.example:389", Outcome: observe.Success},
+		{Kind: observe.ExchangeTrace, Protocol: "ldap", Server: "failed.corp.example:389", Outcome: observe.Failed},
+	} {
+		event.Phase, event.Duration = observe.TraceCompleted, time.Millisecond
+		report.Trace(t.Context(), event)
+	}
+	data, err := report.TestMessage("self@corp.example", []string{"self@corp.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := netmail.ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies, jsonData := testmailContents(t, message)
+	var snapshot jsonTestReport
+	if err := json.Unmarshal(jsonData, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range snapshot.Tables {
+		if item.ID == "dc_observations" {
+			t.Fatalf("JSON contains DC rows without latency: %+v", item)
+		}
+	}
+	if !strings.Contains(string(jsonData), noDCResponseLatencies) {
+		t.Fatal("JSON omitted the no-latency explanation")
+	}
+	for format, body := range bodies {
+		if strings.Contains(body, "connected.corp.example") || strings.Contains(body, "failed.corp.example") ||
+			!strings.Contains(body, noDCResponseLatencies) {
+			t.Fatalf("%s did not apply latency-only filtering:\n%s", format, body)
+		}
+	}
+}
+
 func TestTestmailJSONMinimalReport(t *testing.T) {
 	report := NewTestReport(io.Discard, false)
 	data, err := report.TestMessage("self@corp.example", []string{"self@corp.example"})
