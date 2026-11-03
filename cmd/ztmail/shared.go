@@ -10,7 +10,7 @@ import (
 )
 
 type securityContext = mail.SecurityContext
-type submissionBackend = mail.Backend
+type submissionBackend = mail.Resolver
 type testReport = mail.TestReport
 
 var newTestReport = mail.NewTestReport
@@ -34,6 +34,7 @@ func (s *adSession) NewSecurityContext(ctx context.Context, spn string, state *t
 
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend submissionBackend, log io.Writer) error {
 	return mail.Deliver(ctx, mail.Config{Relay: o.relay, Hello: o.hello, SPN: o.spn, From: o.from,
-		TLSMode: o.tlsMode, Port: o.port, Timeout: o.timeout, Test: o.testMode, TestMail: o.testMail, Report: o.report},
+		TLSMode: o.tlsMode, Port: o.port, Timeout: o.timeout, Test: o.testMode, TestMail: o.testMail, Report: o.report,
+		Auth: mail.AuthMode(o.authMethod), ClientCertificate: o.clientCertificate, ServerTrust: o.tlsTrust},
 		recipients, message, backend, log)
 }

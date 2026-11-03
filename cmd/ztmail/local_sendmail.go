@@ -19,7 +19,7 @@ import (
 const nativeFallbackEnvironment = "ZTMAIL_SENDMAIL_FALLBACK"
 
 func shouldFallbackToSendmail(ctx context.Context, o options, err error) bool {
-	if runtime.GOOS != "linux" || o.noSendmailFallback || o.testMode || o.testMail || o.setDefaultFromAD ||
+	if runtime.GOOS != "linux" || (o.authMethod != "" && o.authMethod != "gssapi") || o.noSendmailFallback || o.testMode || o.testMail || o.setDefaultFromAD ||
 		os.Getenv(nativeFallbackEnvironment) == "1" ||
 		ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, mail.ErrDeliveryUncertain) ||
 		errors.Is(err, errADCleanup) || errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) ||

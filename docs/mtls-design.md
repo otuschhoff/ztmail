@@ -2,13 +2,25 @@
 
 [README](../README.md) | [Implementation](implementation.md) | [Go library](library.md) | [Diagnostics](diagnostics.md) | [Build](build.md)
 
-**Status:** Phases 0–2 complete: prerequisites, configuration and shared mTLS/
-EXTERNAL transport established. CLI/library certificate dispatch is not yet wired.
+**Status:** Phases 0–3 complete: prerequisites, configuration and shared mTLS/
+EXTERNAL transport and end-to-end CLI/library certificate dispatch established.
+Method-aware diagnostics (Phase 4) and final documentation/platform matrix
+(Phase 5) remain.
 Baseline: ztmail v0.2.17.
 This document defines a bounded implementation plan for an LLM coding agent.
-The proposed flags and API fields below do not exist yet.
+The authentication/trust flags and API fields below are implemented.
 
 ### Approved platform scope amendment
+
+The operator additionally approved continuing with deterministic SDK DNS,
+CLI validation, shared transport and library tests when the real-CLI DNS
+fixture or authorized gateway pilot cannot run here. The real-CLI test needs
+an isolated loopback DNS listener on port 53 because the SDK qualifies
+discovered AD DNS endpoints on that port. This environment denies that bind;
+the Linux integration subtest explicitly skips only that permission failure.
+No successful real-CLI submission or production relay-policy pilot is claimed
+on the basis of the remaining tests. Pilot and native runtime checks remain
+operator actions, reported separately from offline completion.
 
 On 2026-11-03 the user authorized implementing supported behavior and omitting
 features limited by the OS environment or Go APIs. Unsupported combinations

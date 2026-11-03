@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,26 +16,31 @@ import (
 )
 
 type options struct {
-	domain, realm, relay, hello, spn     string
-	auth, keytab, principal, ccache      string
-	dnsProbeZone, ldapCA                 string
-	dnsServers                           []string
-	from, fullName, tlsMode              string
-	port                                 int
-	timeout                              time.Duration
-	readHeaders, ignoreDots, verbose     bool
-	passwordPrompt                       bool
-	testMode                             bool
-	testMail                             bool
-	debug                                bool
-	needOwnMail                          bool
-	report                               *testReport
-	setDefaultFrom, sendmailPath         string
-	setDefaultFromRequested              bool
-	setDefaultFromAD, showDefaultFrom    bool
-	unsetDefaultFrom, noSendmailFallback bool
-	ldapRaceCandidates                   int
-	noLDAPRace                           bool
+	domain, realm, relay, hello, spn                      string
+	auth, keytab, principal, ccache                       string
+	dnsProbeZone, ldapCA                                  string
+	dnsServers                                            []string
+	from, fullName, tlsMode                               string
+	port                                                  int
+	timeout                                               time.Duration
+	readHeaders, ignoreDots, verbose                      bool
+	passwordPrompt                                        bool
+	testMode                                              bool
+	testMail                                              bool
+	debug                                                 bool
+	needOwnMail                                           bool
+	report                                                *testReport
+	setDefaultFrom, sendmailPath                          string
+	setDefaultFromRequested                               bool
+	setDefaultFromAD, showDefaultFrom                     bool
+	unsetDefaultFrom, noSendmailFallback                  bool
+	ldapRaceCandidates                                    int
+	noLDAPRace                                            bool
+	authMethod                                            string
+	clientCertPath, clientKeyPath, tlsCAPath, tlsRootMode string
+	clientCertificate                                     *tls.Certificate
+	tlsTrust                                              mail.ServerTrust
+	caAllowCert, caDenyCert, caAllowSPKI, caDenySPKI      []string
 }
 
 func main() {
@@ -83,6 +89,9 @@ func newCommand() *cobra.Command {
 				return err
 			}
 			o.setDefaultFromRequested = cmd.Flags().Changed("set-default-from")
+			if err := validateAuthenticationFlags(cmd, o); err != nil {
+				return err
+			}
 			if defaultSenderActionCount(o) > 0 {
 				if err := validateDefaultSenderAction(o, recipients); err != nil {
 					return err
@@ -105,6 +114,17 @@ func newCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.StringVar(&o.authMethod, "auth", "gssapi", "SMTP authentication: gssapi, mtls (TLS certificate only), mtls-external (certificate plus AUTH EXTERNAL)")
+	f.StringVar(&o.clientCertPath, "client-cert", "", "PEM client leaf certificate followed by intermediate certificates")
+	f.StringVar(&o.clientKeyPath, "client-key", "", "Matching unencrypted PEM private key; owner-private on Unix")
+	f.StringVar(&o.tlsCAPath, "tls-ca", "", "PEM SMTP server CA bundle (independent of LDAP and relay client-CA trust)")
+	f.StringVar(&o.tlsRootMode, "tls-ca-mode", "", "SMTP server roots: system, append, replace (default: append with --tls-ca, otherwise system)")
+	f.StringArrayVar(&o.caAllowCert, "tls-ca-allow-cert-sha256", nil, "Allow a server trust anchor by certificate SHA-256 (repeatable)")
+	f.StringArrayVar(&o.caDenyCert, "tls-ca-deny-cert-sha256", nil, "Deny a server chain CA by certificate SHA-256 (repeatable)")
+	f.StringArrayVar(&o.caAllowSPKI, "tls-ca-allow-spki-sha256", nil, "Allow a server trust anchor by public-key SHA-256 (repeatable)")
+	f.StringArrayVar(&o.caDenySPKI, "tls-ca-deny-spki-sha256", nil, "Deny a server chain CA by public-key SHA-256 (repeatable)")
+	f.DurationVar(&o.tlsTrust.ExpiredServerCertificateGrace, "insecure-tls-allow-expired-server-cert-for", 0, "INSECURE: server leaf expiry grace, e.g. 168h; requires replace roots on Windows/macOS")
+	f.BoolVar(&o.tlsTrust.InsecureAllowUnverifiableIssuer, "insecure-tls-allow-server-certificate-with-unverifiable-issuer", false, "INSECURE: permit a signature-valid supplied server path to an untrusted anchor; other checks remain required")
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
 	f.BoolVar(&o.testMode, "test", false, "Report AD/DNS/TLS/GSSAPI checks and authenticate to the relay without reading stdin or sending email")
 	f.BoolVar(&o.testMail, "testmail", false, "Run authentication diagnostics and send a generated report (default recipient: own canonical AD mail); never read stdin")
@@ -142,6 +162,9 @@ func newCommand() *cobra.Command {
 }
 
 func validateOptions(o options) error {
+	if o.authMethod != "" && o.authMethod != "gssapi" && o.authMethod != "mtls" && o.authMethod != "mtls-external" {
+		return errors.New("--auth must be gssapi, mtls, or mtls-external")
+	}
 	if o.ldapRaceCandidates < 1 || o.ldapRaceCandidates > 8 {
 		return errors.New("--ldap-race-candidates must be between 1 and 8")
 	}
@@ -207,6 +230,16 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if err != nil {
 		return err
 	}
+	if o.authMethod == "" {
+		o.authMethod = "gssapi"
+	}
+	o, err = loadAuthenticationOptions(o)
+	if err != nil {
+		return err
+	}
+	if o.authMethod != "gssapi" {
+		o.noSendmailFallback = true
+	}
 	if o.testMode || o.testMail {
 		o.report = newTestReport(log, o.verbose)
 		if o.testMail {
@@ -239,7 +272,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		return err
 	}
 	o.domain = domain
-	if o.realm == "" {
+	if o.realm == "" && o.authMethod == "gssapi" {
 		o.realm = strings.ToUpper(domain)
 	}
 	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
@@ -258,7 +291,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if o.hello, err = dnsName(o.hello); err != nil {
 		return fmt.Errorf("invalid --hostname: %w", err)
 	}
-	if o.spn == "" {
+	if o.spn == "" && o.authMethod == "gssapi" {
 		o.spn = "smtp/" + o.relay
 	}
 	if strings.ContainsAny(o.spn, "\r\n\x00") {
@@ -301,6 +334,9 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		work, cancel := context.WithTimeout(ctx, o.timeout)
 		defer cancel()
 		ctx = work
+	}
+	if o.authMethod != "gssapi" {
+		return runCertificateSubmission(ctx, o, recipients, message, log)
 	}
 	adDone := o.report.Measure("AD identity and canonical mail")
 	session, err := openAD(ctx, o)

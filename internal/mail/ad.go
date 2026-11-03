@@ -22,6 +22,14 @@ type ADBackend struct {
 	Lease  *kerberos.Lease
 }
 
+type ADResolver struct {
+	Client *adclient.Client
+}
+
+func (s ADResolver) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	return (&ADBackend{Client: s.Client}).Resolve(ctx, host)
+}
+
 type CanonicalMailbox struct {
 	Address         string
 	HostWithoutMail bool

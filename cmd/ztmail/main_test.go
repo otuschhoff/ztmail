@@ -68,7 +68,8 @@ func TestCommandHelp(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "--cred-source") || strings.Contains(output.String(), "--auth") {
+	if !strings.Contains(output.String(), "--cred-source") || !strings.Contains(output.String(), "--auth") ||
+		!strings.Contains(output.String(), "SMTP authentication: gssapi, mtls") {
 		t.Fatalf("incorrect credential flag in help:\n%s", &output)
 	}
 }
@@ -93,7 +94,7 @@ func TestCredentialSourceFlag(t *testing.T) {
 	}{
 		{[]string{"--cred-source", "plain"}, "--cred-source must be auto, keytab, ccache, or sspi"},
 		{[]string{"--cred-source", "keytab"}, "--cred-source keytab requires --keytab"},
-		{[]string{"--auth", "auto"}, "unknown flag: --auth"},
+		{[]string{"--auth", "auto"}, "--auth must be gssapi, mtls, or mtls-external"},
 	} {
 		cmd := newCommand()
 		cmd.SetArgs(tc.args)

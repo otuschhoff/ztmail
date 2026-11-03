@@ -219,7 +219,9 @@ func smtpPeer(conn net.Conn, mode string) (result wireResult) {
 		response := "250 OK"
 		switch {
 		case strings.HasPrefix(line, "EHLO "):
-			response = "250-synthetic\r\n250 AUTH GSSAPI"
+			response = "250-synthetic\r\n250 AUTH GSSAPI EXTERNAL"
+		case line == "AUTH EXTERNAL =":
+			response = "235 authenticated"
 		case strings.HasPrefix(line, "AUTH GSSAPI "):
 			if mode == "auth" {
 				response = "535 Authentication rejected"

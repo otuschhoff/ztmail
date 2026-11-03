@@ -2,11 +2,27 @@
 
 [README](../README.md) | [Advanced usage](advanced-usage.md) | [Diagnostics](diagnostics.md) | [Implementation](implementation.md) | [Go library](library.md) | [Build and release](build.md)
 
-The mTLS implementation has completed shared transport Phase 2. Typed `Auth`,
-`ClientCertificate` and `ServerTrust` options validate/copy TLS inputs, but
-mTLS library Send/Test deliberately return an explicit not-yet-wired error until
-the library dispatch phase is complete. GSSAPI remains the working default.
+GSSAPI remains the default. `AuthMTLS` performs TLS client-certificate
+presentation only; `AuthMTLSExternal` additionally requires SMTP AUTH EXTERNAL
+confirmation. Both work with `Send` and `Test`, without acquiring credentials,
+requesting tickets or looking up LDAP mail. Method-aware report rendering is
+the next implementation phase.
 See the [design and approved platform limits](mtls-design.md).
+
+For certificate authentication, supply `Auth: ztmail.AuthMTLSExternal`,
+`ClientCertificate: certificate` (a `*tls.Certificate`) and, if needed,
+`ServerTrust: ztmail.ServerTrust{Mode: ztmail.RootsReplace, Certificates: caDER}`.
+The borrowed owner's DNS is still used; its credentials and configuration are
+not touched. Create a DNS-only SDK owner with explicitly empty
+`kerberos.Options.SourceMethods` and `PrincipalMethods` if no other application
+component needs credentials. `Realm`, `SPN` and nonzero `LDAPRaceCandidates`
+conflict with mTLS. Every `Send` needs `Message.From` and explicit/header
+recipients; no AD or certificate identity is converted to a mail address.
+Null-envelope `From: "<>"` preserves sender headers. `Test` needs neither.
+`Result.Authentication` distinguishes certificate presentation from confirmed
+SMTP authentication; `Accepted` remains separate DATA-acceptance evidence.
+Mutable certificate/CA DER and selector slices are copied at `New`.
+The private signer is borrowed and must remain immutable and concurrency-safe.
 
 Import `github.com/otuschhoff/ztmail`. The application supplies an existing
 `*adclient.Client` created with `adclient.NewAD`; ztmail does not create another
@@ -64,7 +80,7 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
   `TLSImplicit` with an explicit appropriate port, or deliberately opt out with
   `TLSOff`. `Timeout` defaults to 60 seconds for the complete operation; caller
   context cancellation/deadlines also apply.
-- Each `Send` borrows a separate credential lease, uses AD DNS for relay
+- Each GSSAPI `Send` borrows a separate credential lease, uses AD DNS for relay
   resolution, and creates a fresh SMTP connection and TLS-bound GSSAPI context.
   The lease is released on every outcome and the security context is closed.
   Shared tickets and LDAP sessions remain managed by the application's SDK.
@@ -93,7 +109,7 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
 
 `Message.Data` is a complete RFC 5322 message, not a dot-terminated SMTP stream.
 Dot-only body lines are preserved. `Recipients` supplies envelope recipients;
-when empty, recipients are read from headers automatically. If headers provide
+when empty, recipients are read from headers automatically. In GSSAPI, if headers provide
 none, delivery uses the authenticated user's canonical AD mail address. This
 fallback requires canonical lookup even when `From` is overridden or null.
 `ReadRecipients: true` also reads To/Cc/Bcc (or the latest Resent block).

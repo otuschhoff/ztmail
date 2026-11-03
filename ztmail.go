@@ -34,6 +34,9 @@ type RootMode = mail.RootMode
 type CASelector = mail.CASelector
 type CASelectorKind = mail.CASelectorKind
 type ServerTrust = mail.ServerTrust
+type AuthenticationResult = mail.AuthenticationResult
+type CertificateInfo = mail.CertificateInfo
+type ServerVerificationInfo = mail.ServerVerificationInfo
 
 const (
 	AuthGSSAPI          = mail.AuthGSSAPI
@@ -99,10 +102,11 @@ type Message struct {
 // Result describes the selected identity and the confirmed submission outcome.
 // Accepted means the relay accepted DATA, not that recipients received mail.
 type Result struct {
-	Accepted   bool
-	Identity   kerberos.Identity
-	From       string
-	Recipients []string
+	Authentication AuthenticationResult
+	Accepted       bool
+	Identity       kerberos.Identity
+	From           string
+	Recipients     []string
 	// Warnings are post-acceptance QUIT/security cleanup errors. When Accepted
 	// is true and error is nil, do not resend merely because warnings exist.
 	Warnings []error
@@ -113,8 +117,9 @@ type Result struct {
 // SDK credential/LDAP capacity limits still apply. Client needs no Close:
 // only the application closes the shared AD owner.
 type Client struct {
-	options Options
-	acquire func(context.Context) (session, error)
+	options  Options
+	acquire  func(context.Context) (session, error)
+	resolver mail.Resolver
 }
 
 type session interface {
@@ -216,13 +221,16 @@ func New(o Options) (*Client, error) {
 		return nil, errors.New("LDAPRaceCandidates must be between 0 and 8")
 	}
 	client := &Client{options: o}
-	client.acquire = func(ctx context.Context) (session, error) {
-		lease, err := o.AD.Credentials().Acquire(ctx)
-		if err != nil {
-			return nil, err
+	client.resolver = mail.ADResolver{Client: o.AD}
+	if o.Auth == AuthGSSAPI {
+		client.acquire = func(ctx context.Context) (session, error) {
+			lease, err := o.AD.Credentials().Acquire(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &borrowedSession{ADBackend: mail.ADBackend{Client: o.AD, Lease: lease},
+				ldapRaceCandidates: o.LDAPRaceCandidates}, nil
 		}
-		return &borrowedSession{ADBackend: mail.ADBackend{Client: o.AD, Lease: lease},
-			ldapRaceCandidates: o.LDAPRaceCandidates}, nil
 	}
 	return client, nil
 }
@@ -246,10 +254,7 @@ func (c *Client) Test(ctx context.Context, report io.Writer) (Result, error) {
 }
 
 func (c *Client) send(ctx context.Context, message Message, output io.Writer, test bool) (result Result, err error) {
-	if c != nil && c.options.Auth != "" && c.options.Auth != AuthGSSAPI {
-		return result, errors.New("mTLS library submission is not yet wired")
-	}
-	if c == nil || c.acquire == nil {
+	if c == nil || (c.acquire == nil && c.resolver == nil) {
 		return result, errors.New("ztmail client must be constructed with New")
 	}
 	if ctx == nil {
@@ -289,6 +294,21 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		if err != nil {
 			return result, err
 		}
+	}
+	if c.options.Auth != "" && c.options.Auth != AuthGSSAPI {
+		if !test {
+			if from == "" {
+				return result, errors.New("mTLS submission requires Message.From; no canonical AD mailbox is available")
+			}
+			if len(result.Recipients) == 0 {
+				return result, errors.New("mTLS submission requires explicit or header recipients")
+			}
+			data, result.From, err = mail.ApplySender(data, from, "", c.options.Domain)
+			if err != nil {
+				return result, err
+			}
+		}
+		return c.submit(ctx, data, report, test, result, c.resolver)
 	}
 	credentials, err := c.acquire(ctx)
 	report.Step("Acquire credential lease", err, "borrowed credential lease acquired")
@@ -346,11 +366,17 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 	if test {
 		report.Value("Mail (from)", canonical)
 	}
-	err = mail.Deliver(ctx, mail.Config{Relay: c.options.Relay, Hello: c.options.Hostname, SPN: c.options.SPN,
+	return c.submit(ctx, data, report, test, result, credentials)
+}
+
+func (c *Client) submit(ctx context.Context, data []byte, report *mail.TestReport, test bool, result Result, backend mail.Resolver) (Result, error) {
+	err := mail.Deliver(ctx, mail.Config{Relay: c.options.Relay, Hello: c.options.Hostname, SPN: c.options.SPN,
 		Port: c.options.Port, TLSMode: string(c.options.TLS), Timeout: c.options.Timeout,
 		From: result.From, Test: test, Report: report,
-		Warning: func(warning error) { result.Warnings = append(result.Warnings, warning) }},
-		result.Recipients, data, credentials, io.Discard)
+		Auth: c.options.Auth, ClientCertificate: c.options.ClientCertificate, ServerTrust: c.options.ServerTrust,
+		Authentication: func(authentication mail.AuthenticationResult) { result.Authentication = authentication },
+		Warning:        func(warning error) { result.Warnings = append(result.Warnings, warning) }},
+		result.Recipients, data, backend, io.Discard)
 	if err != nil {
 		return result, err
 	}
