@@ -289,6 +289,12 @@ func TestPasswordFallbackPreservesErrors(t *testing.T) {
 	if !errors.Is(err, sourceErr) || !errors.Is(err, passwordErr) {
 		t.Fatalf("lost fallback causes: %v", err)
 	}
+	if !errors.Is(err, errADPasswordFailure) || errors.Is(err, errADNonCredentialFailure) {
+		t.Fatalf("password failure mislabeled as configuration/post-acquisition failure: %v", err)
+	}
+	if shouldFallbackToSendmail(context.Background(), options{}, errors.Join(errADCredentialsUnavailable, err)) {
+		t.Fatal("password sign-in failure allowed native sendmail fallback")
+	}
 }
 
 func TestPasswordSDKConfigurationDoesNotConsultFailedCache(t *testing.T) {

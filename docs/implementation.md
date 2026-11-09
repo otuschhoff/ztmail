@@ -94,7 +94,10 @@ that client. GSSAPI setup, mutual authentication, signed SASL negotiation, and
 Windows SSPI are delegated to the SDK. It uses
 `github.com/otuschhoff/gokrb5/v8`, not the former v7 replacement.
 
-The SDK is pinned to `v0.8.1`, which includes complete LDAP read racing,
+The SDK is pinned to `v0.8.2`, which adds liberal, IPv4-first host resolution
+with partial-family failures retained in lookup metadata. CLI-owned clients
+retain these default host policies across DNS purposes; borrowed library
+clients retain their owner's configured policies. This release also includes complete LDAP read racing,
 authenticated-principal directory selectors, read-only discovery inventory,
 correlated attempt/stage observations, optimistic DNS qualification,
 explicit bounded failure diagnostics, opt-in per-question DNS summaries,

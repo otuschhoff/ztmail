@@ -41,6 +41,8 @@ github.com/mattn/go-runewidth v0.0.16 h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6T
 github.com/mattn/go-runewidth v0.0.16/go.mod h1:Jdepj2loyihRzMpdS35Xk/zdY8IAYHsh153qUoGf23w=
 github.com/otuschhoff/adbind/ad v0.8.1 h1:gOH22FkhemVfaDW2GttsSFXms0N2ok+yfYLYa23T7g8=
 github.com/otuschhoff/adbind/ad v0.8.1/go.mod h1:Jdu0xjVvJdDFAjJFmYXr+wD+Tocr5hQBHjHERXtWJ7A=
+github.com/otuschhoff/adbind/ad v0.8.2 h1:lOF9lzGkft+8dNtG3VjBg2TPlHx5dKnZt4JFsS6Eurk=
+github.com/otuschhoff/adbind/ad v0.8.2/go.mod h1:Jdu0xjVvJdDFAjJFmYXr+wD+Tocr5hQBHjHERXtWJ7A=
 github.com/otuschhoff/gokrb5/v8 v8.5.3 h1:L3L81YmukI8Fjv2mXeF0pFXTvoBdVDsty9FQG6uC3nA=
 github.com/otuschhoff/gokrb5/v8 v8.5.3/go.mod h1:A4JXdxHouADmlVRW/WQoz68Woq/7Z6DI3TUzWZG+QPU=
 github.com/pborman/getopt v0.0.0-20180811024354-2b5b3bfb099b/go.mod h1:85jBQOZwpVEaDAr341tbn15RS4fCAsIst0qp7i8ex1o=

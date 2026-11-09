@@ -23,7 +23,8 @@ func shouldFallbackToSendmail(ctx context.Context, o options, err error) bool {
 		os.Getenv(nativeFallbackEnvironment) == "1" ||
 		ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, mail.ErrDeliveryUncertain) ||
 		errors.Is(err, errADCleanup) || errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) ||
-		errors.Is(err, kerberos.ErrCredentialsChanged) || errors.Is(err, errADNonCredentialFailure) {
+		errors.Is(err, kerberos.ErrCredentialsChanged) || errors.Is(err, errADNonCredentialFailure) ||
+		errors.Is(err, errADPasswordFailure) {
 		return false
 	}
 	return errors.Is(err, errADCredentialsUnavailable) || errors.Is(err, errHostDomainUnavailable) ||

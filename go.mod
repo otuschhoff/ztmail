@@ -8,7 +8,7 @@ require (
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667
 	github.com/go-ldap/ldap/v3 v3.4.13-0.20260212000640-570560be831a
 	github.com/jedib0t/go-pretty/v6 v6.8.3
-	github.com/otuschhoff/adbind/ad v0.8.1
+	github.com/otuschhoff/adbind/ad v0.8.2
 	github.com/otuschhoff/gokrb5/v8 v8.5.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.60.0

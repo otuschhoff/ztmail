@@ -14,6 +14,7 @@ import (
 
 	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/addns"
+	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
 	"github.com/otuschhoff/adbind/ad/observe"
@@ -33,6 +34,32 @@ type adSession struct {
 var errADCleanup = errors.New("AD credential cleanup failed")
 var errADCredentialsUnavailable = errors.New("AD credential acquisition unavailable")
 var errADNonCredentialFailure = errors.New("AD configuration or post-acquisition failure")
+var errADPasswordFailure = errors.New("password sign-in failed")
+
+type adDNSFailure struct {
+	cause   error
+	failure *dns.Failure
+	domain  string
+	realm   string
+}
+
+func (e *adDNSFailure) Error() string {
+	return fmt.Sprintf("AD DNS discovery failed for domain %q (realm %q): %s %s via %s: %v; check the DNS server or specify --dns-server with an AD-capable DNS server IP; use --verbose for the full credential and Kerberos errors",
+		e.domain, e.realm, strings.TrimPrefix(e.failure.Kind.String(), "Type"), e.failure.Stage, e.failure.Server, e.failure.Cause)
+}
+
+func (e *adDNSFailure) Unwrap() error { return e.cause }
+
+func summarizeADFailure(o options, err error) error {
+	if o.verbose || errors.Is(err, errADCleanup) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	var failure *dns.Failure
+	if !errors.As(err, &failure) || !failure.Server.IsValid() {
+		return err
+	}
+	return &adDNSFailure{cause: err, failure: failure, domain: o.domain, realm: o.realm}
+}
 
 func credentialOptions(o options) (kerberos.Options, error) {
 	credentials := kerberos.Options{Realm: o.realm, Principal: o.principal}
@@ -138,7 +165,7 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 }
 
 func openAD(ctx context.Context, o options) (*adSession, error) {
-	return chooseADCredentials(ctx, o, func(ctx context.Context, attempt options) (*adSession, error) {
+	session, err := chooseADCredentials(ctx, o, func(ctx context.Context, attempt options) (*adSession, error) {
 		if !o.passwordPrompt {
 			return openADSource(ctx, attempt)
 		}
@@ -146,6 +173,7 @@ func openAD(ctx context.Context, o options) (*adSession, error) {
 		defer cancel()
 		return openADSource(ctx, attempt)
 	}, openADPassword)
+	return session, summarizeADFailure(o, err)
 }
 
 func chooseADCredentials(ctx context.Context, o options,
@@ -192,7 +220,7 @@ func chooseADCredentials(ctx context.Context, o options,
 	issuesEnd := o.report.IssueCheckpoint()
 	session, err := tryPassword(ctx, o)
 	if err != nil {
-		return nil, errors.Join(append(failures, fmt.Errorf("password prompt: %w: %w", errADNonCredentialFailure, err))...)
+		return nil, errors.Join(append(failures, fmt.Errorf("%w: %w", errADPasswordFailure, err))...)
 	}
 	o.report.RecoverIssues(issuesStart, issuesEnd)
 	session.failures = append(failures, session.failures...)

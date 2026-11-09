@@ -5,6 +5,31 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-09
+
+### Fixed
+
+- Upgrade the AD SDK to `v0.8.2` and use its default liberal, IPv4-first host
+  resolver. Keep working IPv4/A results when IPv6/AAAA replies are malformed,
+  unavailable or otherwise fail, including empty negative replies without SOA
+  evidence from corporate resolvers. Preserve failed-family diagnostic metadata,
+  IPv6-only support, cancellation, namespace checks and qualification proofs.
+- Summarize AD DNS failures with the query type, server, cause and resolver
+  guidance instead of repeating the full nested credential/Kerberos error
+  chain. Retain all underlying error causes and expose the full chain with
+  `--verbose`; keep cancellation and cleanup failures explicit.
+- Label failed password sign-ins accurately rather than unconditionally
+  reporting a configuration or post-acquisition failure. Preserve the existing
+  prohibition on native sendmail fallback after a failed password sign-in.
+
+### Changed
+
+- Add regression coverage for liberal DNS policies across all lookup purposes,
+  working IPv4 results with malformed, SERVFAIL, NODATA or NXDOMAIN AAAA
+  responses, retained diagnostics, error summaries and password fallback safety.
+- Document liberal host resolution, DNS failure troubleshooting and the SDK's
+  internal Kerberos routing marker.
+
 ## [0.3.0] - 2026-11-03
 
 ### Added

@@ -3,21 +3,166 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/addns"
 	"github.com/otuschhoff/adbind/ad/directory"
+	"github.com/otuschhoff/adbind/ad/dns"
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
 	adldap "github.com/otuschhoff/adbind/ad/ldap"
+	"golang.org/x/net/dns/dnsmessage"
 )
+
+func TestSummarizeADFailure(t *testing.T) {
+	cacheErr := errors.New("missing credential cache")
+	failure := &dns.Failure{Stage: "query", Kind: dnsmessage.TypeAAAA,
+		Server: netip.MustParseAddrPort("127.0.0.1:53"),
+		Cause:  fmt.Errorf("%w: incomplete negative proof", dns.ErrMalformed)}
+	cause := errors.Join(cacheErr, errADPasswordFailure, errADCredentialsUnavailable,
+		fmt.Errorf("https://operation.invalid/KdcProxy: %w", errors.Join(dns.ErrUnavailable, failure, failure)))
+	o := options{domain: "corp.example", realm: "CORP.EXAMPLE"}
+	got := summarizeADFailure(o, cause)
+	want := `AD DNS discovery failed for domain "corp.example" (realm "CORP.EXAMPLE"): AAAA query via 127.0.0.1:53: malformed DNS response: incomplete negative proof; check the DNS server or specify --dns-server with an AD-capable DNS server IP; use --verbose for the full credential and Kerberos errors`
+	if got.Error() != want {
+		t.Fatalf("got %q; want %q", got, want)
+	}
+	for _, preserved := range []error{cause, cacheErr, errADPasswordFailure, errADCredentialsUnavailable, dns.ErrMalformed, dns.ErrUnavailable} {
+		if !errors.Is(got, preserved) {
+			t.Errorf("summary lost cause %v", preserved)
+		}
+	}
+	var detail *dns.Failure
+	if !errors.As(got, &detail) || detail != failure {
+		t.Fatal("summary lost structured DNS failure")
+	}
+	o.verbose = true
+	if got := summarizeADFailure(o, cause); got != cause {
+		t.Fatal("verbose output did not retain the full error")
+	}
+	o.verbose = false
+	for _, unchanged := range []error{nil, errors.New("password rejected"), dns.ErrUnavailable,
+		errors.Join(cause, errADCleanup), errors.Join(cause, context.Canceled)} {
+		if got := summarizeADFailure(o, unchanged); got != unchanged {
+			t.Fatalf("unrelated or safety-critical error was summarized: %v", got)
+		}
+	}
+}
+
+func TestADDNSIPv4OnlyResponse(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		withSOA bool
+		rcode   dnsmessage.RCode
+		issue   error
+	}{
+		{name: "nodata", withSOA: true},
+		{name: "malformed", issue: dns.ErrMalformed},
+		{name: "servfail", rcode: dnsmessage.RCodeServerFailure, issue: dns.ErrUnavailable},
+		{name: "nxdomain", withSOA: true, rcode: dnsmessage.RCodeNameError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			settings, err := adOptionsForCredentials(options{domain: "corp.example"}, kerberos.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workers sync.WaitGroup
+			defer workers.Wait()
+			client, err := dns.New(dns.Options{
+				Servers:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:53")},
+				HostPolicies: settings.DNS.DNS.HostPolicies,
+				DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
+					if network != "udp" {
+						return nil, fmt.Errorf("unexpected DNS transport %q", network)
+					}
+					conn, peer := net.Pipe()
+					workers.Go(func() {
+						defer peer.Close()
+						if err := peer.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+							t.Error(err)
+							return
+						}
+						packet := make([]byte, 65535)
+						n, err := peer.Read(packet)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						var response dnsmessage.Message
+						if err := response.Unpack(packet[:n]); err != nil {
+							t.Error(err)
+							return
+						}
+						response.Response = true
+						response.RecursionAvailable = true
+						question := response.Questions[0]
+						switch question.Type {
+						case dnsmessage.TypeA:
+							response.Answers = []dnsmessage.Resource{{
+								Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+								Body:   &dnsmessage.AResource{A: [4]byte{192, 0, 2, 1}},
+							}}
+						case dnsmessage.TypeAAAA:
+							response.RCode = test.rcode
+							if test.withSOA {
+								response.Authorities = []dnsmessage.Resource{{
+									Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("corp.example."), Type: dnsmessage.TypeSOA, Class: dnsmessage.ClassINET, TTL: 60},
+									Body: &dnsmessage.SOAResource{NS: dnsmessage.MustNewName("ns.corp.example."),
+										MBox: dnsmessage.MustNewName("admin.corp.example."), Serial: 1, MinTTL: 60},
+								}}
+							}
+						default:
+							t.Errorf("unexpected DNS question: %v", question)
+							return
+						}
+						reply, err := response.Pack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						if _, err := peer.Write(reply); err != nil {
+							t.Error(err)
+						}
+					})
+					return conn, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := client.Close(context.Background()); err != nil {
+					t.Error(err)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := client.LookupHost(ctx, "dc.corp.example")
+			if err != nil || !reflect.DeepEqual(result.Addresses, []netip.Addr{netip.MustParseAddr("192.0.2.1")}) {
+				t.Fatalf("working IPv4 result discarded after AAAA %s: result=%v err=%v", test.name, result, err)
+			}
+			if test.issue != nil {
+				for _, issue := range result.Issues {
+					if issue.Kind == dnsmessage.TypeAAAA && errors.Is(issue.Cause, test.issue) {
+						return
+					}
+				}
+				t.Fatalf("AAAA %s diagnostic lost: %v", test.name, result.Issues)
+			}
+		})
+	}
+}
 
 func TestPrincipalCandidates(t *testing.T) {
 	entries := []keytab.EntryMetadata{
@@ -178,6 +323,15 @@ func TestADOptions(t *testing.T) {
 	}
 	if settings.DNS.QualificationPolicy != addns.QualificationOptimistic || settings.DNS.Diagnostics.Enabled {
 		t.Fatal("CLI must use optimistic qualification without normal-send diagnostics")
+	}
+	for _, purpose := range []dns.SummaryPurpose{dns.PurposeApplication, dns.PurposeDiscovery, dns.PurposeBootstrap,
+		dns.PurposeQualification, dns.PurposeRecursion, dns.PurposeDiagnostic} {
+		policy, err := settings.DNS.DNS.HostPolicies.ForPurpose(purpose)
+		want := dns.HostPolicy{OnFailure: dns.AllowPartial, OnTimeout: dns.AllowPartial,
+			OnMalformed: dns.AllowPartial, OnNXDOMAIN: dns.AllowPartial, Preference: dns.PreferIPv4}
+		if err != nil || policy != want {
+			t.Fatalf("DNS purpose %s must use liberal IPv4-first host resolution: policy=%+v err=%v", purpose, policy, err)
+		}
 	}
 	if settings.Credentials.KDCProvider != nil || settings.Credentials.DialContext != nil {
 		t.Fatal("application must not override composed KDC routing")

@@ -41,6 +41,12 @@ external recursion. Successful lookups do not trigger synthetic recursion
 probes, including during topology refresh. Namespace and response validation
 remain enforced. There is no application
 `net.DefaultResolver`, alternate LDAP client, or direct Kerberos network client.
+CLI-owned clients use the SDK's default liberal, IPv4-first host resolver for
+bootstrap, discovery and application lookups. Valid IPv4/A addresses remain
+usable when IPv6/AAAA replies are malformed, time out or otherwise fail.
+IPv6-only hosts remain supported. Failed-family evidence is retained in SDK
+lookup metadata; cancellation, overall deadlines, namespace restrictions and
+qualification-proof requirements still apply.
 Override bootstrap with repeatable `--dns-server IP[:port]` (IPv6 ports require
 brackets); this disables OS bootstrap fallback. Configure an external
 `--dns-probe-zone` if `example.com` is in your AD domain or unsuitable for your
@@ -289,7 +295,25 @@ When password fallback succeeds, its introductory notice is sufficient:
 earlier credential-source failures are not repeated as failures/warnings in
 the concise report or normal send output. Use `--verbose` for those details.
 If password fallback fails, the original source errors remain part of the final
-error. Unrelated warnings and later SMTP/cleanup failures are still reported.
+error. Structured DNS failures during AD setup are summarized by query type,
+server and cause; use `--verbose` for the full credential/Kerberos error chain.
+Unrelated warnings and later SMTP/cleanup failures are still reported.
+
+An error such as `AAAA query via 127.0.0.1:53: malformed DNS response:
+incomplete negative proof` means DNS discovery failed, not that AD rejected the
+password. AAAA is an IPv6 address query. An empty response without the required
+SOA evidence is malformed, but with SDK v0.8.2 it no longer discards a working
+IPv4/A result. If the overall lookup still fails, check local DNS forwarding or try
+`--dns-server` with an AD-capable DNS server's numeric IP. Do not use a public
+resolver for private AD names. For a no-email diagnostic run:
+
+```sh
+ztmail --test --password-prompt --dns-server 192.0.2.53 --verbose
+```
+
+Replace `192.0.2.53` with your actual DNS server IP. If verbose errors include
+`https://operation.invalid/KdcProxy`, that is an internal SDK routing marker,
+not a configured HTTP proxy or a hostname to add to DNS.
 
 The prompt shows a guessed `current-user@REALM` principal. Press Enter to accept
 it or type a replacement account, optionally including `@REALM`. An explicit
