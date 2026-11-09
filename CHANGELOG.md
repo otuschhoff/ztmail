@@ -9,7 +9,7 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ### Fixed
 
-- Upgrade the AD SDK to `v0.8.2` and use its default liberal, IPv4-first host
+- Upgrade the AD SDK to `v0.8.3` and use its default liberal, IPv4-first host
   resolver. Keep working IPv4/A results when IPv6/AAAA replies are malformed,
   unavailable or otherwise fail, including empty negative replies without SOA
   evidence from corporate resolvers. Preserve failed-family diagnostic metadata,

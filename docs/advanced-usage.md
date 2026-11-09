@@ -302,7 +302,7 @@ Unrelated warnings and later SMTP/cleanup failures are still reported.
 An error such as `AAAA query via 127.0.0.1:53: malformed DNS response:
 incomplete negative proof` means DNS discovery failed, not that AD rejected the
 password. AAAA is an IPv6 address query. An empty response without the required
-SOA evidence is malformed, but with SDK v0.8.2 it no longer discards a working
+SOA evidence is malformed, but with SDK v0.8.2 and later it no longer discards a working
 IPv4/A result. If the overall lookup still fails, check local DNS forwarding or try
 `--dns-server` with an AD-capable DNS server's numeric IP. Do not use a public
 resolver for private AD names. For a no-email diagnostic run:
