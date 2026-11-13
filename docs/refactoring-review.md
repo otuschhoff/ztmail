@@ -8,7 +8,7 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** the original review changed no application code. Phases 0-2
+**Disposition:** the original review changed no application code. Phases 0-3
 are now complete; execution records below describe their approved
 changes and verification. Remaining phases are not authorized by completion.
 
@@ -1221,6 +1221,108 @@ for every branch. Maintain direct, readable ownership and control flow.
 cleanup counts, and unchanged password timeout/fallback policy. Package coverage
 should not regress without explaining moved or removed statements; prioritize
 assertions on actual effects over a blanket coverage percentage.
+
+#### Phase 3 execution record (2026-11-13, completed)
+
+**Starting commit:** `570d8bb`. The P3-A through P3-D inventory, narrow
+per-command dependency boundaries, intentional DNS-validation order change
+and separate structural/behavioral commits on the current branch were
+explicitly approved. Application 0.3.1, AD SDK 0.8.3, Go 1.26.9, public library
+signatures and JSON schema v2 are unchanged. No push, tag, release, CI change
+or later-phase optimization is part of this phase.
+
+| Step | Persisted implementation and verification |
+| --- | --- |
+| P3-A, `08c4991` | Add a private per-command dependency value for host discovery, current user, controlling terminal, AD acquisition, DNS-only owner, shared delivery and native fallback. Keep real source/password/default-sender/certificate assembly on the exercised path. Bind lease release and owner close callbacks when resources are acquired so tests execute the production `Close` path and count each resource exactly. |
+| P3-B, `c78b0af` | Extract pure target normalization and numeric endpoint parsing without changing the existing validation/effect order. Preserve defaults, normalization, error wording and endpoint order; reject partial endpoint success. |
+| P3-C, `ba4dd6d` | Move numeric DNS validation to pre-effect command/runtime/default-AD-lookup entry points. Red regressions reproduced stdin reads and host discovery before invalid-DNS errors. The green matrix covers send/test/testmail/default-AD/mTLS/EXTERNAL and hostname, unspecified, multicast and zero-port endpoints, with zero stdin reads and zero boundary calls. Local show/set/unset actions still ignore unused AD DNS. |
+| P3-D, `112be25` | Separate raw `commandFlags` from fresh `operationOptions` containing execution-only report/own-mail/management state and prepared certificate/trust. Use a syntax-tree migration for private callers and fixtures. Extract `preparedSubmission`, target/message preparation and GSSAPI submission; retain direct control flow and the distinct AD/DNS-only cleanup policies rather than adding a generic pipeline. |
+
+The gopls CLI was unavailable. Editor symbol references mapped the existing
+`options` callers before migration; compiler, repeated characterizations,
+native vet/build and cross-vet/build checked the resulting private type change.
+No new dependency or editor/project instruction file was needed.
+
+**Re-evaluation against the exit gate:**
+
+- Complete Cobra executions cover GSSAPI, mTLS and EXTERNAL send/test/testmail,
+  source/owner/delivery failures, known acceptance and genuine DATA uncertainty,
+  cleanup errors/warnings, eligible relay and host-discovery fallback, and
+  cleanup failure prohibiting native fallback. Tests assert ordered effects
+  and exact lease release, AD owner, DNS owner and terminal close counts.
+- Password tests run real configuration/principal/secret assembly with injected
+  user/terminal/acquisition boundaries. Cases include ordinary send, successful
+  default-AD persistence, user/terminal-open/prompt/password/terminal-close/
+  owner-close failures and cancellation during credential input. Read password
+  bytes are cleared; failed lookups do not persist a sender. Windows source
+  ordering includes SSPI before password without claiming native SSPI execution.
+- Deterministic `testing/synctest` tests verify the exact one-second operation
+  budget after three seconds of message input, and a fresh password-acquisition
+  budget after expired source attempts plus two seconds of prompt time.
+  Existing native fallback eligibility and parent-context behavior remain
+  covered; no deadline is moved across the input boundary.
+- Additional final regressions distinguish independent delivery and cleanup
+  errors in all authentication modes, preserving both `errors.Is` causes and
+  prohibiting replay after cleanup failure. Required-output failures before/
+  after host discovery, before/after AD acquisition, before delivery, at test
+  cleanup and after known acceptance assert exact remaining effects/cleanup.
+  The original output cause appears once; accepted output is not uncertain DATA.
+- Saved sender versus explicit/null sender, authenticated own-recipient policy,
+  host accounts without canonical mail, host testmail recipient fallback and
+  rejected host-default persistence are exercised through the complete command.
+  Existing explicit-default certificate conflicts and local no-input management
+  tests remain green.
+- Two independent commands execute concurrently under the race detector, each
+  with its own dependencies/domain/report/trust; each reuses its parsed flags
+  for another execution and receives a fresh report and prepared trust state.
+  The test preserves Cobra's repeatable-flag semantics: reparsing a StringArray
+  flag appends by design, so the second execution reuses the already parsed
+  inputs instead of treating intentional append behavior as state leakage.
+- Final assertion re-evaluation also confirmed that accepted-output and
+  pre-acceptance output use distinct markers. The new tests assert that existing
+  contract rather than incorrectly requiring both markers for accepted output.
+  These fixture corrections required no production behavior change.
+
+**Final verification:**
+
+```sh
+go test -json -race -shuffle=1794593178716668121 -count=2 \
+  -coverprofile="$EVIDENCE_DIR/phase3-final.cover" ./... \
+  > "$EVIDENCE_DIR/phase3-tests.json"
+go tool cover -func="$EVIDENCE_DIR/phase3-final.cover"
+```
+
+- **2,934 passing test/subtest events**, zero failures, six skip events across
+  the two repetitions. The three distinct skipped tests are unchanged:
+  `TestSIGINTMessageHelper` and `TestSMTPTestTLSHelper` are subprocess helpers;
+  `TestLibraryMTLSEndToEnd/cli` requires unavailable isolated DNS port 53.
+- Statement coverage: public library **93.1%** (148/159), CLI **83.6%**
+  (910/1,088), internal mail **93.2%** (1,906/2,045), weighted total **90.0%**
+  (2,964/3,292). Phase 2 reported CLI 70.2% and weighted total 85.8%.
+  The new seams/stages change statement totals; this is not branch coverage.
+- Actual dependency-backed function coverage is orchestration `run` **91.4%**,
+  `prepareSubmission` **87.9%**, `runGSSAPISubmission` **91.5%**,
+  `openADPassword` **90.6%**, `lookupDefaultSender` **76.2%**,
+  `runCertificateSubmission` **91.2%** and `loadAuthenticationOptions` **82.6%**.
+  Thin system-backed wrappers are separate functions and some remain uncovered;
+  wrapper percentages are not presented as coverage of the real assembly.
+  `openADAttempt` is **47.5%**: injected acquisition boundaries do not certify
+  real KDC/ticket/LDAP exchange or native terminal/domain adapters.
+- Full CLI shuffled race tests passed twice before the structural extraction
+  commit. Additional ownership/output/sender/isolation selectors passed twice;
+  the final repository suite above includes them. Native vet/build/CGO-free CLI
+  link and linked `--version`, Windows amd64 and Darwin arm64 CGO-free
+  cross-vet/build/link, formatting, whitespace and release-note checks passed.
+- JSON/coverage/function reports and DNS red evidence are retained outside the
+  checkout. Temporary linked binaries and the one-off syntax-tree actuator
+  are removed at closeout; unrelated ignore/editor changes are preserved.
+
+**Completion decision:** all approved Phase 3 exit criteria are satisfied.
+R07 is resolved; R08's CLI boundary characterization is complete, while its
+native-platform/real-terminal/live-AD validation remains explicitly Phase 5
+work. R09/R11-R13/R15 and R10's measured snapshot/resource work remain open.
+No scalability/performance improvement or live-environment certification is
+claimed, and Phase 4 or later work is not implicitly authorized.
 
 ### Phase 4: implement only measured resource improvements
 

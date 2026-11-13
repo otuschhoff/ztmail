@@ -35,6 +35,10 @@ Versions use Semantic Versioning; dates are in UTC.
   than replaying, falling back or calling output-only failure uncertain DATA.
   Detect short writes in credential prompts and clear passwords when trailing
   prompt output fails.
+- Reject invalid numeric DNS bootstrap endpoints before host discovery,
+  message input or credential work, including AD-default-sender lookup and
+  certificate modes. Local-only saved-sender actions still ignore unused AD
+  DNS settings.
 
 ### Changed
 
@@ -45,6 +49,10 @@ Versions use Semantic Versioning; dates are in UTC.
   categories, GSSAPI-only credential ownership, operation deadlines, blocking
   callback limitations and awaited detached cleanup allowances. Concise
   reports still emit at finalization; no new probe writes or schema changes.
+- Complete Phase 3's CLI boundary characterizations and separate raw flags
+  from per-execution report, credential and prepared TLS state. Extract target/
+  message preparation and GSSAPI submission without changing sender precedence,
+  password timeouts, cleanup ownership or native-fallback policy.
 
 ## [0.3.1] - 2026-11-09
 

@@ -19,6 +19,42 @@ client. CLI-local configuration and process execution stay out of the public
 library API. See [library ownership](library.md#ownership-defaults-and-concurrency)
 for the concurrency and lifetime contract.
 
+## CLI orchestration boundaries
+
+The CLI binds Cobra flags only to `commandFlags`. Each execution copies those
+inputs into fresh `operationOptions`, which separately holds its report,
+canonical-own-mail requirement, prepared client certificate/server trust and
+explicit management-action selection. No report or prepared credential/TLS
+material is stored in the flag bindings.
+
+| Location | Responsibility |
+| --- | --- |
+| [main.go](../cmd/ztmail/main.go) | Flag dispatch, report lifetime, host-discovery fallback and operation timeout |
+| [configuration.go](../cmd/ztmail/configuration.go) | Pure target normalization and shared numeric DNS-endpoint parsing |
+| [submission.go](../cmd/ztmail/submission.go) | Prepared message/envelope and GSSAPI acquisition, submission and cleanup |
+| [command_dependencies.go](../cmd/ztmail/command_dependencies.go) | Per-command host/user/terminal/AD/DNS/delivery/native boundaries |
+| [password.go](../cmd/ztmail/password.go), [mtls.go](../cmd/ztmail/mtls.go) | Real password assembly and the distinct DNS-only certificate lifecycle |
+
+`preparedSubmission` carries normalized operation options, recipients and
+message bytes between the input and authentication stages. Numeric DNS syntax
+is checked before discovery or stdin; local-only saved-sender actions do not
+validate unused AD DNS settings. The special host-discovery fallback still
+prepares local recipients without assuming an AD domain.
+
+The ordinary operation timeout starts after message input. Password mode
+retains separate source and post-prompt acquisition budgets; credential input
+does not consume the fresh password-acquisition allowance. Native fallback
+uses the parent context. Report finalization remains outside authenticated
+submission so owner cleanup is recorded before final output. AD lease/owner
+and DNS-only cleanup retain their different outcome policies; there is no
+configurable stage pipeline or new package-global dependency hook.
+
+Offline complete-command tests inject only boundary effects, not the password
+or message assembly being characterized. They assert stage order, exact
+release/close counts, error identities, output failure gates, concurrent
+command isolation and fresh state when reusing parsed flags. They are not a
+substitute for native terminal/SSPI or live KDC/LDAP/SMTP validation.
+
 ## Certificate branch and shared TLS policy
 
 Cobra validates explicit mode conflicts before input/network work. The CLI
@@ -50,7 +86,8 @@ private material and final acceptance, and use local-client validity provenance.
 
 ## Default GSSAPI CLI submission flow
 
-1. Validate options, load the saved sender unless `-f` overrides it, and derive
+1. Validate options, including numeric DNS bootstrap endpoints before input or
+   discovery; load the saved sender unless `-f` overrides it, and derive
    the host domain, realm, relay and SPN. Host-domain inference uses local
    configuration, not ambient DNS lookups.
 2. Read and validate the RFC 5322 message, extract/deduplicate recipients and

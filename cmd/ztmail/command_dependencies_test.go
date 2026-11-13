@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -71,9 +72,13 @@ func newCommandHarness(t *testing.T) *commandHarness {
 		} else if h.sourceErr != nil {
 			return nil, h.sourceErr
 		}
+		canonical := "alice@corp.example"
+		if h.hostWithoutMail {
+			canonical = ""
+		}
 		return &adSession{
 			identity: kerberos.Identity{Principal: "alice@CORP.EXAMPLE", Realm: "CORP.EXAMPLE", Source: settings.Credentials.Source},
-			mail:     "alice@corp.example", hostWithoutMail: h.hostWithoutMail, report: o.report,
+			mail:     canonical, hostWithoutMail: h.hostWithoutMail, report: o.report,
 			releaseLease: func() { h.releases++; h.events = append(h.events, "release") },
 			closeOwner: func(cleanup context.Context) error {
 				if cleanup.Err() != nil {
@@ -318,7 +323,8 @@ func TestCommandCancellationDuringPasswordClosesTerminal(t *testing.T) {
 }
 
 func TestCommandPasswordAssemblyAndDefaultLookup(t *testing.T) {
-	for _, mode := range []string{"send", "lookup", "terminal-close-error", "prompt-error", "password-error", "owner-close-error"} {
+	for _, mode := range []string{"send", "lookup", "local-user-error", "terminal-open-error", "terminal-close-error",
+		"prompt-error", "password-error", "owner-close-error"} {
 		t.Run(mode, func(t *testing.T) {
 			isolatedSenderConfig(t)
 			h := newCommandHarness(t)
@@ -327,10 +333,23 @@ func TestCommandPasswordAssemblyAndDefaultLookup(t *testing.T) {
 			args := []string{"--password-prompt", "--domain=corp.example", "--from=sender@corp.example", "recipient@corp.example"}
 			want := []string{"host", "stdin", "ad:ccache", "user", "terminal", "close-terminal", "ad:password", "deliver", "release", "close-ad"}
 			wantErr := false
+			wantTerminals := 1
 			switch mode {
 			case "lookup":
 				args = []string{"--set-default-from-ad", "--domain=corp.example"}
 				want = []string{"host", "ad:ccache", "user", "terminal", "close-terminal", "ad:password", "release", "close-ad"}
+			case "local-user-error":
+				h.deps.currentUser = func() (*user.User, error) {
+					h.events = append(h.events, "user")
+					return nil, cause
+				}
+				want, wantErr, wantTerminals = want[:4], true, 0
+			case "terminal-open-error":
+				h.deps.openTerminal = func() (passwordTerminal, error) {
+					h.events = append(h.events, "terminal")
+					return nil, cause
+				}
+				want, wantErr, wantTerminals = want[:5], true, 0
 			case "terminal-close-error":
 				h.terminalErr, wantErr = cause, true
 				want = want[:6]
@@ -346,25 +365,174 @@ func TestCommandPasswordAssemblyAndDefaultLookup(t *testing.T) {
 				want = []string{"host", "ad:ccache", "user", "terminal", "close-terminal", "ad:password", "release", "close-ad"}
 			}
 			if runtime.GOOS == "windows" {
-				index := 0
-				for want[index] != "ad:ccache" {
-					index++
+				for index, event := range want {
+					if event == "ad:ccache" {
+						want = slices.Insert(want, index+1, "ad:sspi")
+						break
+					}
 				}
-				want = append(want[:index+1], append([]string{"ad:sspi"}, want[index+1:]...)...)
 			}
 			err := h.execute(t, args...)
-			if !reflect.DeepEqual(h.events, want) || h.terminals != 1 || h.releases != h.closes ||
+			if !reflect.DeepEqual(h.events, want) || h.terminals != wantTerminals || h.releases != h.closes ||
 				(err != nil) != wantErr || (wantErr && !errors.Is(err, cause)) {
 				t.Fatalf("events=%v want=%v terminal-closes=%d err=%v", h.events, want, h.terminals, err)
 			}
-			for _, b := range h.terminal.password {
-				if b != 0 {
-					t.Fatal("password bytes not cleared")
+			if h.terminal.passwordReads > 0 {
+				for _, b := range h.terminal.password {
+					if b != 0 {
+						t.Fatal("password bytes not cleared")
+					}
 				}
 			}
 			address, readErr := readDefaultSender()
 			if readErr != nil || (address != "") != (mode == "lookup") {
 				t.Fatalf("persisted address=%q err=%v", address, readErr)
+			}
+		})
+	}
+}
+
+func TestCommandPreservesDeliveryAndCleanupFailures(t *testing.T) {
+	for _, auth := range []string{"gssapi", "mtls", "mtls-external"} {
+		t.Run(auth, func(t *testing.T) {
+			isolatedSenderConfig(t)
+			h := newCommandHarness(t)
+			deliveryErr, cleanupErr := errors.New("delivery boundary failed"), errors.New("cleanup boundary failed")
+			h.deliveryErr, h.closeErr = errors.Join(deliveryErr, mail.ErrRelayUnavailable), cleanupErr
+			args := []string{"--auth=" + auth, "--domain=corp.example", "--from=sender@corp.example", "recipient@corp.example"}
+			want := []string{"host", "stdin", "ad:ccache", "deliver", "release", "close-ad"}
+			if auth != "gssapi" {
+				cert, key := commandCertificateFiles(t)
+				args = append(args, "--client-cert="+cert, "--client-key="+key)
+				want = []string{"host", "stdin", "dns-owner", "deliver", "close-dns"}
+			}
+			err := h.execute(t, args...)
+			if !errors.Is(err, deliveryErr) || !errors.Is(err, cleanupErr) || !errors.Is(err, mail.ErrRelayUnavailable) ||
+				errors.Is(err, mail.ErrAcceptedOutput) || !reflect.DeepEqual(h.events, want) {
+				t.Fatalf("lost cause, leaked owner or replayed after cleanup failure: events=%v err=%v", h.events, err)
+			}
+		})
+	}
+}
+
+func TestCommandSenderAndOwnRecipientPolicy(t *testing.T) {
+	for _, mode := range []string{"saved", "explicit", "null", "own-recipient", "host-without-sender",
+		"host-testmail", "host-null-testmail", "lookup-host-without-mail"} {
+		t.Run(mode, func(t *testing.T) {
+			isolatedSenderConfig(t)
+			h := newCommandHarness(t)
+			args := []string{"--domain=corp.example", "recipient@corp.example"}
+			wantFrom, wantRecipients := "alice@corp.example", []string{"recipient@corp.example"}
+			want := []string{"host", "stdin", "ad:ccache", "deliver", "release", "close-ad"}
+			wantErr := ""
+			switch mode {
+			case "saved", "explicit", "null":
+				if _, err := writeDefaultSender("saved@corp.example"); err != nil {
+					t.Fatal(err)
+				}
+				wantFrom = "saved@corp.example"
+				if mode == "explicit" {
+					args, wantFrom = append(args, "--from=explicit@corp.example"), "explicit@corp.example"
+				} else if mode == "null" {
+					args, wantFrom = append(args, "--from=<>"), ""
+				}
+			case "own-recipient":
+				args, wantRecipients = args[:1], []string{"alice@corp.example"}
+			case "host-without-sender":
+				h.hostWithoutMail = true
+				wantErr = "specify a sender"
+				want = []string{"host", "stdin", "ad:ccache", "release", "close-ad"}
+			case "host-testmail", "host-null-testmail":
+				h.hostWithoutMail = true
+				args = []string{"--domain=corp.example", "--testmail", "--from=sender@corp.example"}
+				wantFrom, wantRecipients = "sender@corp.example", []string{"sender@corp.example"}
+				want = []string{"host", "ad:ccache", "deliver", "release", "close-ad"}
+				if mode == "host-null-testmail" {
+					args[2], wantErr = "--from=<>", "requires a non-null"
+					want = []string{"host", "ad:ccache", "release", "close-ad"}
+				}
+			case "lookup-host-without-mail":
+				h.hostWithoutMail = true
+				args, wantErr = []string{"--set-default-from-ad", "--domain=corp.example"}, "no canonical AD mailbox to save"
+				want = []string{"host", "ad:ccache", "release", "close-ad"}
+			}
+			h.inspect = func(_ context.Context, o operationOptions, recipients []string, message []byte) {
+				if o.from != wantFrom || !reflect.DeepEqual(recipients, wantRecipients) {
+					t.Errorf("sender/recipient policy: sender=%q recipients=%v", o.from, recipients)
+				}
+				if mode == "null" {
+					parsed, err := stdmail.ReadMessage(strings.NewReader(string(message)))
+					if err != nil || parsed.Header.Get("From") != "" {
+						t.Errorf("null sender rewrote original headers: %v", err)
+					}
+				}
+			}
+			err := h.execute(t, args...)
+			if !reflect.DeepEqual(h.events, want) || h.releases != 1 || h.closes != 1 ||
+				(wantErr == "" && err != nil) || (wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr))) {
+				t.Fatalf("sender policy events=%v want=%v err=%v", h.events, want, err)
+			}
+			if mode == "lookup-host-without-mail" {
+				if address, err := readDefaultSender(); err != nil || address != "" {
+					t.Fatalf("persisted unusable host mailbox: %q err=%v", address, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCommandStateIsPerExecution(t *testing.T) {
+	isolatedSenderConfig(t)
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &x509.Certificate{SerialNumber: big.NewInt(2), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, root, root, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(t.TempDir(), "root.pem")
+	if err := os.WriteFile(rootPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range []string{"one.example", "two.example"} {
+		t.Run(domain, func(t *testing.T) {
+			t.Parallel()
+			h := newCommandHarness(t)
+			h.deps.discoverHost = func(_ context.Context, requested string) (string, string, error) {
+				h.events = append(h.events, "host")
+				if requested != domain {
+					t.Errorf("another command changed the domain: %q", requested)
+				}
+				return "host." + domain, domain, nil
+			}
+			var previous *testReport
+			h.inspect = func(_ context.Context, o operationOptions, _ []string, _ []byte) {
+				if o.realm != strings.ToUpper(domain) || o.relay != "mailgw."+domain || o.report == nil || o.report == previous ||
+					o.tlsTrust.Mode != mail.RootsReplace || len(o.tlsTrust.Certificates) != 1 || len(o.tlsTrust.Allow) != 1 ||
+					o.tlsTrust.ExpiredServerCertificateGrace != time.Hour || !o.tlsTrust.InsecureAllowUnverifiableIssuer {
+					t.Errorf("execution state was lost or reused: domain=%q realm=%q relay=%q trust=%+v", domain, o.realm, o.relay, o.tlsTrust)
+				}
+				previous = o.report
+			}
+			cmd := newCommandWithDependencies(h.deps)
+			cmd.SetArgs([]string{"--test", "--domain=" + domain, "--cred-source=ccache", "--tls-ca=" + rootPath, "--tls-ca-mode=replace",
+				"--tls-ca-allow-cert-sha256=" + strings.Repeat("a", 64),
+				"--insecure-tls-allow-expired-server-cert-for=1h", "--insecure-tls-allow-server-certificate-with-unverifiable-issuer"})
+			for range 2 {
+				cmd.SetIn(forbiddenReader{})
+				cmd.SetErr(io.Discard)
+				if err := cmd.ExecuteContext(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if h.releases != 1 || h.closes != 1 || !reflect.DeepEqual(h.events, []string{"host", "ad:ccache", "deliver", "release", "close-ad"}) {
+					t.Fatalf("execution ownership leaked: %v releases=%d closes=%d", h.events, h.releases, h.closes)
+				}
+				h.events, h.releases, h.closes = nil, 0, 0
+				// Reuse parsed flags; reparsing StringArray arguments appends by design.
+				cmd.SetArgs([]string{})
 			}
 		})
 	}
