@@ -225,7 +225,8 @@ func validateOptions(o options) error {
 	if o.ccache != "" && o.auth != "auto" && o.auth != "ccache" {
 		return errors.New("--ccache conflicts with the selected --cred-source backend")
 	}
-	return nil
+	_, err := parseDNSServers(o.dnsServers)
+	return err
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
@@ -238,6 +239,9 @@ func (deps commandDependencies) run(ctx context.Context, o options, recipients [
 	defer func() {
 		err = mail.JoinOutput(err, log, o.report, accepted || errors.Is(err, mail.ErrAcceptedOutput))
 	}()
+	if _, err := parseDNSServers(o.dnsServers); err != nil {
+		return err
+	}
 	parentCtx := ctx
 	o, err = applyDefaultSender(o)
 	if err != nil {

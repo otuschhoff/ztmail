@@ -1,11 +1,72 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+type countedErrorReader struct{ calls int }
+
+func (r *countedErrorReader) Read([]byte) (int, error) {
+	r.calls++
+	return 0, errors.New("message input must not precede DNS validation")
+}
+
+func TestInvalidDNSBeforeAllCommandEffects(t *testing.T) {
+	for _, mode := range []string{"send", "test", "testmail", "default-ad", "mtls", "mtls-external"} {
+		t.Run(mode, func(t *testing.T) {
+			isolatedSenderConfig(t)
+			for _, value := range []string{"not-an-IP", "0.0.0.0", "ff02::1", "127.0.0.1:0"} {
+				t.Run(value, func(t *testing.T) {
+					h := newCommandHarness(t)
+					args := []string{"--domain=corp.example", "--dns-server=" + value}
+					switch mode {
+					case "test":
+						args = append(args, "--test")
+					case "testmail":
+						args = append(args, "--testmail")
+					case "default-ad":
+						args = append(args, "--set-default-from-ad")
+					case "mtls", "mtls-external":
+						cert, key := commandCertificateFiles(t)
+						args = append(args, "--auth="+mode, "--client-cert="+cert, "--client-key="+key)
+					}
+					cmd := newCommandWithDependencies(h.deps)
+					input := &countedErrorReader{}
+					cmd.SetArgs(args)
+					cmd.SetIn(input)
+					cmd.SetOut(io.Discard)
+					cmd.SetErr(io.Discard)
+					err := cmd.ExecuteContext(t.Context())
+					if err == nil || !strings.Contains(err.Error(), "--dns-server") || input.calls != 0 || len(h.events) != 0 {
+						t.Fatalf("invalid DNS reached effects: err=%v reads=%d events=%v", err, input.calls, h.events)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestUnusedDNSDoesNotChangeLocalManagement(t *testing.T) {
+	for _, action := range []string{"--show-default-from", "--set-default-from=saved@corp.example", "--unset-default-from"} {
+		t.Run(action, func(t *testing.T) {
+			isolatedSenderConfig(t)
+			h := newCommandHarness(t)
+			cmd := newCommandWithDependencies(h.deps)
+			cmd.SetArgs([]string{action, "--dns-server=not-an-IP"})
+			cmd.SetIn(forbiddenReader{})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := cmd.ExecuteContext(t.Context()); err != nil || len(h.events) != 0 {
+				t.Fatalf("unused AD configuration changed local-only action: %v events=%v", err, h.events)
+			}
+		})
+	}
+}
 
 func TestResolveTarget(t *testing.T) {
 	for _, tc := range []struct {

@@ -48,7 +48,13 @@ IPv6-only hosts remain supported. Failed-family evidence is retained in SDK
 lookup metadata; cancellation, overall deadlines, namespace restrictions and
 qualification-proof requirements still apply.
 Override bootstrap with repeatable `--dns-server IP[:port]` (IPv6 ports require
-brackets); this disables OS bootstrap fallback. Configure an external
+brackets); this disables OS bootstrap fallback.
+Numeric endpoint syntax, nonzero ports and usable unicast addresses are
+validated before message input, host discovery, credential prompts or AD/network
+work. Invalid DNS configuration therefore takes precedence over malformed
+message input. Local-only sender show/set/unset actions still ignore unused AD
+settings.
+Configure an external
 `--dns-probe-zone` if `example.com` is in your AD domain or unsuitable for your
 DNS policy. This zone is used only for optional failure diagnostics in `--test`,
 not for normal sends or server admission. Such probes can generate upstream

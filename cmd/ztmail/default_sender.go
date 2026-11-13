@@ -170,6 +170,9 @@ func lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string,
 }
 
 func (deps commandDependencies) lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string, error) {
+	if _, err := parseDNSServers(o.dnsServers); err != nil {
+		return "", err
+	}
 	_, domain, err := deps.discoverHost(ctx, o.domain)
 	if err != nil {
 		return "", err
