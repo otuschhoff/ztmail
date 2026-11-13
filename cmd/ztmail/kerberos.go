@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -130,19 +129,10 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 	if o.report != nil {
 		dns.Diagnostics = addns.DiagnosticOptions{Enabled: true, Observe: o.report.DNSDiagnostic}
 	}
-	for _, server := range o.dnsServers {
-		endpoint, err := netip.ParseAddrPort(server)
-		if err != nil {
-			address, addressErr := netip.ParseAddr(server)
-			if addressErr != nil {
-				return adclient.ADOptions{}, fmt.Errorf("--dns-server must be a numeric IP or IP:port: %q", server)
-			}
-			endpoint = netip.AddrPortFrom(address, 53)
-		}
-		if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().IsUnspecified() || endpoint.Addr().IsMulticast() {
-			return adclient.ADOptions{}, fmt.Errorf("invalid --dns-server %q", server)
-		}
-		dns.Bootstrap = append(dns.Bootstrap, endpoint)
+	var err error
+	dns.Bootstrap, err = parseDNSServers(o.dnsServers)
+	if err != nil {
+		return adclient.ADOptions{}, err
 	}
 	if len(dns.Bootstrap) != 0 {
 		dns.BootstrapMethods = []addns.BootstrapMethod{addns.BootstrapExplicit}

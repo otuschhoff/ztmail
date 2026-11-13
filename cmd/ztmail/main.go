@@ -291,31 +291,9 @@ func (deps commandDependencies) run(ctx context.Context, o options, recipients [
 		}
 		return err
 	}
-	o.domain = domain
-	if o.realm == "" && o.authMethod == "gssapi" {
-		o.realm = strings.ToUpper(domain)
-	}
-	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
-		return errors.New("invalid Kerberos realm")
-	}
-	if o.relay == "" {
-		o.relay = "mailgw." + domain
-	}
-	o.relay, err = dnsName(o.relay)
+	o, err = resolveTarget(o, host, domain)
 	if err != nil {
-		return fmt.Errorf("invalid --relay: %w", err)
-	}
-	if o.hello == "" {
-		o.hello = host
-	}
-	if o.hello, err = dnsName(o.hello); err != nil {
-		return fmt.Errorf("invalid --hostname: %w", err)
-	}
-	if o.spn == "" && o.authMethod == "gssapi" {
-		o.spn = "smtp/" + o.relay
-	}
-	if strings.ContainsAny(o.spn, "\r\n\x00") {
-		return errors.New("invalid service principal")
+		return err
 	}
 	o.report.Value("SPN", o.spn)
 	if o.from != "" {
