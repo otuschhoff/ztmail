@@ -52,7 +52,7 @@ func TestDefaultSenderStorageAndPrecedence(t *testing.T) {
 		}
 	}
 	for _, from := range []string{"", "explicit@example.com", "<>"} {
-		o, err := applyDefaultSender(options{from: from})
+		o, err := applyDefaultSender(operationOptions{commandFlags: commandFlags{from: from}})
 		want := from
 		if want == "" {
 			want = "saved@example.com"
@@ -67,7 +67,7 @@ func TestDefaultSenderStorageAndPrecedence(t *testing.T) {
 	if _, err := readDefaultSender(); err == nil {
 		t.Fatal("corrupt config was ignored")
 	}
-	if _, err := applyDefaultSender(options{from: "explicit@example.com"}); err != nil {
+	if _, err := applyDefaultSender(operationOptions{commandFlags: commandFlags{from: "explicit@example.com"}}); err != nil {
 		t.Fatalf("explicit override must bypass corrupt config: %v", err)
 	}
 }
@@ -121,14 +121,14 @@ func TestDefaultSenderADLookupOnceAndPreservation(t *testing.T) {
 	}
 	calls := 0
 	lookupErr := errors.New("LDAP lookup failed")
-	lookup := func(_ context.Context, o options, _ io.Writer) (string, error) {
+	lookup := func(_ context.Context, o operationOptions, _ io.Writer) (string, error) {
 		calls++
 		if !o.passwordPrompt || !o.needOwnMail || !o.setDefaultFromAD {
 			t.Fatalf("AD action must permit prompting and require canonical mail: %+v", o)
 		}
 		return "Canonical <canonical@example.com>", lookupErr
 	}
-	o := options{setDefaultFromAD: true, auth: "auto"}
+	o := operationOptions{commandFlags: commandFlags{setDefaultFromAD: true, auth: "auto"}}
 	if err := manageDefaultSender(context.Background(), o, io.Discard, io.Discard, lookup); !errors.Is(err, lookupErr) {
 		t.Fatalf("lookup failure lost: %v", err)
 	}
@@ -200,11 +200,11 @@ func TestCanceledADDefaultActionPreservesPreviousSender(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	lookup := func(context.Context, options, io.Writer) (string, error) {
+	lookup := func(context.Context, operationOptions, io.Writer) (string, error) {
 		cancel()
 		return "new@example.com", nil
 	}
-	if err := manageDefaultSender(ctx, options{setDefaultFromAD: true}, io.Discard, io.Discard, lookup); !errors.Is(err, context.Canceled) {
+	if err := manageDefaultSender(ctx, operationOptions{commandFlags: commandFlags{setDefaultFromAD: true}}, io.Discard, io.Discard, lookup); !errors.Is(err, context.Canceled) {
 		t.Fatalf("lookup cancellation ignored: %v", err)
 	}
 	if address, err := readDefaultSender(); err != nil || address != "old@example.com" {

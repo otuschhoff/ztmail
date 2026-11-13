@@ -34,13 +34,13 @@ func TestCredentialOutputFailureStopsAcquisitionAndFallback(t *testing.T) {
 				report.Line("WARN", "Injected", "already failed")
 			}
 			sources, passwords := 0, 0
-			_, err := chooseADCredentials(t.Context(), options{keytab: "synthetic", passwordPrompt: mode != "not-opted-in", report: report},
-				func(context.Context, options) (*adSession, error) {
+			_, err := chooseADCredentials(t.Context(), operationOptions{commandFlags: commandFlags{keytab: "synthetic", passwordPrompt: mode != "not-opted-in"}, report: report},
+				func(context.Context, operationOptions) (*adSession, error) {
 					sources++
 					report.Line("FAIL", "Injected", "source failed")
 					return nil, sourceErr
 				},
-				func(context.Context, options) (*adSession, error) {
+				func(context.Context, operationOptions) (*adSession, error) {
 					passwords++
 					return &adSession{}, nil
 				})
@@ -83,7 +83,7 @@ func TestADAttemptOutputFailureBeforeCredentialAcquisition(t *testing.T) {
 			t.Setenv("KRB5_CONFIG", filepath.Join(t.TempDir(), "absent-config"))
 			writeErr := errors.New("required AD setup output failed")
 			report := newTestReport(credentialStageWriter{failAt: step, err: writeErr}, true)
-			o := options{domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com", report: report}
+			o := operationOptions{commandFlags: commandFlags{domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com"}, report: report}
 			settings, err := adOptionsForCredentials(o, kerberos.Options{Source: kerberos.SourceCCache,
 				CCache: filepath.Join(t.TempDir(), "absent-cache"), Principal: "alice@CORP.EXAMPLE", Realm: o.realm})
 			if err != nil {
@@ -152,7 +152,7 @@ func TestPasswordPromptShortWritesStopAndClearSecrets(t *testing.T) {
 
 func TestCredentialWarningDirectShortWrite(t *testing.T) {
 	terminal := &shortPasswordTerminal{fakePasswordTerminal: &fakePasswordTerminal{}, failAt: 1}
-	err := reportCredentialFailures(options{}, &adSession{failures: []error{errors.New("skipped"), errors.New("next")}}, terminal)
+	err := reportCredentialFailures(operationOptions{}, &adSession{failures: []error{errors.New("skipped"), errors.New("next")}}, terminal)
 	if !errors.Is(err, io.ErrShortWrite) || terminal.writes != 1 {
 		t.Fatalf("required skipped-identity output was lost/retried: err=%v writes=%d", err, terminal.writes)
 	}

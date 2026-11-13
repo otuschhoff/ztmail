@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func resolveTarget(o options, host, domain string) (options, error) {
+func resolveTarget(o commandFlags, host, domain string) (commandFlags, error) {
 	o.domain = domain
 	if o.realm == "" && o.authMethod == "gssapi" {
 		o.realm = strings.ToUpper(domain)

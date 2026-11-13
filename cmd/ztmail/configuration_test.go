@@ -71,19 +71,19 @@ func TestUnusedDNSDoesNotChangeLocalManagement(t *testing.T) {
 func TestResolveTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name                                              string
-		input                                             options
+		input                                             commandFlags
 		wantRealm, wantRelay, wantHello, wantSPN, wantErr string
 	}{
-		{name: "gssapi defaults", input: options{authMethod: "gssapi"},
+		{name: "gssapi defaults", input: commandFlags{authMethod: "gssapi"},
 			wantRealm: "CORP.EXAMPLE", wantRelay: "mailgw.corp.example", wantHello: "host.corp.example", wantSPN: "smtp/mailgw.corp.example"},
-		{name: "certificate has no Kerberos defaults", input: options{authMethod: "mtls"},
+		{name: "certificate has no Kerberos defaults", input: commandFlags{authMethod: "mtls"},
 			wantRelay: "mailgw.corp.example", wantHello: "host.corp.example"},
-		{name: "explicit target", input: options{authMethod: "gssapi", realm: "OTHER.EXAMPLE", relay: "Relay.Example.", hello: "Hello.Example.", spn: "smtp/custom"},
+		{name: "explicit target", input: commandFlags{authMethod: "gssapi", realm: "OTHER.EXAMPLE", relay: "Relay.Example.", hello: "Hello.Example.", spn: "smtp/custom"},
 			wantRealm: "OTHER.EXAMPLE", wantRelay: "relay.example", wantHello: "hello.example", wantSPN: "smtp/custom"},
-		{name: "realm", input: options{realm: "bad realm"}, wantErr: "invalid Kerberos realm"},
-		{name: "relay", input: options{relay: "bad/relay"}, wantErr: "invalid --relay"},
-		{name: "hello", input: options{hello: "bad/hello"}, wantErr: "invalid --hostname"},
-		{name: "spn", input: options{spn: "smtp/relay\r\n"}, wantErr: "invalid service principal"},
+		{name: "realm", input: commandFlags{realm: "bad realm"}, wantErr: "invalid Kerberos realm"},
+		{name: "relay", input: commandFlags{relay: "bad/relay"}, wantErr: "invalid --relay"},
+		{name: "hello", input: commandFlags{hello: "bad/hello"}, wantErr: "invalid --hostname"},
+		{name: "spn", input: commandFlags{spn: "smtp/relay\r\n"}, wantErr: "invalid service principal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			original := tc.input

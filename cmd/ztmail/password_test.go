@@ -182,14 +182,14 @@ func TestPrincipalInputLimit(t *testing.T) {
 
 func TestCredentialFallbackIsOptIn(t *testing.T) {
 	calls := 0
-	o := options{auth: "auto", keytab: "keytab"}
-	_, err := chooseADCredentials(context.Background(), o, func(_ context.Context, got options) (*adSession, error) {
+	o := operationOptions{commandFlags: commandFlags{auth: "auto", keytab: "keytab"}}
+	_, err := chooseADCredentials(context.Background(), o, func(_ context.Context, got operationOptions) (*adSession, error) {
 		calls++
 		if got.auth != "auto" {
 			t.Fatal("default source policy changed")
 		}
 		return nil, errors.New("source failed")
-	}, func(context.Context, options) (*adSession, error) {
+	}, func(context.Context, operationOptions) (*adSession, error) {
 		t.Fatal("password prompt was used without opt-in")
 		return nil, nil
 	})
@@ -200,10 +200,10 @@ func TestCredentialFallbackIsOptIn(t *testing.T) {
 
 func TestPasswordFallbackRunsLast(t *testing.T) {
 	var attempts []string
-	o := options{auth: "auto", keytab: "keytab", ccache: "cache", principal: "alice@EXAMPLE.COM", passwordPrompt: true}
+	o := operationOptions{commandFlags: commandFlags{auth: "auto", keytab: "keytab", ccache: "cache", principal: "alice@EXAMPLE.COM", passwordPrompt: true}}
 	sourceFailure := errors.New("source rejected")
 	selected := &adSession{}
-	session, err := chooseADCredentials(context.Background(), o, func(_ context.Context, attempt options) (*adSession, error) {
+	session, err := chooseADCredentials(context.Background(), o, func(_ context.Context, attempt operationOptions) (*adSession, error) {
 		attempts = append(attempts, attempt.auth)
 		if attempt.principal != o.principal {
 			t.Fatal("explicit principal constraint lost")
@@ -215,7 +215,7 @@ func TestPasswordFallbackRunsLast(t *testing.T) {
 			t.Fatal("keytab leaked into cache attempt")
 		}
 		return nil, sourceFailure
-	}, func(_ context.Context, got options) (*adSession, error) {
+	}, func(_ context.Context, got operationOptions) (*adSession, error) {
 		attempts = append(attempts, "password")
 		if got.principal != o.principal {
 			t.Fatal("password fallback lost explicit principal")
@@ -234,9 +234,9 @@ func TestPasswordFallbackRunsLast(t *testing.T) {
 
 func TestEarlierCredentialSuccessSkipsPassword(t *testing.T) {
 	selected := &adSession{}
-	session, err := chooseADCredentials(context.Background(), options{auth: "auto", passwordPrompt: true},
-		func(context.Context, options) (*adSession, error) { return selected, nil },
-		func(context.Context, options) (*adSession, error) {
+	session, err := chooseADCredentials(context.Background(), operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true}},
+		func(context.Context, operationOptions) (*adSession, error) { return selected, nil },
+		func(context.Context, operationOptions) (*adSession, error) {
 			t.Fatal("unnecessary password prompt")
 			return nil, nil
 		})
@@ -247,9 +247,9 @@ func TestEarlierCredentialSuccessSkipsPassword(t *testing.T) {
 
 func TestFatalCredentialFailureStopsPasswordFallback(t *testing.T) {
 	for _, failure := range []error{context.Canceled, kerberos.ErrClosed, kerberos.ErrCapacity, errADCleanup} {
-		_, err := chooseADCredentials(context.Background(), options{auth: "auto", passwordPrompt: true},
-			func(context.Context, options) (*adSession, error) { return nil, failure },
-			func(context.Context, options) (*adSession, error) {
+		_, err := chooseADCredentials(context.Background(), operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true}},
+			func(context.Context, operationOptions) (*adSession, error) { return nil, failure },
+			func(context.Context, operationOptions) (*adSession, error) {
 				t.Fatal("prompt after fatal error")
 				return nil, nil
 			})
@@ -262,17 +262,17 @@ func TestFatalCredentialFailureStopsPasswordFallback(t *testing.T) {
 func TestCredentialStageTimeoutCanFallBack(t *testing.T) {
 	prompted := false
 	selected := &adSession{}
-	session, err := chooseADCredentials(context.Background(), options{auth: "auto", passwordPrompt: true},
-		func(context.Context, options) (*adSession, error) { return nil, context.DeadlineExceeded },
-		func(context.Context, options) (*adSession, error) { prompted = true; return selected, nil })
+	session, err := chooseADCredentials(context.Background(), operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true}},
+		func(context.Context, operationOptions) (*adSession, error) { return nil, context.DeadlineExceeded },
+		func(context.Context, operationOptions) (*adSession, error) { prompted = true; return selected, nil })
 	if err != nil || session != selected || !prompted {
 		t.Fatalf("stage timeout prevented fallback: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err = chooseADCredentials(ctx, options{auth: "auto", passwordPrompt: true},
-		func(context.Context, options) (*adSession, error) { cancel(); return nil, context.Canceled },
-		func(context.Context, options) (*adSession, error) {
+	_, err = chooseADCredentials(ctx, operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true}},
+		func(context.Context, operationOptions) (*adSession, error) { cancel(); return nil, context.Canceled },
+		func(context.Context, operationOptions) (*adSession, error) {
 			t.Fatal("prompt after parent cancellation")
 			return nil, nil
 		})
@@ -283,16 +283,16 @@ func TestCredentialStageTimeoutCanFallBack(t *testing.T) {
 
 func TestPasswordFallbackPreservesErrors(t *testing.T) {
 	sourceErr, passwordErr := errors.New("cache rejected"), errors.New("password rejected")
-	_, err := chooseADCredentials(context.Background(), options{auth: "auto", passwordPrompt: true},
-		func(context.Context, options) (*adSession, error) { return nil, sourceErr },
-		func(context.Context, options) (*adSession, error) { return nil, passwordErr })
+	_, err := chooseADCredentials(context.Background(), operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true}},
+		func(context.Context, operationOptions) (*adSession, error) { return nil, sourceErr },
+		func(context.Context, operationOptions) (*adSession, error) { return nil, passwordErr })
 	if !errors.Is(err, sourceErr) || !errors.Is(err, passwordErr) {
 		t.Fatalf("lost fallback causes: %v", err)
 	}
 	if !errors.Is(err, errADPasswordFailure) || errors.Is(err, errADNonCredentialFailure) {
 		t.Fatalf("password failure mislabeled as configuration/post-acquisition failure: %v", err)
 	}
-	if shouldFallbackToSendmail(context.Background(), options{}, errors.Join(errADCredentialsUnavailable, err)) {
+	if shouldFallbackToSendmail(context.Background(), operationOptions{}, errors.Join(errADCredentialsUnavailable, err)) {
 		t.Fatal("password sign-in failure allowed native sendmail fallback")
 	}
 }
@@ -300,7 +300,7 @@ func TestPasswordFallbackPreservesErrors(t *testing.T) {
 func TestPasswordSDKConfigurationDoesNotConsultFailedCache(t *testing.T) {
 	t.Setenv("KRB5CCNAME", "KCM:unsupported")
 	t.Setenv("KRB5_CONFIG", "/does-not-exist/krb5.conf")
-	o := options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com"}
+	o := operationOptions{commandFlags: commandFlags{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com"}}
 	credentials := kerberos.Options{Source: kerberos.SourcePassword, Principal: "alice@CORP.EXAMPLE", Realm: o.realm, Password: "synthetic"}
 	settings, err := adOptionsForCredentials(o, credentials)
 	if err != nil {

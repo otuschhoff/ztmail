@@ -14,12 +14,12 @@ func TestCredentialSourceReportPaths(t *testing.T) {
 	t.Setenv("KRB5CCNAME", "FILE:"+filepath.Join(dir, "default.cache"))
 	for _, tc := range []struct {
 		name string
-		o    options
+		o    operationOptions
 		path string
 	}{
-		{"keytab", options{auth: "auto", keytab: filepath.Join(dir, "mail.keytab")}, filepath.Join(dir, "mail.keytab")},
-		{"cache", options{auth: "auto", ccache: filepath.Join(dir, "mail.cache")}, filepath.Join(dir, "mail.cache")},
-		{"environment", options{auth: "ccache"}, filepath.Join(dir, "default.cache")},
+		{"keytab", operationOptions{commandFlags: commandFlags{auth: "auto", keytab: filepath.Join(dir, "mail.keytab")}}, filepath.Join(dir, "mail.keytab")},
+		{"cache", operationOptions{commandFlags: commandFlags{auth: "auto", ccache: filepath.Join(dir, "mail.cache")}}, filepath.Join(dir, "mail.cache")},
+		{"environment", operationOptions{commandFlags: commandFlags{auth: "ccache"}}, filepath.Join(dir, "default.cache")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials, err := credentialOptions(tc.o)

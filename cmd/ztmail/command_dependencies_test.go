@@ -34,7 +34,7 @@ type commandHarness struct {
 	closeErr, terminalErr, discoveryErr, dnsErr error
 	hostWithoutMail                             bool
 	terminal                                    *fakePasswordTerminal
-	inspect                                     func(context.Context, options, []string, []byte)
+	inspect                                     func(context.Context, operationOptions, []string, []byte)
 }
 
 func newCommandHarness(t *testing.T) *commandHarness {
@@ -53,7 +53,7 @@ func newCommandHarness(t *testing.T) *commandHarness {
 		h.events = append(h.events, "terminal")
 		return harnessTerminal{h: h}, nil
 	}
-	h.deps.attemptAD = func(ctx context.Context, o options, settings adclient.ADOptions) (*adSession, error) {
+	h.deps.attemptAD = func(ctx context.Context, o operationOptions, settings adclient.ADOptions) (*adSession, error) {
 		h.events = append(h.events, "ad:"+string(settings.Credentials.Source))
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -96,7 +96,7 @@ func newCommandHarness(t *testing.T) *commandHarness {
 		}
 		return harnessDNSOwner{h: h}, nil
 	}
-	h.deps.deliver = func(ctx context.Context, o options, recipients []string, message []byte, _ submissionBackend, _ io.Writer) error {
+	h.deps.deliver = func(ctx context.Context, o operationOptions, recipients []string, message []byte, _ submissionBackend, _ io.Writer) error {
 		h.events = append(h.events, "deliver")
 		if h.closes != 0 || h.dnsCloses != 0 {
 			t.Error("owner closed before delivery")
@@ -106,7 +106,7 @@ func newCommandHarness(t *testing.T) *commandHarness {
 		}
 		return h.deliveryErr
 	}
-	h.deps.fallback = func(_ context.Context, _ options, _ []string, _ []byte, _ string, _ error, _ io.Writer) error {
+	h.deps.fallback = func(_ context.Context, _ operationOptions, _ []string, _ []byte, _ string, _ error, _ io.Writer) error {
 		h.events = append(h.events, "fallback")
 		return nil
 	}
@@ -209,7 +209,7 @@ func TestCommandGSSAPIStageOrderAndOwnership(t *testing.T) {
 				h.discoveryErr = errors.Join(cause, errHostDomainUnavailable)
 				want = []string{"host", "stdin", "fallback"}
 			}
-			h.inspect = func(_ context.Context, o options, recipients []string, message []byte) {
+			h.inspect = func(_ context.Context, o operationOptions, recipients []string, message []byte) {
 				if o.testMode && len(message) != 0 {
 					t.Error("test prepared email")
 				}
@@ -255,7 +255,7 @@ func TestCommandTimeoutStageBudgets(t *testing.T) {
 				h := newCommandHarness(t)
 				start := time.Now()
 				attempt := h.deps.attemptAD
-				h.deps.attemptAD = func(ctx context.Context, o options, settings adclient.ADOptions) (*adSession, error) {
+				h.deps.attemptAD = func(ctx context.Context, o operationOptions, settings adclient.ADOptions) (*adSession, error) {
 					deadline, ok := ctx.Deadline()
 					if !ok || deadline.Sub(time.Now()) != time.Second {
 						t.Fatalf("stage did not get a fresh deadline: %v present=%t", deadline, ok)

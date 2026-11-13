@@ -27,7 +27,7 @@ func (w matchingOutputFailure) Write(p []byte) (int, error) {
 func TestFallbackAcceptedStatusFailureNeverUncertainOrReplayed(t *testing.T) {
 	executable, argsPath, _ := fakeLocalSendmail(t)
 	cause := errors.New("accepted status broken")
-	o := options{sendmailPath: executable, timeout: time.Second, verbose: true}
+	o := operationOptions{commandFlags: commandFlags{sendmailPath: executable, timeout: time.Second, verbose: true}}
 	err := sendmailFallback(context.Background(), o, []string{"root"}, nil, "", errADCredentialsUnavailable,
 		matchingOutputFailure{match: "Message accepted by host sendmail", cause: cause})
 	if !errors.Is(err, mail.ErrAcceptedOutput) || !errors.Is(err, cause) || errors.Is(err, mail.ErrDeliveryUncertain) {

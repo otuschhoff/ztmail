@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type options struct {
+type commandFlags struct {
 	domain, realm, relay, hello, spn                      string
 	auth, keytab, principal, ccache                       string
 	dnsProbeZone, ldapCA                                  string
@@ -28,19 +28,25 @@ type options struct {
 	testMode                                              bool
 	testMail                                              bool
 	debug                                                 bool
-	needOwnMail                                           bool
-	report                                                *testReport
 	setDefaultFrom, sendmailPath                          string
-	setDefaultFromRequested                               bool
 	setDefaultFromAD, showDefaultFrom                     bool
 	unsetDefaultFrom, noSendmailFallback                  bool
 	ldapRaceCandidates                                    int
 	noLDAPRace                                            bool
 	authMethod                                            string
 	clientCertPath, clientKeyPath, tlsCAPath, tlsRootMode string
-	clientCertificate                                     *tls.Certificate
-	tlsTrust                                              mail.ServerTrust
+	expiredServerCertificateGrace                         time.Duration
+	allowUnverifiableIssuer                               bool
 	caAllowCert, caDenyCert, caAllowSPKI, caDenySPKI      []string
+}
+
+type operationOptions struct {
+	commandFlags
+	setDefaultFromRequested bool
+	needOwnMail             bool
+	report                  *testReport
+	clientCertificate       *tls.Certificate
+	tlsTrust                mail.ServerTrust
 }
 
 func main() {
@@ -74,7 +80,7 @@ func newCommand() *cobra.Command {
 }
 
 func newCommandWithDependencies(deps commandDependencies) *cobra.Command {
-	o := options{}
+	flags := commandFlags{}
 	var showVersion bool
 	cmd := &cobra.Command{
 		Use:           "ztmail [flags] [recipient ...]",
@@ -84,6 +90,13 @@ func newCommandWithDependencies(deps commandDependencies) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, recipients []string) error {
+			o := operationOptions{
+				commandFlags: flags,
+				tlsTrust: mail.ServerTrust{
+					ExpiredServerCertificateGrace:   flags.expiredServerCertificateGrace,
+					InsecureAllowUnverifiableIssuer: flags.allowUnverifiableIssuer,
+				},
+			}
 			if showVersion {
 				version, err := fullVersion()
 				if err != nil {
@@ -118,54 +131,54 @@ func newCommandWithDependencies(deps commandDependencies) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&o.authMethod, "auth", "gssapi", "SMTP authentication: gssapi, mtls (TLS certificate only), mtls-external (certificate plus AUTH EXTERNAL)")
-	f.StringVar(&o.clientCertPath, "client-cert", "", "PEM client leaf certificate followed by intermediate certificates")
-	f.StringVar(&o.clientKeyPath, "client-key", "", "Matching unencrypted PEM private key; owner-private on Unix")
-	f.StringVar(&o.tlsCAPath, "tls-ca", "", "PEM SMTP server CA bundle (independent of LDAP and relay client-CA trust)")
-	f.StringVar(&o.tlsRootMode, "tls-ca-mode", "", "SMTP server roots: system, append, replace (default: append with --tls-ca, otherwise system)")
-	f.StringArrayVar(&o.caAllowCert, "tls-ca-allow-cert-sha256", nil, "Allow a server trust anchor by certificate SHA-256 (repeatable)")
-	f.StringArrayVar(&o.caDenyCert, "tls-ca-deny-cert-sha256", nil, "Deny a server chain CA by certificate SHA-256 (repeatable)")
-	f.StringArrayVar(&o.caAllowSPKI, "tls-ca-allow-spki-sha256", nil, "Allow a server trust anchor by public-key SHA-256 (repeatable)")
-	f.StringArrayVar(&o.caDenySPKI, "tls-ca-deny-spki-sha256", nil, "Deny a server chain CA by public-key SHA-256 (repeatable)")
-	f.DurationVar(&o.tlsTrust.ExpiredServerCertificateGrace, "insecure-tls-allow-expired-server-cert-for", 0, "INSECURE: server leaf expiry grace, e.g. 168h; requires replace roots on Windows/macOS")
-	f.BoolVar(&o.tlsTrust.InsecureAllowUnverifiableIssuer, "insecure-tls-allow-server-certificate-with-unverifiable-issuer", false, "INSECURE: permit a signature-valid supplied server path to an untrusted anchor; other checks remain required")
+	f.StringVar(&flags.authMethod, "auth", "gssapi", "SMTP authentication: gssapi, mtls (TLS certificate only), mtls-external (certificate plus AUTH EXTERNAL)")
+	f.StringVar(&flags.clientCertPath, "client-cert", "", "PEM client leaf certificate followed by intermediate certificates")
+	f.StringVar(&flags.clientKeyPath, "client-key", "", "Matching unencrypted PEM private key; owner-private on Unix")
+	f.StringVar(&flags.tlsCAPath, "tls-ca", "", "PEM SMTP server CA bundle (independent of LDAP and relay client-CA trust)")
+	f.StringVar(&flags.tlsRootMode, "tls-ca-mode", "", "SMTP server roots: system, append, replace (default: append with --tls-ca, otherwise system)")
+	f.StringArrayVar(&flags.caAllowCert, "tls-ca-allow-cert-sha256", nil, "Allow a server trust anchor by certificate SHA-256 (repeatable)")
+	f.StringArrayVar(&flags.caDenyCert, "tls-ca-deny-cert-sha256", nil, "Deny a server chain CA by certificate SHA-256 (repeatable)")
+	f.StringArrayVar(&flags.caAllowSPKI, "tls-ca-allow-spki-sha256", nil, "Allow a server trust anchor by public-key SHA-256 (repeatable)")
+	f.StringArrayVar(&flags.caDenySPKI, "tls-ca-deny-spki-sha256", nil, "Deny a server chain CA by public-key SHA-256 (repeatable)")
+	f.DurationVar(&flags.expiredServerCertificateGrace, "insecure-tls-allow-expired-server-cert-for", 0, "INSECURE: server leaf expiry grace, e.g. 168h; requires replace roots on Windows/macOS")
+	f.BoolVar(&flags.allowUnverifiableIssuer, "insecure-tls-allow-server-certificate-with-unverifiable-issuer", false, "INSECURE: permit a signature-valid supplied server path to an untrusted anchor; other checks remain required")
 	f.BoolVar(&showVersion, "version", false, "Print semantic version with UTC build time and seven-character commit SHA")
-	f.BoolVar(&o.testMode, "test", false, "Report DNS/TLS and selected authentication checks; no stdin, envelope or email")
-	f.BoolVar(&o.testMail, "testmail", false, "Send a generated report; GSSAPI defaults to own AD mail, mTLS needs sender/recipients; never read stdin")
-	f.BoolVar(&o.debug, "debug", false, "Include observed DC reachability and runtime tables with --test or --testmail")
-	f.StringVar(&o.domain, "domain", "", "Override the host DNS domain")
-	f.StringVar(&o.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
-	f.StringVar(&o.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
-	f.IntVar(&o.port, "port", 25, "SMTP port; use 465 with --tls implicit")
-	f.StringVar(&o.hello, "hostname", "", "EHLO hostname (default: discovered host FQDN)")
-	f.StringVar(&o.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
-	f.StringVar(&o.auth, "cred-source", "auto", "Credential source: auto, keytab, ccache, sspi")
-	f.BoolVar(&o.passwordPrompt, "password-prompt", false, "In auto mode, prompt for principal/password only after keytab, cache, and SSPI fail")
-	f.StringVar(&o.keytab, "keytab", "", "Kerberos keytab file")
-	f.StringVar(&o.principal, "principal", "", "Require this identity; otherwise try user/host account names from the keytab (not SPNs) or use the cache/SSPI identity")
-	f.StringVar(&o.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
-	f.StringSliceVar(&o.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
-	f.StringVar(&o.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
-	f.StringVar(&o.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
-	f.IntVar(&o.ldapRaceCandidates, "ldap-race-candidates", 8, "Maximum DCs raced immediately for canonical LDAP mail lookup (1-8)")
-	f.BoolVar(&o.noLDAPRace, "no-ldap-race", false, "Disable LDAP read racing; use ordinary AD server selection")
-	f.StringVarP(&o.from, "from", "f", "", "Override envelope sender and From header (default: saved sender, then canonical AD mail); <> keeps null envelope and original headers")
-	f.StringVar(&o.setDefaultFrom, "set-default-from", "", "Save a fully qualified default sender in the user OS config directory; do not send mail")
-	f.BoolVar(&o.setDefaultFromAD, "set-default-from-ad", false, "Look up and save canonical AD mail once; prompt for a password if existing credentials fail; do not send mail")
-	f.BoolVar(&o.showDefaultFrom, "show-default-from", false, "Print the saved default sender; do not read message input or contact AD")
-	f.BoolVar(&o.unsetDefaultFrom, "unset-default-from", false, "Remove the saved default sender; do not send mail")
-	f.BoolVar(&o.noSendmailFallback, "no-sendmail-fallback", false, "Disable Linux local-sendmail fallback when credentials or relay reachability are unavailable")
-	f.StringVar(&o.sendmailPath, "sendmail-path", "", "Linux fallback sendmail executable (default: standard system locations; never this executable)")
-	f.StringVarP(&o.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
-	f.BoolVarP(&o.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
-	f.BoolVarP(&o.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
-	f.BoolVarP(&o.verbose, "verbose", "v", false, "Print submission status and live detailed --test AD/DNS steps before the summary table, without tokens or message content")
-	f.StringVar(&o.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
-	f.DurationVar(&o.timeout, "timeout", 60*time.Second, "AD/SMTP timeout; per stage with --password-prompt (excludes message and credential input)")
+	f.BoolVar(&flags.testMode, "test", false, "Report DNS/TLS and selected authentication checks; no stdin, envelope or email")
+	f.BoolVar(&flags.testMail, "testmail", false, "Send a generated report; GSSAPI defaults to own AD mail, mTLS needs sender/recipients; never read stdin")
+	f.BoolVar(&flags.debug, "debug", false, "Include observed DC reachability and runtime tables with --test or --testmail")
+	f.StringVar(&flags.domain, "domain", "", "Override the host DNS domain")
+	f.StringVar(&flags.realm, "realm", "", "Kerberos realm (default: uppercase host domain)")
+	f.StringVar(&flags.relay, "relay", "", "SMTP relay hostname (default: mailgw.<host-domain>)")
+	f.IntVar(&flags.port, "port", 25, "SMTP port; use 465 with --tls implicit")
+	f.StringVar(&flags.hello, "hostname", "", "EHLO hostname (default: discovered host FQDN)")
+	f.StringVar(&flags.spn, "spn", "", "Override the service principal, e.g. smtp/mailgw.example.com")
+	f.StringVar(&flags.auth, "cred-source", "auto", "Credential source: auto, keytab, ccache, sspi")
+	f.BoolVar(&flags.passwordPrompt, "password-prompt", false, "In auto mode, prompt for principal/password only after keytab, cache, and SSPI fail")
+	f.StringVar(&flags.keytab, "keytab", "", "Kerberos keytab file")
+	f.StringVar(&flags.principal, "principal", "", "Require this identity; otherwise try user/host account names from the keytab (not SPNs) or use the cache/SSPI identity")
+	f.StringVar(&flags.ccache, "ccache", "", "FILE credential cache (default on Linux: KRB5CCNAME or /tmp/krb5cc_<uid>)")
+	f.StringSliceVar(&flags.dnsServers, "dns-server", nil, "Numeric DNS bootstrap server(s), IP or IP:port (default: adclient OS discovery)")
+	f.StringVar(&flags.dnsProbeZone, "dns-probe-zone", "example.com", "External zone for optional --test/--testmail DNS failure diagnostics (not probed on success)")
+	f.StringVar(&flags.ldapCA, "ldap-ca", "", "Additional trusted CA bundle for verified AD LDAP TLS")
+	f.IntVar(&flags.ldapRaceCandidates, "ldap-race-candidates", 8, "Maximum DCs raced immediately for canonical LDAP mail lookup (1-8)")
+	f.BoolVar(&flags.noLDAPRace, "no-ldap-race", false, "Disable LDAP read racing; use ordinary AD server selection")
+	f.StringVarP(&flags.from, "from", "f", "", "Override envelope sender and From header (default: saved sender, then canonical AD mail); <> keeps null envelope and original headers")
+	f.StringVar(&flags.setDefaultFrom, "set-default-from", "", "Save a fully qualified default sender in the user OS config directory; do not send mail")
+	f.BoolVar(&flags.setDefaultFromAD, "set-default-from-ad", false, "Look up and save canonical AD mail once; prompt for a password if existing credentials fail; do not send mail")
+	f.BoolVar(&flags.showDefaultFrom, "show-default-from", false, "Print the saved default sender; do not read message input or contact AD")
+	f.BoolVar(&flags.unsetDefaultFrom, "unset-default-from", false, "Remove the saved default sender; do not send mail")
+	f.BoolVar(&flags.noSendmailFallback, "no-sendmail-fallback", false, "Disable Linux local-sendmail fallback when credentials or relay reachability are unavailable")
+	f.StringVar(&flags.sendmailPath, "sendmail-path", "", "Linux fallback sendmail executable (default: standard system locations; never this executable)")
+	f.StringVarP(&flags.fullName, "full-name", "F", "", "Accepted for compatibility; does not rewrite message headers")
+	f.BoolVarP(&flags.readHeaders, "read-recipients", "t", false, "Add To/Cc/Bcc recipients (latest Resent block if present)")
+	f.BoolVarP(&flags.ignoreDots, "ignore-dots", "i", false, "Do not terminate stdin at a line containing only a dot")
+	f.BoolVarP(&flags.verbose, "verbose", "v", false, "Print submission status and live detailed --test AD/DNS steps before the summary table, without tokens or message content")
+	f.StringVar(&flags.tlsMode, "tls", "required", "TLS mode: required (STARTTLS), implicit, off (no confidentiality)")
+	f.DurationVar(&flags.timeout, "timeout", 60*time.Second, "AD/SMTP timeout; per stage with --password-prompt (excludes message and credential input)")
 	return cmd
 }
 
-func validateOptions(o options) error {
+func validateOptions(o operationOptions) error {
 	if o.authMethod != "" && o.authMethod != "gssapi" && o.authMethod != "mtls" && o.authMethod != "mtls-external" {
 		return errors.New("--auth must be gssapi, mtls, or mtls-external")
 	}
@@ -229,11 +242,11 @@ func validateOptions(o options) error {
 	return err
 }
 
-func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+func run(ctx context.Context, o operationOptions, recipients []string, in io.Reader, log io.Writer) (err error) {
 	return systemDependencies().run(ctx, o, recipients, in, log)
 }
 
-func (deps commandDependencies) run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+func (deps commandDependencies) run(ctx context.Context, o operationOptions, recipients []string, in io.Reader, log io.Writer) (err error) {
 	log = mail.TrackOutput(log)
 	accepted := false
 	defer func() {
@@ -295,159 +308,25 @@ func (deps commandDependencies) run(ctx context.Context, o options, recipients [
 		}
 		return err
 	}
-	o, err = resolveTarget(o, host, domain)
+	prepared, err := prepareSubmission(ctx, o, host, domain, recipients, in, log)
 	if err != nil {
 		return err
 	}
-	o.report.Value("SPN", o.spn)
-	if o.from != "" {
-		sender, err := envelopeAddress(o.from, domain, true)
-		if err != nil {
-			return fmt.Errorf("envelope sender: %w", err)
-		}
-		if o.from != "<>" {
-			o.from = sender
-		}
-	}
-	configuredFrom := o.from
-	targetDetail := fmt.Sprintf("AD domain=%q relay=%q port=%d EHLO=%q TLS=%q auth=%q",
-		o.domain, o.relay, o.port, o.hello, o.tlsMode, o.authMethod)
-	if o.authMethod == "gssapi" {
-		targetDetail += fmt.Sprintf(" realm=%q SPN=%q cred-source=%q requested principal=%q", o.realm, o.spn, o.auth, o.principal)
-	}
-	o.report.Step("Target configuration", nil, targetDetail)
-	o.report.Value("Target relay", fmt.Sprintf("%s:%d", o.relay, o.port))
-	if o.tlsMode == "off" {
-		o.report.Value("Transport security", "Disabled; no confidentiality")
-	}
-	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
-		return outputErr
-	}
-	var message []byte
-	if o.testMail {
-		for i, recipient := range recipients {
-			recipients[i], err = envelopeAddress(recipient, domain, false)
-			if err != nil {
-				return fmt.Errorf("testmail recipient: %w", err)
-			}
-		}
-		o.needOwnMail = true
-	} else if !o.testMode {
-		message, recipients, err = prepareMessageContext(ctx, in, recipients, domain, o.readHeaders, o.ignoreDots)
-		if err != nil {
-			return err
-		}
-		o.needOwnMail = len(recipients) == 0
-	}
+	o = prepared.options
+
 	if !o.passwordPrompt {
 		work, cancel := context.WithTimeout(ctx, o.timeout)
 		defer cancel()
 		ctx = work
 	}
 	if o.authMethod != "gssapi" {
-		err = deps.runCertificateSubmission(ctx, o, recipients, message, log)
-		accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
-		return err
+		err = deps.runCertificateSubmission(ctx, o, prepared.recipients, prepared.message, log)
+	} else {
+		err = deps.runGSSAPISubmission(parentCtx, ctx, prepared, log)
 	}
-	adDone := o.report.Measure("AD identity and canonical mail")
-	session, err := deps.openAD(ctx, o)
-	adDone()
-	o.report.Step("AD identity selection", err, "credential source and identity selected")
-	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
-		if session != nil {
-			return mail.JoinOutput(errors.Join(err, session.Close()), log, o.report, false)
-		}
-		return mail.JoinOutput(err, log, o.report, false)
-	}
-	if err != nil {
-		if shouldFallbackToSendmail(parentCtx, o, err) {
-			return deps.fallback(parentCtx, o, recipients, message, configuredFrom, err, log)
-		}
-		return fmt.Errorf("AD identity selection: %w", err)
-	}
-	sessionClosed := false
-	defer func() {
-		if sessionClosed {
-			return
-		}
-		if closeErr := session.Close(); closeErr != nil {
-			o.report.Step("AD credential cleanup", closeErr, "")
-			if err != nil || o.testMode {
-				err = errors.Join(err, closeErr)
-			} else {
-				err = reportAcceptedCleanup(log, o.report, "credential", closeErr)
-			}
-		} else {
-			o.report.Step("AD credential cleanup", nil, "credential owner closed")
-		}
-	}()
-	if err := reportCredentialFailures(o, session, log); err != nil {
-		return err
-	}
-	o.report.Step("Authenticated AD identity", nil, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q canonical mail=%q",
-		session.identity.Principal, session.identity.Realm, session.identity.Source, session.mail))
-	o.report.Value("User", session.identity.Principal)
-	o.report.Value("Cred source", string(session.identity.Source))
-	from := session.mail
-	if o.from != "" {
-		from = o.from
-	}
-	o.report.Value("Mail (from)", from)
-	if o.testMail {
-		hostRecipientFallback := session.hostWithoutMail && len(recipients) == 0
-		recipients, err = testmailRecipients(recipients, session.mail, o.from, domain, session.hostWithoutMail)
-		if err != nil {
-			return err
-		}
-		if hostRecipientFallback {
-			o.report.Line("WARN", "Testmail recipient fallback", "host account has no canonical mailbox; using configured sender as testmail recipient")
-		}
-		o.report.Value("Canonical mail", session.mail)
-		if o.from == "" {
-			o.from = session.mail
-		} else if o.from == "<>" {
-			o.from = ""
-		}
-	} else if !o.testMode {
-		if session.hostWithoutMail && o.from == "" {
-			return errors.New("host account has no canonical AD mailbox; specify a sender with -f or save a default sender")
-		}
-		recipients, err = mail.RecipientFallback(recipients, session.mail, domain)
-		if err != nil {
-			return err
-		}
+	accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
+	return err
 
-		message, o.from, err = applySender(message, o.from, session.mail, domain)
-		if err != nil {
-			return err
-		}
-	}
-	if o.verbose && !o.testMode {
-		fmt.Fprintf(log, "Submitting to %s:%d; principal=%s; source=%s; SPN=%s; TLS=%s\n",
-			o.relay, o.port, session.identity.Principal, session.identity.Source, o.spn, o.tlsMode)
-	}
-	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
-		return outputErr
-	}
-	if err := deps.deliver(ctx, o, recipients, message, session, log); err != nil {
-		if shouldFallbackToSendmail(parentCtx, o, err) {
-			sessionClosed = true
-			if closeErr := session.Close(); closeErr != nil {
-				return errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
-			}
-			from := o.from
-			if configuredFrom == "<>" {
-				from = "<>"
-			}
-			return deps.fallback(parentCtx, o, recipients, message, from, err, log)
-		}
-		return err
-	}
-	accepted = !o.testMode
-	if o.verbose && !o.testMode {
-		fmt.Fprintln(log, "Message accepted by relay")
-	}
-	return nil
 }
 
 func testmailRecipients(recipients []string, canonical, configuredFrom, domain string, hostWithoutMail bool) ([]string, error) {

@@ -128,23 +128,23 @@ func TestLDAPRaceFlags(t *testing.T) {
 		if err != nil || disabled != tt.disabled {
 			t.Fatalf("%v: disabled=%t err=%v", tt.args, disabled, err)
 		}
-		if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto",
-			tlsMode: "required", ldapRaceCandidates: candidates, noLDAPRace: disabled}); err != nil {
+		if err := validateOptions(operationOptions{commandFlags: commandFlags{port: 25, timeout: time.Second, auth: "auto",
+			tlsMode: "required", ldapRaceCandidates: candidates, noLDAPRace: disabled}}); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 func TestValidOptions(t *testing.T) {
-	if err := validateOptions(options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8}); err != nil {
+	if err := validateOptions(operationOptions{commandFlags: commandFlags{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8}}); err != nil {
 		t.Fatal(err)
 	}
 
 }
 
 func TestPasswordFallbackAllowsConfiguredKeytabAndCache(t *testing.T) {
-	o := options{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8,
-		keytab: "keytab", ccache: "cache", passwordPrompt: true}
+	o := operationOptions{commandFlags: commandFlags{port: 25, timeout: time.Second, auth: "auto", tlsMode: "required", ldapRaceCandidates: 8,
+		keytab: "keytab", ccache: "cache", passwordPrompt: true}}
 	if err := validateOptions(o); err != nil {
 		t.Fatal(err)
 	}

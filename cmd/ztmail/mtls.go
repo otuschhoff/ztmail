@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func validateAuthenticationFlags(cmd *cobra.Command, o options) error {
+func validateAuthenticationFlags(cmd *cobra.Command, o operationOptions) error {
 	if cmd.Flags().Changed("insecure-tls-allow-expired-server-cert-for") && o.tlsTrust.ExpiredServerCertificateGrace <= 0 {
 		return errors.New("--insecure-tls-allow-expired-server-cert-for requires a positive duration; omit it to disable")
 	}
@@ -53,7 +53,7 @@ func validateAuthenticationFlags(cmd *cobra.Command, o options) error {
 	return nil
 }
 
-func loadAuthenticationOptions(o options) (options, error) {
+func loadAuthenticationOptions(o operationOptions) (operationOptions, error) {
 	var err error
 	if o.clientCertPath != "" || o.clientKeyPath != "" {
 		o.clientCertificate, err = mail.LoadClientCertificate(o.clientCertPath, o.clientKeyPath)
@@ -99,11 +99,11 @@ func loadAuthenticationOptions(o options) (options, error) {
 	return o, nil
 }
 
-func runCertificateSubmission(ctx context.Context, o options, recipients []string, message []byte, log io.Writer) (err error) {
+func runCertificateSubmission(ctx context.Context, o operationOptions, recipients []string, message []byte, log io.Writer) (err error) {
 	return systemDependencies().runCertificateSubmission(ctx, o, recipients, message, log)
 }
 
-func (deps commandDependencies) runCertificateSubmission(ctx context.Context, o options, recipients []string, message []byte, log io.Writer) (err error) {
+func (deps commandDependencies) runCertificateSubmission(ctx context.Context, o operationOptions, recipients []string, message []byte, log io.Writer) (err error) {
 	log = mail.TrackOutput(log)
 	accepted := false
 	defer func() {

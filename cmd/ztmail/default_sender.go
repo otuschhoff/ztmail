@@ -88,7 +88,7 @@ func writeDefaultSender(value string) (path string, err error) {
 	return path, nil
 }
 
-func defaultSenderActionCount(o options) int {
+func defaultSenderActionCount(o operationOptions) int {
 	count := 0
 	for _, selected := range []bool{o.setDefaultFromRequested, o.setDefaultFromAD, o.showDefaultFrom, o.unsetDefaultFrom} {
 		if selected {
@@ -98,7 +98,7 @@ func defaultSenderActionCount(o options) int {
 	return count
 }
 
-func validateDefaultSenderAction(o options, recipients []string) error {
+func validateDefaultSenderAction(o operationOptions, recipients []string) error {
 	if defaultSenderActionCount(o) != 1 {
 		return errors.New("default sender set, AD lookup, show and unset actions are mutually exclusive")
 	}
@@ -114,8 +114,8 @@ func validateDefaultSenderAction(o options, recipients []string) error {
 	return nil
 }
 
-func manageDefaultSender(ctx context.Context, o options, out, log io.Writer,
-	lookup func(context.Context, options, io.Writer) (string, error)) error {
+func manageDefaultSender(ctx context.Context, o operationOptions, out, log io.Writer,
+	lookup func(context.Context, operationOptions, io.Writer) (string, error)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -165,11 +165,11 @@ func manageDefaultSender(ctx context.Context, o options, out, log io.Writer,
 	return err
 }
 
-func lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string, error) {
+func lookupDefaultSender(ctx context.Context, o operationOptions, log io.Writer) (string, error) {
 	return systemDependencies().lookupDefaultSender(ctx, o, log)
 }
 
-func (deps commandDependencies) lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string, error) {
+func (deps commandDependencies) lookupDefaultSender(ctx context.Context, o operationOptions, log io.Writer) (string, error) {
 	if _, err := parseDNSServers(o.dnsServers); err != nil {
 		return "", err
 	}
@@ -201,7 +201,7 @@ func (deps commandDependencies) lookupDefaultSender(ctx context.Context, o optio
 	return defaultSenderAddress(address)
 }
 
-func applyDefaultSender(o options) (options, error) {
+func applyDefaultSender(o operationOptions) (operationOptions, error) {
 	if o.from != "" {
 		return o, nil
 	}

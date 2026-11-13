@@ -82,7 +82,7 @@ func TestMTLSCLIExplicitFlagConflictsBeforeInput(t *testing.T) {
 func TestMTLSNeverUsesNativeFallback(t *testing.T) {
 	for _, method := range []string{"mtls", "mtls-external"} {
 		for _, failure := range []error{errHostDomainUnavailable, errADCredentialsUnavailable, mail.ErrRelayUnavailable} {
-			if shouldFallbackToSendmail(context.Background(), options{authMethod: method}, failure) {
+			if shouldFallbackToSendmail(context.Background(), operationOptions{commandFlags: commandFlags{authMethod: method}}, failure) {
 				t.Fatalf("%s credential/relay failure enabled native fallback: %v", method, failure)
 			}
 		}
@@ -101,7 +101,7 @@ func TestMTLSSenderRecipientErrorsBeforeDNS(t *testing.T) {
 		{"sender@example.test", nil, true, "requires explicit/header recipients"},
 		{"<>", []string{"recipient@example.test"}, true, "non-null sender"},
 	} {
-		err := runCertificateSubmission(context.Background(), options{authMethod: "mtls-external", from: tt.from, testMail: tt.testmail},
+		err := runCertificateSubmission(context.Background(), operationOptions{commandFlags: commandFlags{authMethod: "mtls-external", from: tt.from, testMail: tt.testmail}},
 			tt.recipients, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("invalid input reached DNS/credentials: %v", err)

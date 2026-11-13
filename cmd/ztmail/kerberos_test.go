@@ -33,7 +33,7 @@ func TestSummarizeADFailure(t *testing.T) {
 		Cause:  fmt.Errorf("%w: incomplete negative proof", dns.ErrMalformed)}
 	cause := errors.Join(cacheErr, errADPasswordFailure, errADCredentialsUnavailable,
 		fmt.Errorf("https://operation.invalid/KdcProxy: %w", errors.Join(dns.ErrUnavailable, failure, failure)))
-	o := options{domain: "corp.example", realm: "CORP.EXAMPLE"}
+	o := operationOptions{commandFlags: commandFlags{domain: "corp.example", realm: "CORP.EXAMPLE"}}
 	got := summarizeADFailure(o, cause)
 	want := `AD DNS discovery failed for domain "corp.example" (realm "CORP.EXAMPLE"): AAAA query via 127.0.0.1:53: malformed DNS response: incomplete negative proof; check the DNS server or specify --dns-server with an AD-capable DNS server IP; use --verbose for the full credential and Kerberos errors`
 	if got.Error() != want {
@@ -75,7 +75,7 @@ func TestADDNSIPv4OnlyResponse(t *testing.T) {
 		{name: "nxdomain", withSOA: true, rcode: dnsmessage.RCodeNameError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			settings, err := adOptionsForCredentials(options{domain: "corp.example"}, kerberos.Options{})
+			settings, err := adOptionsForCredentials(operationOptions{commandFlags: commandFlags{domain: "corp.example"}}, kerberos.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,8 +203,8 @@ func TestPrincipalCandidatesRejectSPNOnlyKeytabs(t *testing.T) {
 }
 
 func TestExplicitServicePrincipalIsPreserved(t *testing.T) {
-	credentials, err := credentialOptions(options{auth: "keytab", keytab: "mailer.keytab",
-		principal: "smtp/relay.example.com", realm: "EXAMPLE.COM"})
+	credentials, err := credentialOptions(operationOptions{commandFlags: commandFlags{auth: "keytab", keytab: "mailer.keytab",
+		principal: "smtp/relay.example.com", realm: "EXAMPLE.COM"}})
 	if err != nil || credentials.Principal != "smtp/relay.example.com@EXAMPLE.COM" {
 		t.Fatalf("explicit principal=%q err=%v", credentials.Principal, err)
 	}
@@ -256,13 +256,13 @@ func TestCredentialOptions(t *testing.T) {
 	t.Setenv("KRB5_CONFIG", "/missing/krb5.conf")
 	t.Setenv("KRB5CCNAME", "FILE:"+filepath.Join(t.TempDir(), "cache"))
 	for _, tt := range []struct {
-		o      options
+		o      operationOptions
 		source kerberos.Source
 	}{
-		{options{auth: "auto", keytab: "mailer.keytab", principal: "mailer", realm: "EXAMPLE.COM"}, kerberos.SourceKeytab},
-		{options{auth: "auto", ccache: "cache", realm: "EXAMPLE.COM"}, kerberos.SourceCCache},
-		{options{auth: "ccache", realm: "EXAMPLE.COM"}, kerberos.SourceCCache},
-		{options{auth: "sspi", realm: "EXAMPLE.COM"}, kerberos.SourceSSPI},
+		{operationOptions{commandFlags: commandFlags{auth: "auto", keytab: "mailer.keytab", principal: "mailer", realm: "EXAMPLE.COM"}}, kerberos.SourceKeytab},
+		{operationOptions{commandFlags: commandFlags{auth: "auto", ccache: "cache", realm: "EXAMPLE.COM"}}, kerberos.SourceCCache},
+		{operationOptions{commandFlags: commandFlags{auth: "ccache", realm: "EXAMPLE.COM"}}, kerberos.SourceCCache},
+		{operationOptions{commandFlags: commandFlags{auth: "sspi", realm: "EXAMPLE.COM"}}, kerberos.SourceSSPI},
 	} {
 		got, err := credentialOptions(tt.o)
 		if err != nil || got.Source != tt.source {
@@ -302,8 +302,8 @@ func TestExternalCacheIsReadOnlyAndIgnoresKrbConfig(t *testing.T) {
 	if err := os.WriteFile(path, content, 0600); err != nil {
 		t.Fatal(err)
 	}
-	o := options{auth: "ccache", ccache: path, domain: "corp.example", realm: "CORP.EXAMPLE",
-		dnsProbeZone: "example.com", spn: "smtp/mailgw.corp.example", from: "override@example.com"}
+	o := operationOptions{commandFlags: commandFlags{auth: "ccache", ccache: path, domain: "corp.example", realm: "CORP.EXAMPLE",
+		dnsProbeZone: "example.com", spn: "smtp/mailgw.corp.example", from: "override@example.com"}}
 	session, err := openAD(context.Background(), o)
 	if session != nil || err == nil || !strings.Contains(err.Error(), "invalid external ccache") {
 		t.Fatalf("expected cache parse error, not config/network work: session=%v err=%v", session, err)
@@ -315,7 +315,7 @@ func TestExternalCacheIsReadOnlyAndIgnoresKrbConfig(t *testing.T) {
 }
 
 func TestADOptions(t *testing.T) {
-	o := options{auth: "keytab", keytab: "mailer.keytab", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com"}
+	o := operationOptions{commandFlags: commandFlags{auth: "keytab", keytab: "mailer.keytab", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com"}}
 	settings, err := adOptions(o)
 	if err != nil {
 		t.Fatal(err)
@@ -365,8 +365,8 @@ func TestADOptions(t *testing.T) {
 func TestOptimisticDNSNeedsNoProbeZoneForSubmission(t *testing.T) {
 	for _, relay := range []string{"mailgw.corp.example", "relay.external.example"} {
 		t.Run(relay, func(t *testing.T) {
-			settings, err := adOptions(options{auth: "keytab", keytab: "mailer.keytab",
-				domain: "corp.example", realm: "CORP.EXAMPLE", relay: relay})
+			settings, err := adOptions(operationOptions{commandFlags: commandFlags{auth: "keytab", keytab: "mailer.keytab",
+				domain: "corp.example", realm: "CORP.EXAMPLE", relay: relay}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -411,9 +411,9 @@ func (f *fakeDirectory) Search(ctx context.Context, request *ldap.SearchRequest)
 	return []adclient.Entry{{Attributes: []adldap.Attribute{attribute("defaultNamingContext", "DC=corp,DC=example")}}}, nil
 }
 
-func (f *fakeDirectory) SearchWithOptions(_ context.Context, request *ldap.SearchRequest, options adclient.SearchOptions) ([]adclient.Entry, error) {
+func (f *fakeDirectory) SearchWithOptions(_ context.Context, request *ldap.SearchRequest, operationOptions adclient.SearchOptions) ([]adclient.Entry, error) {
 	f.requests = append(f.requests, request)
-	if !options.SingleNamingContext {
+	if !operationOptions.SingleNamingContext {
 		f.t.Fatal("canonical-user lookup must stay in the selected naming context")
 	}
 	if request.BaseDN != "DC=corp,DC=example" || request.SizeLimit != 2 || request.Scope != ldap.ScopeWholeSubtree {

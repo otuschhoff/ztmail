@@ -25,10 +25,10 @@ type commandDependencies struct {
 	discoverHost func(context.Context, string) (string, string, error)
 	currentUser  func() (*user.User, error)
 	openTerminal func() (passwordTerminal, error)
-	attemptAD    func(context.Context, options, adclient.ADOptions) (*adSession, error)
+	attemptAD    func(context.Context, operationOptions, adclient.ADOptions) (*adSession, error)
 	newDNSOwner  func(adclient.ADOptions) (dnsOwner, error)
-	deliver      func(context.Context, options, []string, []byte, submissionBackend, io.Writer) error
-	fallback     func(context.Context, options, []string, []byte, string, error, io.Writer) error
+	deliver      func(context.Context, operationOptions, []string, []byte, submissionBackend, io.Writer) error
+	fallback     func(context.Context, operationOptions, []string, []byte, string, error, io.Writer) error
 }
 
 func systemDependencies() commandDependencies {

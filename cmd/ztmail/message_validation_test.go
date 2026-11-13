@@ -26,7 +26,7 @@ func TestQuotedDefaultSenderRoundTripAndNativeWire(t *testing.T) {
 			if err != nil || stored != address {
 				t.Fatalf("read default=%q err=%v", stored, err)
 			}
-			o, err := applyDefaultSender(options{domain: "example.test"})
+			o, err := applyDefaultSender(operationOptions{commandFlags: commandFlags{domain: "example.test"}})
 			if err != nil || o.from != address {
 				t.Fatalf("applied default=%q err=%v", o.from, err)
 			}

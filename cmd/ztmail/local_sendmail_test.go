@@ -42,31 +42,31 @@ func TestSendmailFallbackEligibility(t *testing.T) {
 	eligible := runtime.GOOS == "linux"
 	for _, tc := range []struct {
 		name string
-		o    options
+		o    operationOptions
 		err  error
 		want bool
 	}{
-		{"credentials", options{}, fmt.Errorf("missing cache: %w", errADCredentialsUnavailable), eligible},
-		{"domain", options{}, errHostDomainUnavailable, eligible},
-		{"relay", options{}, mail.ErrRelayUnavailable, eligible},
-		{"stage deadline", options{}, errors.Join(errADCredentialsUnavailable, context.DeadlineExceeded), eligible},
-		{"opt out", options{noSendmailFallback: true}, errADCredentialsUnavailable, false},
-		{"test", options{testMode: true}, mail.ErrRelayUnavailable, false},
-		{"testmail", options{testMail: true}, mail.ErrRelayUnavailable, false},
-		{"management", options{setDefaultFromAD: true}, errADCredentialsUnavailable, false},
-		{"uncertain", options{}, errors.Join(mail.ErrRelayUnavailable, mail.ErrDeliveryUncertain), false},
-		{"cleanup", options{}, errors.Join(errADCredentialsUnavailable, errADCleanup), false},
-		{"closed", options{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrClosed), false},
-		{"capacity", options{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrCapacity), false},
-		{"credentials changed", options{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrCredentialsChanged), false},
-		{"canceled", options{}, errors.Join(errADCredentialsUnavailable, context.Canceled), false},
-		{"mixed credential and LDAP failure", options{}, errors.Join(errADCredentialsUnavailable, errADNonCredentialFailure), false},
-		{"TLS rejection", options{}, errors.New("TLS certificate rejected"), false},
-		{"SMTP auth rejection", options{}, errors.New("SMTP AUTH 535 rejected"), false},
-		{"MAIL rejection", options{}, errors.New("SMTP MAIL FROM rejected"), false},
-		{"RCPT rejection", options{}, errors.New("SMTP RCPT TO rejected"), false},
-		{"DATA rejection", options{}, errors.New("SMTP DATA rejected"), false},
-		{"success", options{}, nil, false},
+		{"credentials", operationOptions{}, fmt.Errorf("missing cache: %w", errADCredentialsUnavailable), eligible},
+		{"domain", operationOptions{}, errHostDomainUnavailable, eligible},
+		{"relay", operationOptions{}, mail.ErrRelayUnavailable, eligible},
+		{"stage deadline", operationOptions{}, errors.Join(errADCredentialsUnavailable, context.DeadlineExceeded), eligible},
+		{"opt out", operationOptions{commandFlags: commandFlags{noSendmailFallback: true}}, errADCredentialsUnavailable, false},
+		{"test", operationOptions{commandFlags: commandFlags{testMode: true}}, mail.ErrRelayUnavailable, false},
+		{"testmail", operationOptions{commandFlags: commandFlags{testMail: true}}, mail.ErrRelayUnavailable, false},
+		{"management", operationOptions{commandFlags: commandFlags{setDefaultFromAD: true}}, errADCredentialsUnavailable, false},
+		{"uncertain", operationOptions{}, errors.Join(mail.ErrRelayUnavailable, mail.ErrDeliveryUncertain), false},
+		{"cleanup", operationOptions{}, errors.Join(errADCredentialsUnavailable, errADCleanup), false},
+		{"closed", operationOptions{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrClosed), false},
+		{"capacity", operationOptions{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrCapacity), false},
+		{"credentials changed", operationOptions{}, errors.Join(errADCredentialsUnavailable, kerberos.ErrCredentialsChanged), false},
+		{"canceled", operationOptions{}, errors.Join(errADCredentialsUnavailable, context.Canceled), false},
+		{"mixed credential and LDAP failure", operationOptions{}, errors.Join(errADCredentialsUnavailable, errADNonCredentialFailure), false},
+		{"TLS rejection", operationOptions{}, errors.New("TLS certificate rejected"), false},
+		{"SMTP auth rejection", operationOptions{}, errors.New("SMTP AUTH 535 rejected"), false},
+		{"MAIL rejection", operationOptions{}, errors.New("SMTP MAIL FROM rejected"), false},
+		{"RCPT rejection", operationOptions{}, errors.New("SMTP RCPT TO rejected"), false},
+		{"DATA rejection", operationOptions{}, errors.New("SMTP DATA rejected"), false},
+		{"success", operationOptions{}, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldFallbackToSendmail(ctx, tc.o, tc.err); got != tc.want {
@@ -76,16 +76,16 @@ func TestSendmailFallbackEligibility(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if shouldFallbackToSendmail(canceled, options{}, mail.ErrRelayUnavailable) {
+	if shouldFallbackToSendmail(canceled, operationOptions{}, mail.ErrRelayUnavailable) {
 		t.Fatal("caller cancellation must never fall back")
 	}
 	expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer cancel()
-	if shouldFallbackToSendmail(expired, options{}, mail.ErrRelayUnavailable) {
+	if shouldFallbackToSendmail(expired, operationOptions{}, mail.ErrRelayUnavailable) {
 		t.Fatal("caller deadline must never fall back")
 	}
 	t.Setenv(nativeFallbackEnvironment, "1")
-	if shouldFallbackToSendmail(ctx, options{}, mail.ErrRelayUnavailable) {
+	if shouldFallbackToSendmail(ctx, operationOptions{}, mail.ErrRelayUnavailable) {
 		t.Fatal("native child must not recursively fall back, even from another binary copy")
 	}
 }
@@ -96,7 +96,7 @@ func TestSendmailFallbackPreservesOrOverridesSender(t *testing.T) {
 	recipients := []string{"one@example.com", "two@example.com"}
 	for _, from := range []string{"", "<>", "saved@example.com"} {
 		var log bytes.Buffer
-		o := options{sendmailPath: executable, timeout: time.Second, domain: "example.com"}
+		o := operationOptions{commandFlags: commandFlags{sendmailPath: executable, timeout: time.Second, domain: "example.com"}}
 		if err := sendmailFallback(context.Background(), o, recipients, original, from, errADCredentialsUnavailable, &log); err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +228,7 @@ func TestNativeSubmissionFailureSafety(t *testing.T) {
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 75\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	o := options{sendmailPath: executable, timeout: time.Second}
+	o := operationOptions{commandFlags: commandFlags{sendmailPath: executable, timeout: time.Second}}
 	err := sendmailFallback(ctx, o, []string{"root"}, []byte("Subject: test\n\nbody\n"), "", errADCredentialsUnavailable, io.Discard)
 	if !errors.Is(err, errADCredentialsUnavailable) || !errors.Is(err, mail.ErrDeliveryUncertain) {
 		t.Fatalf("native failure must retain original error and uncertainty: %v", err)
@@ -248,7 +248,7 @@ func TestNativeSubmissionFailureSafety(t *testing.T) {
 func TestFallbackLoggingFailurePreventsSubmission(t *testing.T) {
 	executable, argsPath, _ := fakeLocalSendmail(t)
 	logErr := errors.New("log writer failed")
-	o := options{sendmailPath: executable, timeout: time.Second}
+	o := operationOptions{commandFlags: commandFlags{sendmailPath: executable, timeout: time.Second}}
 	err := sendmailFallback(context.Background(), o, []string{"root"}, nil, "", errADCredentialsUnavailable, failedReportWriter{err: logErr})
 	if !errors.Is(err, logErr) || !errors.Is(err, errADCredentialsUnavailable) {
 		t.Fatalf("logging/original error lost: %v", err)
@@ -261,16 +261,16 @@ func TestFallbackLoggingFailurePreventsSubmission(t *testing.T) {
 func TestForbiddenFallbackNeverStartsFakeSendmail(t *testing.T) {
 	executable, argsPath, _ := fakeLocalSendmail(t)
 	for _, tc := range []struct {
-		o     options
+		o     operationOptions
 		cause error
 	}{
-		{options{noSendmailFallback: true}, errADCredentialsUnavailable},
-		{options{testMode: true}, mail.ErrRelayUnavailable},
-		{options{testMail: true}, mail.ErrRelayUnavailable},
-		{options{}, errors.New("SMTP authentication rejected")},
-		{options{}, errors.Join(mail.ErrRelayUnavailable, mail.ErrDeliveryUncertain)},
-		{options{}, errors.Join(errADCredentialsUnavailable, errADNonCredentialFailure)},
-		{options{}, errors.Join(mail.ErrRelayUnavailable, errADCleanup)},
+		{operationOptions{commandFlags: commandFlags{noSendmailFallback: true}}, errADCredentialsUnavailable},
+		{operationOptions{commandFlags: commandFlags{testMode: true}}, mail.ErrRelayUnavailable},
+		{operationOptions{commandFlags: commandFlags{testMail: true}}, mail.ErrRelayUnavailable},
+		{operationOptions{}, errors.New("SMTP authentication rejected")},
+		{operationOptions{}, errors.Join(mail.ErrRelayUnavailable, mail.ErrDeliveryUncertain)},
+		{operationOptions{}, errors.Join(errADCredentialsUnavailable, errADNonCredentialFailure)},
+		{operationOptions{}, errors.Join(mail.ErrRelayUnavailable, errADCleanup)},
 	} {
 		tc.o.sendmailPath, tc.o.timeout = executable, time.Second
 		if err := sendmailFallback(context.Background(), tc.o, []string{"root"}, nil, "", tc.cause, io.Discard); err == nil {
@@ -289,7 +289,7 @@ func (shortOutputWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
 
 func TestFallbackShortOutputPreventsSubmission(t *testing.T) {
 	executable, argsPath, _ := fakeLocalSendmail(t)
-	err := sendmailFallback(context.Background(), options{sendmailPath: executable, timeout: time.Second},
+	err := sendmailFallback(context.Background(), operationOptions{commandFlags: commandFlags{sendmailPath: executable, timeout: time.Second}},
 		[]string{"root"}, nil, "", errADCredentialsUnavailable, shortOutputWriter{})
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("short write not retained: %v", err)

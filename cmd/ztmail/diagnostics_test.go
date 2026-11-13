@@ -80,12 +80,12 @@ func TestTestFlagRejectsRecipients(t *testing.T) {
 }
 
 func TestDebugRequiresTestAndWiresObservations(t *testing.T) {
-	if err := validateOptions(options{debug: true, ldapRaceCandidates: 8}); err == nil || !strings.Contains(err.Error(), "--debug requires --test") {
+	if err := validateOptions(operationOptions{commandFlags: commandFlags{debug: true, ldapRaceCandidates: 8}}); err == nil || !strings.Contains(err.Error(), "--debug requires --test") {
 		t.Fatalf("expected debug scope error: %v", err)
 	}
 	var output bytes.Buffer
-	o := options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
-		dnsProbeZone: "example.com", ccache: filepath.Join(t.TempDir(), "cache"), report: newTestReport(&output, false)}
+	o := operationOptions{commandFlags: commandFlags{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
+		dnsProbeZone: "example.com", ccache: filepath.Join(t.TempDir(), "cache")}, report: newTestReport(&output, false)}
 	for _, debug := range []bool{false, true} {
 		o.debug = debug
 		settings, err := adOptions(o)
@@ -132,8 +132,8 @@ func TestEndpointReportIsConcurrentAndServerAttributed(t *testing.T) {
 }
 
 func TestDiagnosticHooksAreOptInAndPreserveSDKRouting(t *testing.T) {
-	o := options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com",
-		ccache: filepath.Join(t.TempDir(), "cache")}
+	o := operationOptions{commandFlags: commandFlags{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE", dnsProbeZone: "example.com",
+		ccache: filepath.Join(t.TempDir(), "cache")}}
 	settings, err := adOptions(o)
 	if err != nil {
 		t.Fatal(err)
@@ -173,8 +173,8 @@ func TestDiagnosticHooksAreOptInAndPreserveSDKRouting(t *testing.T) {
 func TestDNSFailureDiagnosticsAreSupplementary(t *testing.T) {
 	var output bytes.Buffer
 	report := newTestReport(&output, true)
-	settings, err := adOptions(options{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
-		ccache: filepath.Join(t.TempDir(), "cache"), dnsProbeZone: "example.com", report: report})
+	settings, err := adOptions(operationOptions{commandFlags: commandFlags{auth: "auto", domain: "corp.example", realm: "CORP.EXAMPLE",
+		ccache: filepath.Join(t.TempDir(), "cache"), dnsProbeZone: "example.com"}, report: report})
 	if err != nil {
 		t.Fatal(err)
 	}

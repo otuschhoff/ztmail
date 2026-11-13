@@ -51,7 +51,7 @@ func (e *adDNSFailure) Error() string {
 
 func (e *adDNSFailure) Unwrap() error { return e.cause }
 
-func summarizeADFailure(o options, err error) error {
+func summarizeADFailure(o operationOptions, err error) error {
 	if o.verbose || errors.Is(err, errADCleanup) || errors.Is(err, context.Canceled) ||
 		errors.Is(err, mail.ErrOutputFailed) || errors.Is(err, mail.ErrAcceptedOutput) {
 		return err
@@ -63,7 +63,7 @@ func summarizeADFailure(o options, err error) error {
 	return &adDNSFailure{cause: err, failure: failure, domain: o.domain, realm: o.realm}
 }
 
-func credentialOptions(o options) (kerberos.Options, error) {
+func credentialOptions(o operationOptions) (kerberos.Options, error) {
 	credentials := kerberos.Options{Realm: o.realm, Principal: o.principal}
 	switch {
 	case o.auth != "auto":
@@ -115,7 +115,7 @@ func cachePath(path string) (string, error) {
 	return filepath.Abs(path)
 }
 
-func adOptions(o options) (adclient.ADOptions, error) {
+func adOptions(o operationOptions) (adclient.ADOptions, error) {
 	credentials, err := credentialOptions(o)
 	if err != nil {
 		return adclient.ADOptions{}, err
@@ -123,7 +123,7 @@ func adOptions(o options) (adclient.ADOptions, error) {
 	return adOptionsForCredentials(o, credentials)
 }
 
-func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.ADOptions, error) {
+func adOptionsForCredentials(o operationOptions, credentials kerberos.Options) (adclient.ADOptions, error) {
 	dns := addns.Options{Domain: o.domain, RecursionProbeZone: o.dnsProbeZone,
 		QualificationPolicy: addns.QualificationOptimistic}
 	if o.report != nil {
@@ -157,12 +157,12 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 	return settings, nil
 }
 
-func openAD(ctx context.Context, o options) (*adSession, error) {
+func openAD(ctx context.Context, o operationOptions) (*adSession, error) {
 	return systemDependencies().openAD(ctx, o)
 }
 
-func (deps commandDependencies) openAD(ctx context.Context, o options) (*adSession, error) {
-	session, err := chooseADCredentials(ctx, o, func(ctx context.Context, attempt options) (*adSession, error) {
+func (deps commandDependencies) openAD(ctx context.Context, o operationOptions) (*adSession, error) {
+	session, err := chooseADCredentials(ctx, o, func(ctx context.Context, attempt operationOptions) (*adSession, error) {
 		if !o.passwordPrompt {
 			return deps.openADSource(ctx, attempt)
 		}
@@ -173,9 +173,8 @@ func (deps commandDependencies) openAD(ctx context.Context, o options) (*adSessi
 	return session, summarizeADFailure(o, err)
 }
 
-func chooseADCredentials(ctx context.Context, o options,
-	trySource func(context.Context, options) (*adSession, error),
-	tryPassword func(context.Context, options) (*adSession, error)) (*adSession, error) {
+func chooseADCredentials(ctx context.Context, o operationOptions, trySource func(context.Context, operationOptions) (*adSession, error),
+	tryPassword func(context.Context, operationOptions) (*adSession, error)) (*adSession, error) {
 	if err := mail.CheckOutput(nil, o.report, false); err != nil {
 		return nil, err
 	}
@@ -228,7 +227,7 @@ func chooseADCredentials(ctx context.Context, o options,
 	return session, nil
 }
 
-func reportCredentialFailures(o options, session *adSession, log io.Writer) error {
+func reportCredentialFailures(o operationOptions, session *adSession, log io.Writer) error {
 	log = mail.TrackOutput(log)
 	if err := mail.CheckOutput(log, o.report, false); err != nil {
 		return err
@@ -255,11 +254,11 @@ func stopCredentialFallback(ctx context.Context, err error) bool {
 		errors.Is(err, mail.ErrOutputFailed) || errors.Is(err, mail.ErrAcceptedOutput)
 }
 
-func openADSource(ctx context.Context, o options) (*adSession, error) {
+func openADSource(ctx context.Context, o operationOptions) (*adSession, error) {
 	return systemDependencies().openADSource(ctx, o)
 }
 
-func (deps commandDependencies) openADSource(ctx context.Context, o options) (*adSession, error) {
+func (deps commandDependencies) openADSource(ctx context.Context, o operationOptions) (*adSession, error) {
 	configDone := o.report.Measure("AD source configuration")
 	settings, err := adOptions(o)
 	configDone()
@@ -335,7 +334,7 @@ func selectADSession(ctx context.Context, candidates []string, try func(context.
 	return nil, errors.Join(append([]error{errors.New("no usable AD credential identity; all principal attempts failed")}, failures...)...)
 }
 
-func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) (_ *adSession, err error) {
+func openADAttempt(ctx context.Context, o operationOptions, settings adclient.ADOptions) (_ *adSession, err error) {
 	o.report.Line("INFO", "AD identity attempt", fmt.Sprintf("source=%q principal=%q realm=%q (empty principal means auto-selection)",
 		settings.Credentials.Source, settings.Credentials.Principal, settings.Credentials.Realm))
 	if err := mail.CheckOutput(nil, o.report, false); err != nil {

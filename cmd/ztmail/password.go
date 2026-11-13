@@ -38,11 +38,11 @@ func (t *consoleTerminal) Close() error {
 	return err
 }
 
-func openADPassword(ctx context.Context, o options) (*adSession, error) {
+func openADPassword(ctx context.Context, o operationOptions) (*adSession, error) {
 	return systemDependencies().openADPassword(ctx, o)
 }
 
-func (deps commandDependencies) openADPassword(ctx context.Context, o options) (*adSession, error) {
+func (deps commandDependencies) openADPassword(ctx context.Context, o operationOptions) (*adSession, error) {
 	if err := mail.CheckOutput(nil, o.report, false); err != nil {
 		return nil, err
 	}

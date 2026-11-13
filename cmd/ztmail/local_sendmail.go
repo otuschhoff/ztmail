@@ -18,7 +18,7 @@ import (
 
 const nativeFallbackEnvironment = "ZTMAIL_SENDMAIL_FALLBACK"
 
-func shouldFallbackToSendmail(ctx context.Context, o options, err error) bool {
+func shouldFallbackToSendmail(ctx context.Context, o operationOptions, err error) bool {
 	if runtime.GOOS != "linux" || (o.authMethod != "" && o.authMethod != "gssapi") || o.noSendmailFallback || o.testMode || o.testMail || o.setDefaultFromAD ||
 		os.Getenv(nativeFallbackEnvironment) == "1" ||
 		ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, mail.ErrDeliveryUncertain) ||
@@ -120,7 +120,7 @@ func submitLocalSendmail(ctx context.Context, executable, from string, recipient
 	return nil
 }
 
-func sendmailFallback(ctx context.Context, o options, recipients []string, message []byte, from string, cause error, log io.Writer) error {
+func sendmailFallback(ctx context.Context, o operationOptions, recipients []string, message []byte, from string, cause error, log io.Writer) error {
 	log = mail.TrackOutput(log)
 	if err := mail.CheckOutput(log, o.report, false); err != nil {
 		return mail.JoinOutput(cause, log, o.report, false)

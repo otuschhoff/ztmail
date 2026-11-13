@@ -16,14 +16,14 @@ func TestPasswordFallbackReport(t *testing.T) {
 			var output bytes.Buffer
 			report := newTestReport(&output, verbose)
 			report.Line("WARN", "Pre-existing warning", "retain before credential attempts")
-			o := options{auth: "auto", passwordPrompt: true, verbose: verbose, report: report}
+			o := operationOptions{commandFlags: commandFlags{auth: "auto", passwordPrompt: true, verbose: verbose}, report: report}
 			sourceErr, passwordErr := errors.New("expired default cache"), errors.New("password rejected")
 			session, err := chooseADCredentials(context.Background(), o,
-				func(_ context.Context, attempt options) (*adSession, error) {
+				func(_ context.Context, attempt operationOptions) (*adSession, error) {
 					attempt.report.Step("Acquire credential lease", sourceErr, "")
 					return nil, sourceErr
 				},
-				func(_ context.Context, attempt options) (*adSession, error) {
+				func(_ context.Context, attempt operationOptions) (*adSession, error) {
 					if !succeeds {
 						attempt.report.Step("Acquire credential lease", passwordErr, "")
 						return nil, passwordErr
@@ -65,7 +65,7 @@ func TestPasswordFallbackSendWarnings(t *testing.T) {
 	for _, source := range []kerberos.Source{kerberos.SourcePassword, kerberos.SourceKeytab} {
 		for _, verbose := range []bool{false, true} {
 			var output bytes.Buffer
-			reportCredentialFailures(options{passwordPrompt: true, verbose: verbose},
+			reportCredentialFailures(operationOptions{commandFlags: commandFlags{passwordPrompt: true, verbose: verbose}},
 				&adSession{identity: kerberos.Identity{Source: source}, failures: []error{errors.New("source failed")}}, &output)
 			wantWarning := source != kerberos.SourcePassword || verbose
 			if strings.Contains(output.String(), "source failed") != wantWarning {

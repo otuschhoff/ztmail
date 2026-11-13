@@ -9,9 +9,9 @@ import (
 )
 
 func TestMachinePrincipalRealmQualification(t *testing.T) {
-	credentials, err := credentialOptions(options{
+	credentials, err := credentialOptions(operationOptions{commandFlags: commandFlags{
 		auth: "keytab", keytab: "krb5.keytab", principal: "SNEU1-AL04$", realm: "EU.SOCIONEXT.COM",
-	})
+	}})
 	if err != nil || credentials.Principal != "SNEU1-AL04$@EU.SOCIONEXT.COM" {
 		t.Fatalf("principal=%q err=%v", credentials.Principal, err)
 	}
