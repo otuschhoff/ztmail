@@ -805,6 +805,211 @@ claimed behavior; update the finding instead of forcing the planned patch.
 choices are recorded in related documentation/tests. Performance tasks remain
 pending until measurements justify them.
 
+#### Phase 0 execution record
+
+**Scope authorized:** tests, synthetic benchmarks, and the existing review/build
+documentation only. No production behavior, API, dependency, version, release,
+or CI changes. The input baseline is review commit `293a326`; application source
+remains the reviewed `1d08ad5` baseline. The user requested Phase 0 execution and
+a detailed commit, not implementation of all open findings.
+
+**Approved policy decisions (2026-11-13):**
+
+| Decision | Approved later-phase contract | Verification needed when implemented |
+| --- | --- | --- |
+| Quoted mailboxes | Support valid quoted SMTP local-parts consistently; do not silently decode into invalid wire syntax | Exact `MAIL FROM`/`RCPT TO` for quoted spaces, escaped quotes, ordinary quoted text and dot cases, across explicit/header/canonical/saved sender paths; null-envelope semantics unchanged |
+| Message/header/recipient bounds | Preserve existing unrestricted behavior; document caller-side size/concurrency/admission bounds | No new implicit default cap or rejection; fixtures include representative large messages, folded headers and recipient lists |
+| Required output before acceptance | Return writer failures explicitly; do not proceed when a required notification fails | Inject failures before credentials/submission; assert no forbidden downstream effects |
+| Status output after confirmed acceptance | Preserve known acceptance and return a detectable no-retry output error; never replay or fall back | Acceptance remains distinguishable from uncertain DATA; retain writer cause via `errors.Is`; exact CLI exit/report behavior covered across GSSAPI, mTLS, testmail and native fallback |
+| Relay connection latency | In the deterministic stalled-first/reachable-second fixture, start the second attempt within one second, subject to the total deadline | Use a controlled admitted-address/dial fixture; choose the smallest sufficient cap or staggered policy in Phase 5; bound concurrency and close every loser before AUTH/DATA |
+| Deadline and cleanup | Keep operation/network deadlines and the separate bounded five-second cleanup allowance; exclude arbitrary blocking reader/writer/signer code | Assert applicable context identities and owned cleanup counts; document the allowance and exclusions rather than promising strict complete-call wall-clock latency |
+
+These decisions authorize later behavior corrections only within their selected
+task. They do not introduce a new public error type, schema version, SIGTERM
+policy, SMTP retry, or implementation-level dial algorithm during Phase 0.
+The one-second dialing target refers to starting an attempt in the fixture,
+not completing TLS/authentication or guaranteeing real-network delivery time.
+Do not label a known accepted message as having uncertain DATA solely because
+its status writer failed; preserve both outcome and no-retry classification.
+
+**Regression inventory:** the correction task must first reproduce its defect
+with a failing behavioral assertion, then fix it and return to green. Phase 0
+retains an inventory and successful fixture tests, not a permanently failing
+suite or tests that enshrine bugs as correct.
+
+| Finding / target | Regression input and observed gap | Desired assertion / later task |
+| --- | --- | --- |
+| R01, shared mailbox preparation | `"a b"@example.test` decodes into an unquoted local-part; explicit/header recipient and later sender reparse differ | Supported mailbox produces valid exact envelope syntax at every surface; invalid syntax rejects before AD/SMTP (P1-A) |
+| R02, header classification | `Bad Header: value`, `Bcc : hidden@example.test`, tabs/control/non-ASCII names | Reject invalid `ftext` before blind-header classification; valid mixed-case/folded Bcc and latest Resent behavior preserved (P1-B) |
+| R03, transport errors | Cancellation closes a live socket; greeting/AUTH/envelope/DATA errors can wrap I/O without the context sentinel | Canceled/expired greeting, implicit TLS, STARTTLS, GSSAPI/EXTERNAL, RCPT and DATA assert `errors.Is`; DATA uncertainty and acknowledged acceptance stay independent (P1-C) |
+| R05, runtime category | Exact operation `"SMTP EXTERNAL authentication"` with empty or SMTP protocol | Attribute only to SMTP auth, not handshake; TLS-only must create no AUTH interval; all output representations agree (P2-A) |
+| R06, retained inventory | Same endpoint receives address A then B (and reversed); IP-only successful replies A=10 ms, B=30 ms; caller later mutates input | Both replies count, average is 20 ms, retained evidence owns its inputs; current/retired metadata policy is explicit; failed/canceled/connection-only observations excluded (P2-B) |
+| R10, writer reentry | Writer `Write` calls `report.Value`; verbose `Line` or nonverbose `Finish` holds the same report mutex | Timed subprocess completes without deadlock; ordering and writer error identity remain; no dropped observer updates (P2-D) |
+| R16, constructor | Valid certificate DER with typed-nil ECDSA/RSA/custom pointer signer | Constructor returns configuration error, never panics; valid custom signers and borrowed-key isolation remain (P1-D) |
+| R17, CA loader | Invalid-base64 certificate block followed by a valid PEM certificate; valid/malformed/valid and malformed suffix variants | Reject every malformed/skipped block during configuration; valid whitespace-separated bundles succeed (P1-E) |
+| R04, outcome/output policy | Inject required pre-submission and post-acceptance writer failures in every submission mode | Preserve writer cause and known acceptance, prohibit replay/fallback, and align warning/API/example wording (P2-C/P2-E) |
+| R07, DNS validation order | `--dns-server=not-an-IP` with malformed message stdin | Fail numeric DNS syntax with zero stdin reads/prompts/AD/network; intentional order change isolated from structural extraction (P3-C) |
+
+The current CLI DNS-order probe used an isolated saved-sender directory,
+explicit `--domain`, disabled native fallback, and malformed input. It observed
+two stdin reads and a local message-structure error before DNS validation, with
+no submission. Its temporary test file was removed. This establishes order,
+not a current credential or network side effect.
+
+**Orchestration characterization backlog (R08):**
+
+| Boundary / baseline function coverage | Existing safety net to preserve | Additional characterization before Phase 3 extraction |
+| --- | --- | --- |
+| `run`, 51.7% | Flag conflicts, test-mode no-input behavior, saved sender precedence and SIGINT message input | Stage order and output failures on successful GSSAPI/mTLS/testmail and every failed stage; exactly one owner close; zero forbidden fallback/replay |
+| `openADAttempt`, 38.6% | Credential/source/principal helper behavior and protected LDAP/transport fixtures | Owner creation/acquire/identity/ticket/mail failure order, exact lease release/owner close counts, cleanup failures retained |
+| `runCertificateSubmission`, 32.1% | Sender/recipient rejection and explicit credential-flag conflicts; mTLS protocol/library cases | DNS-only owner lifetime and cleanup success/failure, no Kerberos/LDAP/native work, post-acceptance output policy |
+| `openADPassword`, 0.0% | Fake terminal read/write/cancellation and source-fallback selection tests | Full source configuration -> terminal -> prompt -> close/clear -> timed AD acquisition assembly, explicit principal pinning and exactly one terminal close |
+| `lookupDefaultSender`, 0.0% | Injected lookup management/storage tests and precedence | Real adapter assembly without live AD: bounded owner cleanup, host-no-mail rejection and no save on lookup/cleanup/output failure |
+| Native host/console adapters | Cross-compilation; real-CLI message SIGINT fixture on Linux | Opt-in native Windows/macOS host/config/terminal checks; do not claim platform coverage from a cross-build |
+
+Use per-command consumer seams only when a fixture needs them. Existing tests
+restore the global report-factory override with `t.Cleanup`; the parser override
+is subprocess-local. Do not parallelize environment/global-mutating tests or
+introduce a global hook merely to avoid constructing a local dependency.
+The additional characterization belongs to Phase 3's safety-net step, not
+untested production extraction during Phase 0.
+
+**Fresh defect reproduction results:** temporary, explicitly labeled probes
+were executed against the unchanged production source and removed afterward.
+They observed defects rather than asserting that these behaviors are correct.
+
+- R01: the explicit quoted recipient produced `a b@example.test` without an
+  error; the equivalent `To` header failed reparsing with `mail: no angle-addr`.
+  Explicit and canonical sender rewrite paths failed with
+  `sender rewrite requires a single bare mailbox`.
+- R02: `Bad Name`, `Bcc ` and `Bcc` followed by a tab were accepted and copied,
+  including their continuation, when explicit recipients were supplied.
+- R03: cancellation after a loopback connection opened but before its greeting
+  returned `SMTP greeting: ... use of closed network connection`.
+  `ctx.Err()` was `context.Canceled` and the error matched `net.ErrClosed`,
+  but neither context sentinel matched; zero security contexts were created.
+  The later regression must use the original socket error and context identity,
+  not a fabricated successful result.
+- R05: a 100 ms `"SMTP EXTERNAL authentication"` interval in a 200 ms snapshot
+  was counted as 100 ms handshake plus 100 ms other, not authentication.
+- R06: A/B inventory updates followed by 10/30 ms IP replies retained one reply
+  averaging 30 ms. Mutating the producer's retained address slice also removed
+  a previously matching 10 ms observation.
+- R10: verbose `Line` and nonverbose `Finish` with a writer callback to `Value`
+  each independently hit a two-second test-process watchdog. Stacks showed
+  `Value` waiting on the outer call's already held state mutex. Both subprocesses
+  terminated; no blocked probe goroutine remains in the ordinary suite.
+- R16: a typed-nil RSA signer passed interface/nil checks and panicked in
+  `Public`, reached from `cloneClientCertificate`. The probe explicitly
+  recovered the panic to record it; no production recovery was added.
+- R17: a `CERTIFICATE` PEM block containing `not-base64!`, followed by a valid
+  synthetic CA, returned one accepted root and no error.
+
+**Persistent offline benchmark fixtures:**
+
+| Files / benchmark family | Dimensions | Ordinary fixture verification |
+| --- | --- | --- |
+| [Message fixtures](../internal/mail/message_bench_test.go): `PrepareMessage`, `PrepareLocalMessage`, `ApplySender` | Each: 1 KiB/1 MiB/10 MiB complete messages; 1/2/4/8/16 KiB folded continuation payload; 1/10/100/1000 recipient dimensions (36 variants total) | Body preservation, blind-header stripping, recipients/deduplication, sender rewriting, immutable inputs; valid bounded-length body lines |
+| [TLS fixtures](../internal/mail/tls_credentials_bench_test.go): `PrepareAuthentication`, `ServerRoots` | Chain dimensions 0/1/2/4/8 crossed with bundle dimensions 0/1/8/32/128 (25); replacement pools 1/8/32/128 (4) | Deterministic synthetic Ed25519 keys/certificates, issuer signatures and distinct roots, selectors, input copy isolation |
+| [Runtime fixtures](../internal/mail/debug_report_bench_test.go): `RuntimeBreakdown` | 1000/2000/4000 spans with nested/overlapping categories, varying timeline lengths and untracked gaps (3) | Category precedence, accounted totals and prompt/untracked separation on synthetic timestamps |
+| [Formatting fixtures](../internal/mail/report_table_bench_test.go): `FormatDomain`, `ReportTableRender` | Plain, terminal-color, HTML crossed with 10/100/1000 fragments (18) | Shortening/render output, literal values and appropriate escaping/format behavior |
+| [Report fixtures](../internal/mail/testmail_bench_test.go): `TestMessage` | Small/medium/debug-rich: 10/100/1000 warning observations; rich case includes 1000 spans and one DC (3) | MIME structure, independently readable JSON schema v2, coherent pre-DATA snapshot and output content |
+
+All 89 variants use `b.Loop`, exclude fixture generation from timed work, check
+errors/output shapes, and report allocation. Message benchmarks report byte
+throughput. Sender rewrite uses pre-cleaned input rather than implicitly
+measuring a second preparation pass. Recipient dimensions also contain a
+deduplicated explicit argument and two blind recipients. Folded labels describe
+continuation payload, not total header bytes. Plain domain formatting is an
+identity path, not evidence that colored/HTML formatting has negligible cost.
+
+TLS fixtures deliberately use replacement roots to avoid native/system-store
+variability. They measure DER validation/cloning and root-pool preparation, not
+PEM loading, TLS handshakes, or AD operations. Synthetic key material must not
+be used as real credentials. `TestMessage` itself still creates current-time
+snapshots, random MIME boundaries/message IDs and preparation timings; fixture
+tests check structural/coherent output rather than byte identity. Preparation
+trace accumulation is reset outside timing so repeated iterations do not
+silently increase the measured workload.
+
+**Baseline and verification evidence (2026-11-13):**
+
+- Input baseline: `293a326`, Go 1.26.9, Linux amd64, QEMU Virtual CPU 2.5+,
+  16 exposed virtual CPUs, Linux `6.12.113+deb13-amd64`. Measurements ran with
+  `GOMAXPROCS=1`; this is a shared VM, not an isolated performance laboratory.
+- Initial JSON race/coverage run used shuffle seed `1794593178716668121` and
+  `-count=1`; 571 passing test/subtest events and three intentional/environment
+  skips. Coverage: library 93.2%, CLI 70.0%, internal mail 92.6%, weighted
+  combined 85.1%.
+- Fixture validation (`-run='^TestBenchmark' -count=1`) passed 60 test/subtest
+  events. Every benchmark variant passed a `-benchtime=1x` smoke run.
+- After both implementation/probe tasks finished, all 89 variants were measured
+  serially with `-run='^$' -bench='.' -benchmem -count=10 -benchtime=200ms`.
+  All 890 samples completed; the variant inventory exactly matched the smoke
+  run. No benchmark, profile, build, or race suite was run concurrently with
+  this capture by this task.
+- Final JSON race suite repeated the fixed seed twice (`-count=2`), passed
+  1262 test/subtest events, and retained the same coverage. The two intentional
+  subprocess helpers and privileged CLI DNS subtest each skipped once per
+  repetition. There were no failed test events or observed races.
+- Vet, native build, non-mutating formatting, release-note tests, Windows amd64
+  and Darwin arm64 CGO-free build/vet passed. Cross-builds are not native tests.
+  No live AD/KDC/LDAP/SMTP pilot was performed.
+- Raw JSON, coverage/function reports, fixture validation and 890 benchmark
+  samples were captured outside the checkout in the session evidence directory.
+  Reproduction files were removed; no generated test binary, profile, or
+  credential material is included in the commit.
+
+Representative medians below are **baseline observations, not improvement
+claims or CI thresholds**. Times are rounded; allocation can vary with
+production-generated report metadata. See the
+[build guide](build.md#refactoring-baseline-and-offline-benchmarks) for commands
+to recapture every variant and for longer controlled comparison/profile runs.
+
+| Target | Median time | Median B/op | Median allocs/op |
+| --- | --- | --- | --- |
+| Reader message, 1 KiB | 14.4 us | 15,712 | 117 |
+| Reader message, 1 MiB | 1.99 ms | 4,261,068 | 13,910 |
+| Reader message, 10 MiB | 27.4 ms | 55,089,418 | 138,088 |
+| Reader folded payload, 4 KiB | 83.6 us | 221,320 | 324 |
+| Reader folded payload, 8 KiB | 217 us | about 714,889 | 520 |
+| Reader folded payload, 16 KiB | 635 us | 2,552,464 | 909 |
+| Runtime, 1000 spans | 15.3 ms | 289,338 | 461 |
+| Runtime, 2000 spans | 58.6 ms | 715,146 | 865 |
+| Runtime, 4000 spans | 230 ms | 1,509,488 | 1671 |
+| TLS preparation, chain=2/bundle=8 | 73.0 us | 34,632 | 366 |
+| Replacement root pool, 32 CAs | 264 us | 102,848 | 1145 |
+| Small report, 10 observations | 1.34 ms | about 495,556 | 3746 |
+| Medium report, 100 observations | 7.88 ms | 3,489,444 | 25,661 |
+| Rich report, 1000 observations/spans | 213 ms | 73,229,676 | 550,541 |
+
+Runtime span doubling took about 3.83x and 3.92x in this bounded capture,
+consistent with R11's structural quadratic concern. Folded-header allocations
+also grow superlinearly. This prioritizes later controlled profiling, not an
+optimization in Phase 0 or certification of normal-send throughput/peak memory.
+There is no before/after candidate or `benchstat` significance claim, and no
+tool/dependency installation was needed. Performance tasks remain pending
+until representative materiality and functional-equivalence gates are met.
+
+**Phase 0 completion re-evaluation:**
+
+| Exit criterion | Evidence / disposition |
+| --- | --- |
+| Reproducible current baseline and explicit skips | Fixed-seed before/after JSON, function coverage, build/vet/format/release checks; outside-checkout evidence |
+| Regression inventory and local reproductions | R01/R02/R03/R05/R06/R10/R16/R17 reproduced; R04/R07/R08 boundary cases and characterization backlog recorded; temporary probes removed |
+| Product decisions confirmed | Quoted-mailbox support, unrestricted resource behavior, outcome-aware output errors, fixture dial target, and deadline/cleanup policy explicitly approved |
+| All requested synthetic benchmark families present | Five fixture files, nine families, 89 variants; ordinary fixture assertions plus complete smoke and ten-sample serial capture |
+| No premature production fixes or optimizations | No production source/API/dependency/CI/version changes; no red regression suite, silent policy assumptions, throughput claims or blanket linter additions |
+| Persistent execution guidance | Approved decisions, inventory, dimensions, baseline results and recapture commands committed in existing documentation with the fixtures |
+
+No Phase 0 exit criterion remains unresolved. R01-R17 remain **open**, **pending
+their selected correction**, or **pending measurement/accepted resource policy**
+as described above; completing this baseline phase does not close those
+production findings. In particular, R10/R16 are still correctness-first later
+tasks, not optional optimizations. The next task may be a selected, independently
+approved Phase 1 correction or Phase 2 diagnostic correction; do not infer
+authorization to run the remaining phases from the Phase 0 commit.
+
 ### Phase 1: correct message and cancellation contracts
 
 **Dependencies:** baseline and task-specific regressions. Only P1-A needs the

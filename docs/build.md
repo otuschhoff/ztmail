@@ -74,6 +74,85 @@ Tests do not replace an end-to-end check against your AD KDC, protected LDAP
 service, and GSSAPI-enabled SMTP gateway.
 Windows SSPI must also be exercised on a domain-joined Windows machine.
 
+### Refactoring baseline and offline benchmarks
+
+The [refactoring review](refactoring-review.md#phase-0-establish-a-reproducible-baseline-and-decisions)
+records the Phase 0 scope, approved later-phase policies, regression inventory,
+and acceptance gates. Phase 0 adds test/measurement fixtures, not production
+corrections. Do not treat an open finding as fixed because its reproduction or
+benchmark passes.
+
+Capture evidence outside the checkout. For example, create an empty directory
+for this run and supply its absolute path as `EVIDENCE_DIR`:
+
+```sh
+: "${EVIDENCE_DIR:?Set an existing absolute evidence directory outside the checkout}"
+go version > "$EVIDENCE_DIR/toolchain.txt"
+go env GOOS GOARCH CGO_ENABLED >> "$EVIDENCE_DIR/toolchain.txt"
+go test -json -race -shuffle=1794593178716668121 -count=1 \
+  -coverprofile="$EVIDENCE_DIR/coverage.out" ./... > "$EVIDENCE_DIR/tests.json"
+go tool cover -func="$EVIDENCE_DIR/coverage.out" > "$EVIDENCE_DIR/functions.txt"
+go vet ./...
+git ls-files '*.go' | xargs gofmt -l
+bash .github/scripts/release-notes-test.sh
+```
+
+Check each command's exit status before continuing. `gofmt -l` is non-mutating;
+any output needs review. Retain JSON skip events and the shuffle seed. Inspect
+the actual touched functions/branches, not only package coverage. The ordinary
+suite runs offline synthetic protocol fixtures; its privileged real-CLI DNS
+subtest can skip when isolated port 53 is unavailable. Native platform and live
+AD checks remain separate.
+
+Discover and exercise every offline benchmark variant once:
+
+```sh
+go test -list='^Benchmark' ./internal/mail
+go test -run='^TestBenchmark' -count=1 ./internal/mail
+go test -run='^$' -bench='.' -benchmem -benchtime=1x ./internal/mail
+```
+
+The benchmarks cover complete-message preparation and sender rewriting, folded
+headers/recipients, immutable TLS material preparation, runtime aggregation,
+domain formatting, and report/MIME assembly. They use synthetic messages,
+certificates, and observations, not credentials, AD, DNS, or SMTP connections.
+Their ordinary fixture tests check successful output and input isolation.
+They are not throughput certification or regression tests for the known defects.
+
+Run measurements serially, after builds, tests, and other benchmark work have
+finished. A bounded baseline capture on a shared machine can use:
+
+```sh
+GOMAXPROCS=1 go test -run='^$' -bench='.' -benchmem -count=10 \
+  -benchtime=200ms ./internal/mail > "$EVIDENCE_DIR/benchmarks.txt"
+```
+
+Record CPU/VM identity, toolchain, commit, `GOMAXPROCS`, fixture sizes, and
+measurement flags with the raw output. Shared-host noise limits interpretation.
+For an optimization decision, rerun the affected targets on the same otherwise
+idle host/toolchain for at least `-benchtime=1s -count=10` and compare distributions
+with `benchstat`; the bounded capture alone does not establish materiality.
+Do not compare race-enabled results to normal binaries or count fixture setup
+as operation cost. `B/op` measures allocation, not retained heap or peak RSS.
+
+Profiles can be collected for a selected target without leaving a test binary
+in the checkout:
+
+```sh
+go test -run='^$' -bench='<target>' -benchtime=1s \
+  -cpuprofile="$EVIDENCE_DIR/cpu.pprof" \
+  -memprofile="$EVIDENCE_DIR/heap.pprof" \
+  -o "$EVIDENCE_DIR/mail.test" ./internal/mail
+go tool pprof -top "$EVIDENCE_DIR/cpu.pprof"
+go tool pprof -top -alloc_space "$EVIDENCE_DIR/heap.pprof"
+go tool pprof -top -inuse_space "$EVIDENCE_DIR/heap.pprof"
+```
+
+Only use profiles of the relevant operation as evidence. Keep raw profiles and
+coverage local; do not upload private build/source information to new services.
+Measure network latency, contention, concurrent retained memory, and native
+TLS separately before claiming operational bounds.
+
 ## GitHub Actions
 
 The build workflow runs on main pushes, `v*` tags, pull requests, and manual
