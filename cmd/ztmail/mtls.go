@@ -7,7 +7,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/otuschhoff/adbind/ad/adclient"
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/ztmail/internal/mail"
 	"github.com/spf13/cobra"
@@ -101,6 +100,10 @@ func loadAuthenticationOptions(o options) (options, error) {
 }
 
 func runCertificateSubmission(ctx context.Context, o options, recipients []string, message []byte, log io.Writer) (err error) {
+	return systemDependencies().runCertificateSubmission(ctx, o, recipients, message, log)
+}
+
+func (deps commandDependencies) runCertificateSubmission(ctx context.Context, o options, recipients []string, message []byte, log io.Writer) (err error) {
 	log = mail.TrackOutput(log)
 	accepted := false
 	defer func() {
@@ -133,7 +136,7 @@ func runCertificateSubmission(ctx context.Context, o options, recipients []strin
 	if err != nil {
 		return err
 	}
-	owner, err := adclient.NewAD(settings)
+	owner, err := deps.newDNSOwner(settings)
 	if err != nil {
 		return fmt.Errorf("create DNS-only AD owner: %w", err)
 	}
@@ -146,7 +149,7 @@ func runCertificateSubmission(ctx context.Context, o options, recipients []strin
 			}
 		}
 	}()
-	err = deliver(ctx, o, recipients, message, mail.ADResolver{Client: owner}, log)
+	err = deps.deliver(ctx, o, recipients, message, owner, log)
 	accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
 	return err
 }

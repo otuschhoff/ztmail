@@ -70,6 +70,10 @@ func normalizeArgs(args []string) []string {
 }
 
 func newCommand() *cobra.Command {
+	return newCommandWithDependencies(systemDependencies())
+}
+
+func newCommandWithDependencies(deps commandDependencies) *cobra.Command {
 	o := options{}
 	var showVersion bool
 	cmd := &cobra.Command{
@@ -102,7 +106,7 @@ func newCommand() *cobra.Command {
 						return err
 					}
 				}
-				return manageDefaultSender(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr(), lookupDefaultSender)
+				return manageDefaultSender(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr(), deps.lookupDefaultSender)
 			}
 			if err := validateOptions(o); err != nil {
 				return err
@@ -110,7 +114,7 @@ func newCommand() *cobra.Command {
 			if o.testMode && len(recipients) != 0 {
 				return errors.New("--test does not accept recipients; no email is sent")
 			}
-			return run(cmd.Context(), o, recipients, cmd.InOrStdin(), cmd.ErrOrStderr())
+			return deps.run(cmd.Context(), o, recipients, cmd.InOrStdin(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
@@ -225,6 +229,10 @@ func validateOptions(o options) error {
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+	return systemDependencies().run(ctx, o, recipients, in, log)
+}
+
+func (deps commandDependencies) run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
 	log = mail.TrackOutput(log)
 	accepted := false
 	defer func() {
@@ -265,7 +273,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		return outputErr
 	}
 	hostDone := o.report.Measure("Host/domain discovery")
-	host, domain, err := discoverHost(ctx, o.domain)
+	host, domain, err := deps.discoverHost(ctx, o.domain)
 	hostDone()
 	o.report.Value("Hostname", host)
 	o.report.Value("AD domain", domain)
@@ -279,7 +287,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			if readErr != nil {
 				return readErr
 			}
-			return sendmailFallback(parentCtx, o, localRecipients, message, o.from, err, log)
+			return deps.fallback(parentCtx, o, localRecipients, message, o.from, err, log)
 		}
 		return err
 	}
@@ -355,12 +363,12 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		ctx = work
 	}
 	if o.authMethod != "gssapi" {
-		err = runCertificateSubmission(ctx, o, recipients, message, log)
+		err = deps.runCertificateSubmission(ctx, o, recipients, message, log)
 		accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
 		return err
 	}
 	adDone := o.report.Measure("AD identity and canonical mail")
-	session, err := openAD(ctx, o)
+	session, err := deps.openAD(ctx, o)
 	adDone()
 	o.report.Step("AD identity selection", err, "credential source and identity selected")
 	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
@@ -371,7 +379,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	}
 	if err != nil {
 		if shouldFallbackToSendmail(parentCtx, o, err) {
-			return sendmailFallback(parentCtx, o, recipients, message, configuredFrom, err, log)
+			return deps.fallback(parentCtx, o, recipients, message, configuredFrom, err, log)
 		}
 		return fmt.Errorf("AD identity selection: %w", err)
 	}
@@ -439,7 +447,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
 		return outputErr
 	}
-	if err := deliver(ctx, o, recipients, message, session, log); err != nil {
+	if err := deps.deliver(ctx, o, recipients, message, session, log); err != nil {
 		if shouldFallbackToSendmail(parentCtx, o, err) {
 			sessionClosed = true
 			if closeErr := session.Close(); closeErr != nil {
@@ -449,7 +457,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			if configuredFrom == "<>" {
 				from = "<>"
 			}
-			return sendmailFallback(parentCtx, o, recipients, message, from, err, log)
+			return deps.fallback(parentCtx, o, recipients, message, from, err, log)
 		}
 		return err
 	}

@@ -187,7 +187,7 @@ func TestDNSFailureDiagnosticsAreSupplementary(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	session := &adSession{client: client, report: report}
+	session := &adSession{client: client, report: report, closeOwner: client.Close}
 	for _, failure := range []error{nil, errors.New("LDAP failure without DNS receipt")} {
 		session.diagnoseDNS(context.Background(), failure)
 	}

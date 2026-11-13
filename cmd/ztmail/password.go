@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"strings"
 
 	"github.com/otuschhoff/adbind/ad/kerberos"
@@ -40,6 +39,10 @@ func (t *consoleTerminal) Close() error {
 }
 
 func openADPassword(ctx context.Context, o options) (*adSession, error) {
+	return systemDependencies().openADPassword(ctx, o)
+}
+
+func (deps commandDependencies) openADPassword(ctx context.Context, o options) (*adSession, error) {
 	if err := mail.CheckOutput(nil, o.report, false); err != nil {
 		return nil, err
 	}
@@ -54,7 +57,7 @@ func openADPassword(ctx context.Context, o options) (*adSession, error) {
 	guess := explicit
 	if guess == "" {
 		userDone := o.report.Measure("Local user lookup")
-		current, err := user.Current()
+		current, err := deps.currentUser()
 		userDone()
 		if err != nil {
 			return nil, fmt.Errorf("cannot guess the current user principal; specify --principal: %w", err)
@@ -65,7 +68,7 @@ func openADPassword(ctx context.Context, o options) (*adSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	terminal, err := openPasswordTerminal()
+	terminal, err := deps.openTerminal()
 	if err != nil {
 		return nil, fmt.Errorf("password fallback requires a controlling terminal; message stdin is never used for credentials: %w", err)
 	}
@@ -80,7 +83,7 @@ func openADPassword(ctx context.Context, o options) (*adSession, error) {
 		Principal: principal, Realm: o.realm, Password: string(password), Hooks: settings.Credentials.Hooks}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	return openADAttempt(ctx, o, settings)
+	return deps.attemptAD(ctx, o, settings)
 }
 
 func guessedPrincipal(username, realm string) string {

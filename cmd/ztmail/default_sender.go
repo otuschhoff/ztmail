@@ -166,7 +166,11 @@ func manageDefaultSender(ctx context.Context, o options, out, log io.Writer,
 }
 
 func lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string, error) {
-	_, domain, err := discoverHost(ctx, o.domain)
+	return systemDependencies().lookupDefaultSender(ctx, o, log)
+}
+
+func (deps commandDependencies) lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string, error) {
+	_, domain, err := deps.discoverHost(ctx, o.domain)
 	if err != nil {
 		return "", err
 	}
@@ -177,7 +181,7 @@ func lookupDefaultSender(ctx context.Context, o options, log io.Writer) (string,
 	if strings.ContainsAny(o.realm, "\r\n\x00 /@") {
 		return "", errors.New("invalid Kerberos realm")
 	}
-	session, err := openAD(ctx, o)
+	session, err := deps.openAD(ctx, o)
 	if err != nil {
 		return "", err
 	}

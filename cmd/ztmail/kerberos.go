@@ -29,6 +29,8 @@ type adSession struct {
 	hostWithoutMail bool
 	failures        []error
 	report          *testReport
+	releaseLease    func()
+	closeOwner      func(context.Context) error
 }
 
 var errADCleanup = errors.New("AD credential cleanup failed")
@@ -166,14 +168,18 @@ func adOptionsForCredentials(o options, credentials kerberos.Options) (adclient.
 }
 
 func openAD(ctx context.Context, o options) (*adSession, error) {
+	return systemDependencies().openAD(ctx, o)
+}
+
+func (deps commandDependencies) openAD(ctx context.Context, o options) (*adSession, error) {
 	session, err := chooseADCredentials(ctx, o, func(ctx context.Context, attempt options) (*adSession, error) {
 		if !o.passwordPrompt {
-			return openADSource(ctx, attempt)
+			return deps.openADSource(ctx, attempt)
 		}
 		ctx, cancel := context.WithTimeout(ctx, o.timeout)
 		defer cancel()
-		return openADSource(ctx, attempt)
-	}, openADPassword)
+		return deps.openADSource(ctx, attempt)
+	}, deps.openADPassword)
 	return session, summarizeADFailure(o, err)
 }
 
@@ -260,6 +266,10 @@ func stopCredentialFallback(ctx context.Context, err error) bool {
 }
 
 func openADSource(ctx context.Context, o options) (*adSession, error) {
+	return systemDependencies().openADSource(ctx, o)
+}
+
+func (deps commandDependencies) openADSource(ctx context.Context, o options) (*adSession, error) {
 	configDone := o.report.Measure("AD source configuration")
 	settings, err := adOptions(o)
 	configDone()
@@ -290,7 +300,7 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 	return selectADSession(ctx, candidates, func(ctx context.Context, principal string) (*adSession, error) {
 		attempt := settings
 		attempt.Credentials.Principal = principal
-		return openADAttempt(ctx, o, attempt)
+		return deps.attemptAD(ctx, o, attempt)
 	})
 }
 
@@ -345,6 +355,9 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	client, err := adclient.NewAD(settings)
 	setupDone()
 	session := &adSession{client: client, report: o.report}
+	if client != nil {
+		session.closeOwner = client.Close
+	}
 	defer func() {
 		if err != nil {
 			err = mail.JoinOutput(err, nil, o.report, false)
@@ -367,6 +380,9 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
 	}
 	session.lease, err = client.Credentials().Acquire(ctx)
+	if session.lease != nil {
+		session.releaseLease = session.lease.Release
+	}
 	o.report.Step("Acquire credential lease", err, "credentials acquired")
 	err = mail.JoinOutput(err, nil, o.report, false)
 	if err != nil {
@@ -443,10 +459,10 @@ func reportCredentialSource(report *testReport, source kerberos.Source, credenti
 func (s *adSession) Close() error {
 	done := s.report.Measure("AD credential cleanup")
 	defer done()
-	if s.lease != nil {
-		s.lease.Release()
+	if s.releaseLease != nil {
+		s.releaseLease()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return s.client.Close(ctx)
+	return s.closeOwner(ctx)
 }
