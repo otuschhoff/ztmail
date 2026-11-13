@@ -50,6 +50,11 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
         Relay:    "mailgw.corp.example.com", // optional: this is the default
         Hostname: "worker.corp.example.com", // optional EHLO override
     })
+    for _, warning := range result.Warnings {
+        // Policy/authentication warnings can precede acceptance or an error.
+        // result.Accepted, not a warning, proves DATA acceptance.
+        fmt.Printf("Submission warning: %v\n", warning)
+    }
     if err != nil {
         return err
     }
@@ -63,11 +68,6 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
             return fmt.Errorf("check relay acceptance before retrying: %w", err)
         }
         return err
-    }
-    for _, warning := range result.Warnings {
-        // Includes TLS-policy warnings and post-acceptance cleanup warnings.
-        // result.Accepted, not the presence of a warning, proves DATA acceptance.
-        fmt.Printf("Submission warning: %v\n", warning)
     }
     return nil
 }
@@ -83,8 +83,9 @@ func sendNotification(ctx context.Context, appAD *adclient.Client) error {
 - The default relay is `mailgw.<Domain>`, port 25, EHLO `localhost`, and SPN
   `smtp/<Relay>` (GSSAPI only). TLS defaults to verified STARTTLS (`TLSRequired`). Use
   `TLSImplicit` with an explicit appropriate port, or deliberately opt out with
-  `TLSOff`. `Timeout` defaults to 60 seconds for the complete operation; caller
-  context cancellation/deadlines also apply.
+  `TLSOff`. `Timeout` defaults to 60 seconds for context-aware operation/network
+  work; caller cancellation/deadlines also apply. This is not a strict
+  complete-call wall-clock bound.
 - Each GSSAPI `Send` borrows a separate credential lease, uses AD DNS for relay
   resolution, and creates a fresh SMTP connection and TLS-bound GSSAPI context.
   The lease is released on every outcome and the security context is closed.
@@ -143,7 +144,9 @@ recipients; the library never uses the sender as a recipient. A null envelope
 with existing sender headers and known recipients retains its existing behavior.
 
 `Result` contains the acquired `Identity`, selected envelope `From`, recipients,
-`Accepted`, and post-acceptance `Warnings`. A nil error with `Accepted: true`
+`Accepted`, and `Warnings`. TLS-policy/authentication warnings can be present
+before acceptance, during a no-email test or alongside a failed operation;
+inspect them even when an error is returned. A nil error with `Accepted: true`
 means the relay confirmed DATA acceptance, not ultimate mailbox delivery.
 QUIT/context-cleanup failures after acceptance are warnings, not send failures.
 Before acceptance, errors are returned normally. An error matching
@@ -158,8 +161,26 @@ cancellation after known acceptance remains a post-acceptance warning.
 `mailer.Test(ctx, reportWriter)` checks canonical mail and SMTP authentication
 without sending email; it always leaves `Accepted` false. It returns cleanup
 and report-writing failures as errors. It writes only to the supplied writer.
+The concise report buffers checks until final output; a final writer failure
+does not imply that earlier authentication was skipped. Writer errors retain
+their cause alongside any independent operation/cleanup failure.
 For AD exchange-level endpoint diagnostics, configure observation hooks when
 constructing your application's AD client; borrowing a client does not replace
 its hooks. For per-question DNS summaries, set `adclient.ADOptions.DNSSummary`
 when constructing that owner. The callback remains application-owned; `Test`
 does not install or replace it. Normal `Send` does not write to stdout/stderr.
+
+## Operation deadlines and blocking code
+
+The operation context bounds context-aware AD/network work and closes a live
+SMTP connection on cancellation/deadline. Synchronous message preparation and
+report rendering are not preempted by a timer. An arbitrary writer's `Write`
+or a borrowed signer's `Sign` can block beyond that deadline; ztmail waits for
+the call rather than abandoning a goroutine and its resources.
+
+LDAP racing views use a separate, cancellation-detached five-second cleanup
+context and are awaited before returning. Synchronous lease/security-context
+cleanup must also finish; a context deadline cannot interrupt arbitrary Go
+methods. These allowances/exclusions mean `Timeout` is not a strict total
+wall-clock limit. Applications requiring one need context-aware, bounded I/O
+and signer/provider implementations plus explicit resource ownership.

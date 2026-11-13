@@ -228,6 +228,11 @@ performs wire line-ending normalization and dot-stuffing.
 Before acceptance, failures remain errors. Loss of acknowledgement during
 DATA can leave delivery uncertain; no automatic SMTP replay is attempted.
 Native process failure after startup is also conservatively uncertain.
+Required output failure before acceptance aborts further submission stages.
+After positive DATA acknowledgement (or known native exit zero), failed
+status/warning output is a distinct internal no-retry outcome, not uncertainty
+introduced solely by output. Library warning presence is independent of
+acceptance; only the separate `Accepted` result proves confirmed DATA.
 Operational details are in
 [transport and failure behavior](advanced-usage.md#transport-and-failure-behavior).
 
@@ -249,3 +254,24 @@ once, whereas detailed step durations must not be summed. Crypto estimates
 describe observable classical key strength, not certification or a complete
 authentication-security assessment. See the [diagnostics guide](diagnostics.md)
 for exact reporting, threshold and JSON semantics.
+
+Inventory callbacks retain independently owned endpoint/address slices in all
+three advertised/current/retired groups. Raw events preserve their original
+generation and health metadata; aggregation unions historical addresses for
+response matching, not for claims about current availability. Endpoint history
+and DNS-derived matching must not mutate retained events through shared slices.
+
+Report-state mutation and output ordering are separate. A single synchronous
+FIFO drainer writes outside the state mutex; concurrent/reentrant `Line` calls
+enqueue in recorded order. Writer callbacks may update state or enqueue finite
+`Line` calls, but must not call `OutputError`, `Finish` or `TestMessage`: those
+methods wait for output completion. The first writer error (including a
+nil-error short write) is retained, no further writes are attempted, and
+operational error causes survive finalization. There is no background output
+worker to abandon on cancellation.
+
+Rendering and testmail preparation still hold the state mutex while reading
+report state; the measured snapshot-lock optimization remains Phase 4 work.
+Operation deadlines cannot preempt arbitrary writers/signers, synchronous CPU
+work or arbitrary synchronous cleanup methods. Owned AD/racing cleanup gets
+its own detached five-second context and is awaited, not abandoned.

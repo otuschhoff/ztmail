@@ -22,6 +22,7 @@ import (
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
 	adldap "github.com/otuschhoff/adbind/ad/ldap"
+	"github.com/otuschhoff/ztmail/internal/mail"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -53,7 +54,8 @@ func TestSummarizeADFailure(t *testing.T) {
 	}
 	o.verbose = false
 	for _, unchanged := range []error{nil, errors.New("password rejected"), dns.ErrUnavailable,
-		errors.Join(cause, errADCleanup), errors.Join(cause, context.Canceled)} {
+		errors.Join(cause, errADCleanup), errors.Join(cause, context.Canceled),
+		errors.Join(cause, mail.ErrOutputFailed), errors.Join(cause, mail.ErrAcceptedOutput)} {
 		if got := summarizeADFailure(o, unchanged); got != unchanged {
 			t.Fatalf("unrelated or safety-critical error was summarized: %v", got)
 		}

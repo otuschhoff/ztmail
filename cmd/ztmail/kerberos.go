@@ -51,7 +51,8 @@ func (e *adDNSFailure) Error() string {
 func (e *adDNSFailure) Unwrap() error { return e.cause }
 
 func summarizeADFailure(o options, err error) error {
-	if o.verbose || errors.Is(err, errADCleanup) || errors.Is(err, context.Canceled) {
+	if o.verbose || errors.Is(err, errADCleanup) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, mail.ErrOutputFailed) || errors.Is(err, mail.ErrAcceptedOutput) {
 		return err
 	}
 	var failure *dns.Failure
@@ -179,6 +180,9 @@ func openAD(ctx context.Context, o options) (*adSession, error) {
 func chooseADCredentials(ctx context.Context, o options,
 	trySource func(context.Context, options) (*adSession, error),
 	tryPassword func(context.Context, options) (*adSession, error)) (*adSession, error) {
+	if err := mail.CheckOutput(nil, o.report, false); err != nil {
+		return nil, err
+	}
 	if !o.passwordPrompt {
 		return trySource(ctx, o)
 	}
@@ -209,6 +213,7 @@ func chooseADCredentials(ctx context.Context, o options,
 			session.failures = append(failures, session.failures...)
 			return session, nil
 		}
+		err = mail.JoinOutput(err, nil, o.report, false)
 		failures = append(failures, fmt.Errorf("%s: %w", source, err))
 		if stopCredentialFallback(ctx, err) {
 			return nil, errors.Join(failures...)
@@ -228,6 +233,10 @@ func chooseADCredentials(ctx context.Context, o options,
 }
 
 func reportCredentialFailures(o options, session *adSession, log io.Writer) error {
+	log = mail.TrackOutput(log)
+	if err := mail.CheckOutput(log, o.report, false); err != nil {
+		return err
+	}
 	if o.passwordPrompt && session.identity.Source == kerberos.SourcePassword && !o.verbose {
 		return nil
 	}
@@ -235,9 +244,10 @@ func reportCredentialFailures(o options, session *adSession, log io.Writer) erro
 		if o.report != nil {
 			o.report.Line("WARN", "Skipped credential identity", failure.Error())
 		} else {
-			if _, err := fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure); err != nil {
-				return fmt.Errorf("report skipped credential identity: %w", err)
-			}
+			fmt.Fprintf(log, "Warning: skipped unusable AD identity: %v\n", failure)
+		}
+		if err := mail.CheckOutput(log, o.report, false); err != nil {
+			return fmt.Errorf("report skipped credential identity: %w", err)
 		}
 	}
 	return nil
@@ -245,7 +255,8 @@ func reportCredentialFailures(o options, session *adSession, log io.Writer) erro
 
 func stopCredentialFallback(ctx context.Context, err error) bool {
 	return ctx.Err() != nil || errors.Is(err, context.Canceled) ||
-		errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) || errors.Is(err, errADCleanup)
+		errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) || errors.Is(err, errADCleanup) ||
+		errors.Is(err, mail.ErrOutputFailed) || errors.Is(err, mail.ErrAcceptedOutput)
 }
 
 func openADSource(ctx context.Context, o options) (*adSession, error) {
@@ -253,6 +264,7 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 	settings, err := adOptions(o)
 	configDone()
 	o.report.Step("AD source configuration", err, fmt.Sprintf("source=%q principal=%q", settings.Credentials.Source, settings.Credentials.Principal))
+	err = mail.JoinOutput(err, nil, o.report, false)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
 	}
@@ -262,6 +274,7 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 		entries, err := keytab.Inspect(settings.Credentials.Keytab)
 		inspectDone()
 		o.report.Step("Keytab inspection", err, fmt.Sprintf("%d entries", len(entries)))
+		err = mail.JoinOutput(err, nil, o.report, false)
 		if err != nil {
 			return nil, fmt.Errorf("inspect keytab: %w: %w", errADCredentialsUnavailable, err)
 		}
@@ -269,6 +282,7 @@ func openADSource(ctx context.Context, o options) (*adSession, error) {
 		candidates, err = principalCandidates(entries, o.realm)
 		principalDone()
 		o.report.Step("Keytab principal selection", err, fmt.Sprintf("candidates=%q", candidates))
+		err = mail.JoinOutput(err, nil, o.report, false)
 		if err != nil {
 			return nil, fmt.Errorf("keytab principal selection: %w: %w", errADCredentialsUnavailable, err)
 		}
@@ -324,26 +338,37 @@ func selectADSession(ctx context.Context, candidates []string, try func(context.
 func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) (_ *adSession, err error) {
 	o.report.Line("INFO", "AD identity attempt", fmt.Sprintf("source=%q principal=%q realm=%q (empty principal means auto-selection)",
 		settings.Credentials.Source, settings.Credentials.Principal, settings.Credentials.Realm))
+	if err := mail.CheckOutput(nil, o.report, false); err != nil {
+		return nil, err
+	}
 	setupDone := o.report.Measure("AD client setup")
 	client, err := adclient.NewAD(settings)
 	setupDone()
-	o.report.Step("AD client configuration", err, "SDK DNS, KDC discovery and verified LDAP TLS configured")
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
-	}
 	session := &adSession{client: client, report: o.report}
 	defer func() {
 		if err != nil {
-			session.diagnoseDNS(ctx, err)
-			closeErr := session.Close()
-			o.report.Step("Failed AD attempt cleanup", closeErr, "credential owner closed")
-			if closeErr != nil {
-				err = errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
+			err = mail.JoinOutput(err, nil, o.report, false)
+			if client != nil {
+				if !errors.Is(err, mail.ErrOutputFailed) {
+					session.diagnoseDNS(ctx, err)
+				}
+				closeErr := session.Close()
+				o.report.Step("Failed AD attempt cleanup", closeErr, "credential owner closed")
+				if closeErr != nil {
+					err = errors.Join(err, fmt.Errorf("%w: %w", errADCleanup, closeErr))
+				}
 			}
+			err = mail.JoinOutput(err, nil, o.report, false)
 		}
 	}()
+	o.report.Step("AD client configuration", err, "SDK DNS, KDC discovery and verified LDAP TLS configured")
+	err = mail.JoinOutput(err, nil, o.report, false)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errADNonCredentialFailure, err)
+	}
 	session.lease, err = client.Credentials().Acquire(ctx)
 	o.report.Step("Acquire credential lease", err, "credentials acquired")
+	err = mail.JoinOutput(err, nil, o.report, false)
 	if err != nil {
 		return nil, fmt.Errorf("acquire AD credentials: %w: %w", errADCredentialsUnavailable, err)
 	}
@@ -352,12 +377,14 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 	reportCredentialSource(o.report, session.identity.Source, settings.Credentials)
 	o.report.Step("Credential identity", err, fmt.Sprintf("principal=%q realm=%q krb/gssapi source=%q",
 		session.identity.Principal, session.identity.Realm, session.identity.Source))
+	err = mail.JoinOutput(err, nil, o.report, false)
 	if err != nil {
 		return nil, fmt.Errorf("credential identity: %w: %w", errADNonCredentialFailure, err)
 	}
 	if !o.setDefaultFromAD {
 		_, err = session.lease.ServiceTicket(ctx, o.spn)
 		o.report.Step("SMTP service ticket", err, fmt.Sprintf("SPN=%q", o.spn))
+		err = mail.JoinOutput(err, nil, o.report, false)
 		if err != nil {
 			return nil, fmt.Errorf("get SMTP service ticket: %w: %w", errADNonCredentialFailure, err)
 		}
@@ -375,11 +402,15 @@ func openADAttempt(ctx context.Context, o options, settings adclient.ADOptions) 
 		} else {
 			o.report.Step("Canonical AD mail lookup", err, fmt.Sprintf("principal=%q mail=%q", session.identity.Principal, session.mail))
 		}
+		err = mail.JoinOutput(err, nil, o.report, false)
 		if err != nil {
 			return nil, fmt.Errorf("canonical AD mail for %s (a sender override does not supply an authenticated own-recipient address): %w: %w", session.identity.Principal, errADNonCredentialFailure, err)
 		}
 	} else {
 		o.report.Line("SKIP", "Canonical AD mail lookup", "configured sender override; LDAP lookup is not required by this authentication path")
+	}
+	if err := mail.CheckOutput(nil, o.report, false); err != nil {
+		return nil, err
 	}
 	return session, nil
 }

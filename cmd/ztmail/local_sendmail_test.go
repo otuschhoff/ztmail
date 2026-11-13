@@ -276,8 +276,40 @@ func TestForbiddenFallbackNeverStartsFakeSendmail(t *testing.T) {
 		if err := sendmailFallback(context.Background(), tc.o, []string{"root"}, nil, "", tc.cause, io.Discard); err == nil {
 			t.Fatalf("forbidden fallback succeeded: %v", tc.cause)
 		}
+
 	}
 	if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("forbidden fallback started native executable: %v", err)
+	}
+}
+
+type shortOutputWriter struct{}
+
+func (shortOutputWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestFallbackShortOutputPreventsSubmission(t *testing.T) {
+	executable, argsPath, _ := fakeLocalSendmail(t)
+	err := sendmailFallback(context.Background(), options{sendmailPath: executable, timeout: time.Second},
+		[]string{"root"}, nil, "", errADCredentialsUnavailable, shortOutputWriter{})
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write not retained: %v", err)
+	}
+	if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("native process started despite short output: %v", err)
+	}
+}
+
+func TestNativeExitZeroOutputFailureIsNotUncertain(t *testing.T) {
+	executable, _, _ := fakeLocalSendmail(t)
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf 'accepted\\n'\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("child output broken")
+	err := submitLocalSendmail(context.Background(), executable, "", []string{"root"}, nil, failedReportWriter{err: cause})
+	if !errors.Is(err, cause) || errors.Is(err, mail.ErrDeliveryUncertain) {
+		t.Fatalf("known exit zero must not be uncertain: %v", err)
+	}
+	if strings.Count(err.Error(), cause.Error()) != 1 {
+		t.Fatalf("native copy error repeated: %v", err)
 	}
 }

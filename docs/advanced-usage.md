@@ -507,7 +507,7 @@ The tool is not a setuid program or a complete drop-in MTA replacement.
 
 ## Transport and failure behavior
 
-The relay must advertise **AUTH GSSAPI** after TLS. Mutual Kerberos
+In default GSSAPI mode the relay must advertise **AUTH GSSAPI** after TLS. Mutual Kerberos
 authentication and the signed SASL security-layer negotiation are mandatory.
 The client selects the SASL **no security layer** option; TLS protects the
 subsequent SMTP envelope and message. Relays requiring a SASL
@@ -518,15 +518,30 @@ integrity/confidentiality layer rather than TLS are not supported.
 - Explicit opt-out: `--tls off`. This authenticates with Kerberos but exposes
   the message and envelope in plaintext; only use on a suitably protected network.
 - Uses system-trusted CA certificates; there is no certificate-verification bypass.
-- `--timeout 60s` bounds AD discovery, principal probing, mail lookup, and SMTP
-  submission after stdin has been read. Individual SDK operations also have
-  their own bounded timeouts. Opt-in password fallback uses the per-stage
-  timeouts described above. Cleanup has a separate five-second bound.
+- `--timeout 60s` supplies the context-aware AD/SMTP operation deadline after
+  message input. Individual SDK operations also have their own timeouts.
+  Opt-in password fallback uses the per-stage timeouts described above;
+  eligible native fallback gets a fresh stage budget while retaining caller
+  cancellation. Message input, principal/password input and synchronous CPU
+  work are not covered by a strict end-to-end wall-clock guarantee.
+- Owned AD/racing sessions are awaited with a separate, cancellation-detached
+  five-second cleanup context. Arbitrary writer/reader/signer or synchronous
+  cleanup methods cannot be forcibly interrupted by a Go context. The private
+  CLI message-reader isolation can return on cancellation, but its underlying
+  `Read` can remain blocked until the input owner releases it. Principal and
+  password terminal reads are synchronous: context checks before/after them
+  do not guarantee interruption of an in-progress terminal call.
 
-Exit status is zero only after the relay confirms DATA acceptance or, on eligible
-Linux fallback, host sendmail exits zero. It is nonzero for unrecovered
-validation, credential, authentication, recipient, or submission failures.
+Normal submission/testmail exits zero after relay DATA acceptance or eligible
+host-sendmail exit zero, provided required local output succeeds. No-email
+`--test` exits zero after successful checks and report output, without sending
+an envelope. Unrecovered validation, credential, authentication, recipient,
+submission or required-output failures exit nonzero.
 All recipients must be accepted before DATA is sent. A failed QUIT or credential
-cleanup after confirmed acceptance produces a warning, not a retry-inducing
-failure. A lost connection during DATA/final acknowledgement can leave delivery
+cleanup after confirmed acceptance remains a warning if it can be reported.
+Failed required output before acceptance aborts before the next submission
+stage. Failed status/warning output after confirmed acceptance reports
+**accepted; do not retry**, even though the command exits nonzero; an output-only
+failure is not uncertain DATA and never enables native fallback or replay.
+A lost connection during DATA/final acknowledgement can still leave delivery
 uncertain; the error says so. There are no automatic retries.

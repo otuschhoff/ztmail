@@ -142,6 +142,9 @@ its own snapshot. Missing observations remain in other/untracked. OS-internal SS
 and KDC times cannot be separated from their enclosing call. Detailed step
 durations require `--debug --verbose`. This collects existing observations only: no extra discovery,
 refresh, connections, or reachability probes are initiated for the report.
+The exact SMTP GSSAPI and EXTERNAL authentication operations both count as
+SMTP authentication, not handshake; unrelated operation names merely containing
+`auth` do not acquire that attribution.
 Only service rows with a completed protocol response latency are shown.
 Untested, connection-only, failure-only and canceled-only endpoints are omitted;
 canceled race losers do not prove unreachability. Connection durations and
@@ -151,6 +154,12 @@ Only observed protocol/port combinations appear; no LDAP/Kerberos cross-product
 is displayed for each advertised port. `Responded` means a complete protocol
 reply was received (possibly an error), not successful authentication; the main
 Authentication row reports the authentication result.
+DC rows are lifetime completed-response evidence across advertised, current and
+retired endpoint/address history, not a current-availability inventory. Address
+changes do not discard earlier replies or select health by callback arrival
+order. Retained raw events independently own their nested slices and preserve
+original generation/health metadata; report matching unions and deduplicates
+historical addresses without modifying those events.
 Every displayed DC row has an average response time and a positive reply count;
 a measured zero duration remains a valid `0.0ms` reading. With no qualifying
 rows, the report says no completed DC response latencies were observed.
@@ -177,6 +186,13 @@ warnings/skips in yellow only when the report writer is an interactive terminal.
 `NO_COLOR` (nonempty) and `TERM=dumb` disable colours. Files, pipes, and
 library report buffers receive uncoloured tables. The library's `Test` method
 uses the same final-table format without changing its borrowed AD owner's hooks.
+Concise checks are buffered until final output; a failure writing that output
+does not imply earlier authentication work was skipped. Verbose output is
+emitted as it occurs, so an observed required-output failure stops subsequent
+submission stages. Writer errors/short writes remain detectable alongside any
+independent operation/cleanup failure. Once delivery is confirmed, failed
+required local status output means **accepted; do not retry**, not uncertain
+DATA or permission to fall back/replay.
 
 Add `--verbose` (or `-v`) for live step-by-step output before the final table,
 including SDK operations, LDAP/Kerberos endpoint exchanges, and one DNS summary

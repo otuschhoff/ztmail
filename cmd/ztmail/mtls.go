@@ -101,6 +101,11 @@ func loadAuthenticationOptions(o options) (options, error) {
 }
 
 func runCertificateSubmission(ctx context.Context, o options, recipients []string, message []byte, log io.Writer) (err error) {
+	log = mail.TrackOutput(log)
+	accepted := false
+	defer func() {
+		err = mail.JoinOutput(err, log, o.report, accepted || errors.Is(err, mail.ErrAcceptedOutput))
+	}()
 	o.report.Value("Authentication method", o.authMethod)
 	o.report.Value("Cred source", "TLS client certificate")
 	if !o.testMode {
@@ -121,6 +126,9 @@ func runCertificateSubmission(ctx context.Context, o options, recipients []strin
 		}
 		o.report.Value("Mail (from)", o.from)
 	}
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	settings, err := adOptionsForCredentials(o, kerberos.Options{SourceMethods: []kerberos.Source{}, PrincipalMethods: []kerberos.PrincipalMethod{}})
 	if err != nil {
 		return err
@@ -130,15 +138,21 @@ func runCertificateSubmission(ctx context.Context, o options, recipients []strin
 		return fmt.Errorf("create DNS-only AD owner: %w", err)
 	}
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if closeErr := owner.Close(cleanup); closeErr != nil {
+		if closeErr := closeDNSOwner(ctx, owner.Close); closeErr != nil {
 			if err != nil || o.testMode {
 				err = errors.Join(err, fmt.Errorf("DNS-only owner cleanup: %w", closeErr))
 			} else {
-				fmt.Fprintf(log, "Warning: message accepted, but DNS owner cleanup failed: %v\n", closeErr)
+				err = reportAcceptedCleanup(log, o.report, "DNS owner", closeErr)
 			}
 		}
 	}()
-	return deliver(ctx, o, recipients, message, mail.ADResolver{Client: owner}, log)
+	err = deliver(ctx, o, recipients, message, mail.ADResolver{Client: owner}, log)
+	accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
+	return err
+}
+
+func closeDNSOwner(ctx context.Context, closeOwner func(context.Context) error) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return closeOwner(cleanup)
 }

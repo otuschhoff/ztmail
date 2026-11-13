@@ -8,12 +8,12 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** the original review changed no application code. Phase 0 and
-Phase 1 are now complete; execution records below describe their approved
+**Disposition:** the original review changed no application code. Phases 0-2
+are now complete; execution records below describe their approved
 changes and verification. Remaining phases are not authorized by completion.
 
 The executive assessment and finding evidence describe the review baseline,
-not an assertion that already resolved Phase 1 defects remain in current code.
+not an assertion that already resolved defects remain in current code.
 
 ## Executive assessment
 
@@ -274,17 +274,17 @@ Confidence applies to the observed mechanism, not to unmeasured impact.
 | R01 | P1 | Resolved in Phase 1 | Quoted mailbox local-parts lose required envelope quoting |
 | R02 | P1 | Resolved in Phase 1 | Invalid header field names pass local preparation |
 | R03 | P1 | Resolved in Phase 1 | SMTP cancellation can lose context sentinel identity |
-| R04 | P2 | Confirmed consistency/documentation gap | Warning/output handling differs across CLI, library, and fallback |
-| R05 | P2 | Confirmed diagnostic defect | EXTERNAL auth duration is categorized as handshake time |
-| R06 | P2 | Confirmed diagnostic defect | DC inventory updates replace historical address evidence |
+| R04 | P2 | Resolved in Phase 2 | Warning/output handling differs across CLI, library, and fallback |
+| R05 | P2 | Resolved in Phase 2 | EXTERNAL auth duration is categorized as handshake time |
+| R06 | P2 | Resolved in Phase 2 | DC inventory updates replace historical address evidence |
 | R07 | P2 | Confirmed maintainability/UX issue | CLI orchestration mixes state and performs some configuration checks after input |
 | R08 | P2 | Measured testing gap | Real orchestration and native paths are less covered than helper contracts |
 | R09 | P2 | Resource-design concern; performance unmeasured | Message buffering, copying, and folded-header accumulation |
-| R10 | P1 | Confirmed reentry defect plus resource concern | Arbitrary report output under the state mutex can self-deadlock |
+| R10 | P1 | Reentry resolved in Phase 2; measured optimization remains open | Arbitrary report output under the state mutex can self-deadlock |
 | R11 | P2 | Confirmed algorithmic cost; impact unmeasured | Quadratic runtime aggregation and repeated formatting work |
 | R12 | P2 | Connection-policy trade-off | Sequential address dialing delays later reachable addresses |
 | R13 | P3 | Optimization hypothesis | Immutable TLS material is prepared repeatedly |
-| R14 | P2 | Confirmed contract mismatch | Complete-call timeout wording exceeds enforceable guarantees |
+| R14 | P2 | Resolved in Phase 2 | Complete-call timeout wording exceeds enforceable guarantees |
 | R15 | P2 | Confirmed quality-gate gap | Local review checks and test-isolation expectations are not enforced in CI |
 | R16 | P1 | Resolved in Phase 1 | A typed-nil certificate signer can panic instead of returning an error |
 | R17 | P2 | Resolved in Phase 1 | Strict CA-bundle loading can silently skip a malformed PEM block |
@@ -1111,6 +1111,93 @@ P2-A/P2-B share diagnostic aggregation code and run serially. P2-D precedes
 the snapshot-lock optimization P4-C; P2-B's input ownership also precedes that
 optimization. P2-E requires the Phase 0 output-policy decision and P2-C's
 matching contract wording.
+
+#### Phase 2 execution record
+
+**Approved scope:** P2-A through P2-E only. Writer callbacks may update report
+state and enqueue finite recursive `Line` calls in synchronous FIFO order.
+They must not finalize, flush or call the output barrier from inside `Write`.
+No schema, dependency, timeout-budget, credential-selection, native-fallback
+eligibility or later-phase orchestration/performance redesign was authorized.
+The output policy intentionally changes previously swallowed failures into
+explicit errors.
+
+| Task | Implemented behavior and exact evidence |
+| --- | --- |
+| P2-A / R05 | Exact GSSAPI/EXTERNAL operation matching with empty/SMTP protocol labels; unrelated authentication-like names remain excluded. `TestRuntimeSMTPAuthenticationClassification` and `TestRuntimeSMTPAuthenticationRepresentations` cover terminal/plain/HTML/JSON and TLS-only absence. |
+| P2-B / R06 | Ingestion copies advertised/current-candidate/retired endpoint collections and every nested address slice. Raw generation/health metadata is preserved. Aggregates use identity plus independently owned, deduplicated historical addresses, not arrival-selected health. `TestDCInventoryHistoryAcrossGroupsAndGenerationOrder` preserves A=10ms/B=30ms as two replies averaging 20ms in either order. Ownership, concurrent ingestion/rendering and immutable DNS unions have dedicated race regressions. |
+| P2-C / R04/R14 | Public comments, compiled example and user/maintainer docs distinguish policy/authentication/cleanup warnings from acceptance and GSSAPI leases from DNS-only certificate ownership. Deadline wording excludes arbitrary blocking code and synchronous CPU work, describes awaited detached cleanup, and does not promise strict total-call latency. |
+| P2-D / R10 correctness | State mutation/enqueueing occurs under the report mutex; one synchronous FIFO drainer writes outside it. The first writer/short-write error is sticky, subsequent writes stop, and independent operation errors survive. Timed subprocesses cover `Value` and finite recursive `Line` callbacks from verbose `Line` and concise `Finish`, plus a slow writer. Concurrent state/output ordering and the output barrier are race-tested. |
+| P2-E / R04 | Shared tracked-output/check/join helpers enforce stage boundaries and retain distinct causes without repeating a shared writer failure. Known acceptance plus failed required output has an internal accepted/do-not-retry marker; output alone never creates uncertain DATA or permits replay/native fallback. Tests cover GSSAPI/mTLS/EXTERNAL, no-email test/testmail, configured/used TLS notices, QUIT/security/credential/DNS cleanup, direct short writers and native exit-zero/copy-error outcomes. |
+
+**Re-evaluation and coupled corrections:**
+
+- Confirmed both original writer deadlocks in bounded child processes before
+  changing synchronization. No production output worker or abandoned goroutine
+  was introduced. Render/testmail CPU work remains under the state mutex:
+  P4-C snapshot optimization and retention/resource policy are still open.
+  Final re-evaluation also reproduced reentry through writer/operation
+  `error.Error` callbacks: wrapping/rendering those errors now happens outside
+  the state mutex. Three additional timed subprocess cases retain error
+  identity and prove callback state updates finish.
+- Concise reports emit at finalization, not when initial checks are recorded.
+  An initial hypothesis that a broken concise writer must prevent acquisition
+  was rejected. No zero-byte probe writes or forced verbosity were added.
+  Only a failure of actually emitted required output gates subsequent work.
+  `TestLibraryConciseReportOutputFailurePreservesOutcome` retains both the
+  already-performed operation failure and final writer failure in all modes.
+- Followed the output policy through credential source/principal fallback,
+  configuration, acquisition, tickets, LDAP and cleanup. New red/green
+  credential fixtures prove failed setup output prevents acquisition, preserves
+  independent source errors and stops further source/principal/password
+  fallback. Direct skipped-identity warnings and every password prompt write
+  detect short writes; a failed trailing newline clears the acquired password.
+- Native `Wait` can return a stdout/stderr copy error despite process exit
+  zero. That is known acceptance, unlike nonzero/unknown process outcomes.
+  Regression tests assert DATA/native submission once, no replay/fallback,
+  preserved genuine uncertainty, original writer causes and cleanup causes.
+- Repeated checkpoints initially duplicated already-retained writer errors.
+  Shared-cause and distinct-cause regressions now enforce one rendering of each
+  failure without losing its `errors.Is` identity or accepted classification.
+  Concise DNS credential summaries also leave output-classified failures
+  intact, so DNS wording cannot hide a required-output failure or no-retry
+  classification.
+- `TestLibraryWarningsDoNotImplyAcceptance` covers both certificate modes,
+  Send/Test, controlled resolver failure and `Accepted=false`.
+  Deterministic fixtures prove a blocking final writer and synchronous lease
+  cleanup are awaited past the operation deadline. DNS-owner cleanup receives
+  a live detached five-second context after parent cancellation/expiry.
+  An initial full run found a test-fixture scheduling ambiguity from equal
+  parent/child deadlines, not a production failure. The cleanup fixture now
+  deliberately uses a shorter parent deadline and passed 20 race repetitions.
+
+**Final verification:**
+
+- Focused diagnostic/history/writer and output/cleanup matrices passed repeated
+  race runs; the integrated selectors passed twice after parent integration.
+- Full `go test -json -race -shuffle=1794593178716668121 -count=2
+  -coverprofile=<outside-checkout> ./...`: **2,688 passing test/subtest events**,
+  zero failures and six existing helper/CLI-fixture skip events. These are
+  events across two repetitions, not independent top-level test counts.
+- Statement coverage: public library **93.1%**, CLI **70.2%**, internal mail
+  **93.2%**, weighted total **85.8%**. Covered statements increased from
+  2,609/3,037 in Phase 1 to 2,788/3,251; new guarded error/cleanup and CLI/AD
+  branches change the denominator. The 0.1-point weighted decrease is not
+  treated as proof of a missed phase gate or hidden by removing code/tests.
+  Inventory cloning, runtime classification, report draining/barriers, output
+  check/join helpers and accepted/DNS cleanup helpers have 100% function
+  coverage. Real credential/native orchestration coverage remains Phase 3 work.
+- Native build/vet/link and version smoke, Windows amd64 and Darwin arm64
+  CGO-free build/vet/link, Go formatting, whitespace and release-note checks
+  passed. Cross-builds are not native-platform/live-AD certification.
+- Raw JSON, coverage/function reports and red evidence remain outside the
+  checkout. Dependencies, public signatures, JSON schema v2, normal concise
+  report timing and application version remain unchanged.
+
+**Completion decision:** no approved Phase 2 exit criterion remains unresolved.
+R04/R05/R06/R14 and R10's writer-reentry correctness defect are resolved.
+R07-R09/R11-R13/R15 and R10's measured snapshot/resource work remain open.
+Later phases are not implicitly implemented or authorized.
 
 ### Phase 3: simplify CLI orchestration with boundary tests
 

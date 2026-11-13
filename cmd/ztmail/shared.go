@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net/netip"
 
@@ -19,6 +20,15 @@ var applySender = mail.ApplySender
 var envelopeAddress = mail.EnvelopeAddress
 var canonicalMail = mail.CanonicalMail
 var dnsName = mail.DNSName
+
+func reportAcceptedCleanup(log io.Writer, report *testReport, warning string, cause error) error {
+	log = mail.TrackOutput(log)
+	fmt.Fprintf(log, "Warning: message accepted, but %s cleanup failed: %v\n", warning, cause)
+	if outputErr := mail.CheckOutput(log, report, true); outputErr != nil {
+		return mail.JoinOutput(cause, log, report, true)
+	}
+	return nil
+}
 
 func (s *adSession) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 	addresses, err := (&mail.ADBackend{Client: s.client, Lease: s.lease}).Resolve(ctx, host)

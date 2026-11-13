@@ -11,6 +11,7 @@ import (
 
 	"github.com/otuschhoff/adbind/ad/kerberos"
 	"github.com/otuschhoff/adbind/ad/kerberos/keytab"
+	"github.com/otuschhoff/ztmail/internal/mail"
 	"golang.org/x/term"
 )
 
@@ -39,6 +40,9 @@ func (t *consoleTerminal) Close() error {
 }
 
 func openADPassword(ctx context.Context, o options) (*adSession, error) {
+	if err := mail.CheckOutput(nil, o.report, false); err != nil {
+		return nil, err
+	}
 	// Build the common AD configuration before asking for a secret.
 	configDone := o.report.Measure("AD source configuration")
 	settings, err := adOptionsForCredentials(o, kerberos.Options{Source: kerberos.SourcePassword, Realm: o.realm})
@@ -104,16 +108,20 @@ func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, gue
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
-	if _, err := fmt.Fprintln(terminal, "No usable existing credentials. Signing in with a password."); err != nil {
+	if err := mail.CheckOutput(nil, report, false); err != nil {
+		return "", nil, err
+	}
+	output := mail.TrackOutput(terminal)
+	if _, err := fmt.Fprintln(output, "No usable existing credentials. Signing in with a password."); err != nil {
 		return "", nil, err
 	}
 	principal = guess
 	if pinned {
-		if _, err := fmt.Fprintf(terminal, "Kerberos principal (--principal): %s\n", principal); err != nil {
+		if _, err := fmt.Fprintf(output, "Kerberos principal (--principal): %s\n", principal); err != nil {
 			return "", nil, err
 		}
 	} else {
-		if _, err := fmt.Fprintf(terminal, "Kerberos principal [%s] (Enter to accept): ", guess); err != nil {
+		if _, err := fmt.Fprintf(output, "Kerberos principal [%s] (Enter to accept): ", guess); err != nil {
 			return "", nil, err
 		}
 		input, err := readPrincipalLine(ctx, terminal)
@@ -131,12 +139,12 @@ func readPasswordCredentials(ctx context.Context, terminal passwordTerminal, gue
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
-	if _, err := fmt.Fprintf(terminal, "Password for %s: ", principal); err != nil {
+	if _, err := fmt.Fprintf(output, "Password for %s: ", principal); err != nil {
 		return "", nil, err
 	}
 	report.MarkPasswordPrompted()
 	password, err = terminal.ReadPassword()
-	_, newlineErr := fmt.Fprintln(terminal)
+	_, newlineErr := fmt.Fprintln(output)
 	err = errors.Join(err, newlineErr, ctx.Err())
 	if err == nil && len(password) == 0 {
 		err = errors.New("empty password is not allowed")

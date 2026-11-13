@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"sort"
 	"strconv"
@@ -43,9 +44,29 @@ func (r *TestReport) Trace(_ context.Context, event observe.TraceEvent) {
 }
 
 func (r *TestReport) Inventory(event discovery.InventoryEvent) {
+	// SDK callback slices belong to the invocation, not to the report.
+	event.Advertised = cloneInventoryEndpoints(event.Advertised)
+	event.Current.Candidates = cloneInventoryEndpoints(event.Current.Candidates)
+	event.Retired = cloneInventoryEndpoints(event.Retired)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.inventory = append(r.inventory, event)
+}
+
+func cloneInventoryEndpoints(endpoints []discovery.Endpoint) []discovery.Endpoint {
+	endpoints = slices.Clone(endpoints)
+	for i := range endpoints {
+		endpoints[i].Addresses = slices.Clone(endpoints[i].Addresses)
+	}
+	return endpoints
+}
+
+func appendDCAddresses(endpoint *discovery.Endpoint, addresses []netip.Addr) {
+	for _, address := range addresses {
+		if !slices.Contains(endpoint.Addresses, address) {
+			endpoint.Addresses = append(endpoint.Addresses, address)
+		}
+	}
 }
 
 func (r *TestReport) Measure(step string) func() {
@@ -80,13 +101,19 @@ func (r *TestReport) MarkPasswordPrompted() {
 func (r *TestReport) dcObservationTable() reportTable {
 	dcs := reportTable{header: table.Row{"Discovered DC / service", "Protocol", "Observed reachability", "Avg response", "Replies"}}
 	seen := make(map[string]discovery.Endpoint)
+	// Rows represent lifetime completed-response evidence, not current
+	// availability. Match identities against all historical addresses without
+	// selecting generation or health metadata; owned raw events preserve both.
 	for _, event := range r.inventory {
 		for _, group := range [][]discovery.Endpoint{event.Advertised, event.Current.Candidates, event.Retired} {
 			for _, endpoint := range group {
 				key := endpoint.Address()
-				if previous, ok := seen[key]; !ok || len(endpoint.Addresses) > 0 || len(previous.Addresses) == 0 {
-					seen[key] = endpoint
+				previous, ok := seen[key]
+				if !ok {
+					previous = discovery.Endpoint{FQDN: endpoint.FQDN, Port: endpoint.Port}
 				}
+				appendDCAddresses(&previous, endpoint.Addresses)
+				seen[key] = previous
 			}
 		}
 	}
@@ -125,14 +152,9 @@ func (r *TestReport) dcObservationTable() reportTable {
 			if matchesDCEndpoint(event, endpoint) {
 				dnsKey := endpoint.Address()
 				previous := dnsEndpoints[dnsKey]
-				addresses := previous.Addresses
-				for _, address := range endpoint.Addresses {
-					if !slices.Contains(addresses, address) {
-						addresses = append(addresses, address)
-					}
-				}
-				endpoint.Addresses = addresses
-				dnsEndpoints[dnsKey] = endpoint
+				previous.FQDN, previous.Port = endpoint.FQDN, endpoint.Port
+				appendDCAddresses(&previous, endpoint.Addresses)
+				dnsEndpoints[dnsKey] = previous
 			}
 		}
 	}
@@ -277,7 +299,7 @@ func runtimeCategory(event observe.TraceEvent) int {
 	case event.Protocol == "ldap" || strings.HasPrefix(op, "ldap") || op == "ad_search" ||
 		op == "ad_find_unique" || strings.HasPrefix(op, "ad_race_"):
 		return runtimeLDAP
-	case op == "smtp gssapi authentication":
+	case op == "smtp gssapi authentication" || op == "smtp external authentication":
 		return runtimeSMTPAuth
 	case strings.HasPrefix(op, "smtp"):
 		return runtimeSMTPHandshake

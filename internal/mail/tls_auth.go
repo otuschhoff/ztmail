@@ -61,6 +61,7 @@ func certificateInfo(cert *x509.Certificate) *CertificateInfo {
 }
 
 func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationResult, error) {
+	log = TrackOutput(log)
 	method := o.auth
 	if method == "" {
 		method = AuthGSSAPI
@@ -84,6 +85,9 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 		detail := fmt.Sprintf("explicit insecure server TLS options: expiry grace=%s; unverifiable issuer=%t; hostname and non-exempt checks remain required",
 			o.serverTrust.ExpiredServerCertificateGrace, o.serverTrust.InsecureAllowUnverifiableIssuer)
 		authenticationWarning(o, log, "Server TLS policy", detail)
+		if err := CheckOutput(log, o.report, false); err != nil {
+			return nil, nil, err
+		}
 		// The paired callback below enforces every non-exempt check.
 		config.InsecureSkipVerify = true
 	}
@@ -117,7 +121,7 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 				verification.issuerUsed, certificateInfo(state.PeerCertificates[0]).SHA256)
 			authenticationWarning(o, log, "Server TLS verification exception", detail)
 		}
-		return nil
+		return CheckOutput(log, o.report, false)
 	}
 	if method != AuthGSSAPI {
 		if err := validateClientCertificate(o.clientCertificate, time.Now()); err != nil {

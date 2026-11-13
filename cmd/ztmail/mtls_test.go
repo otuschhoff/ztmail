@@ -6,9 +6,46 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/otuschhoff/ztmail/internal/mail"
 )
+
+func TestDNSOwnerCleanupDetachedAndAwaited(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(map[bool]string{false: "canceled", true: "expired"}[expired], func(t *testing.T) {
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if expired {
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
+			cancel()
+			cause := errors.New("delayed owner cleanup failed")
+			completed := false
+			start := time.Now()
+			err := closeDNSOwner(ctx, func(cleanup context.Context) error {
+				if cleanup.Err() != nil {
+					t.Fatalf("cleanup inherited cancellation: %v", cleanup.Err())
+				}
+				deadline, ok := cleanup.Deadline()
+				if !ok || time.Until(deadline) < 4*time.Second || time.Until(deadline) > 5*time.Second {
+					t.Fatalf("cleanup deadline=%v, present=%t", deadline, ok)
+				}
+				time.Sleep(20 * time.Millisecond)
+				if cleanup.Err() != nil {
+					t.Fatalf("delayed cleanup interrupted: %v", cleanup.Err())
+				}
+				completed = true
+				return cause
+			})
+			if !completed || !errors.Is(err, cause) || time.Since(start) < 20*time.Millisecond {
+				t.Fatalf("cleanup abandoned/lost: completed=%t err=%v elapsed=%s", completed, err, time.Since(start))
+			}
+		})
+	}
+}
 
 func TestMTLSCLIExplicitFlagConflictsBeforeInput(t *testing.T) {
 	for _, flag := range []string{"--cred-source=auto", "--password-prompt=false", "--realm=EXAMPLE.TEST", "--spn=smtp/relay",

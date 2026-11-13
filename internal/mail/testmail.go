@@ -25,6 +25,9 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	}
 	done := r.Measure("Report preparation")
 	defer done()
+	if err := r.OutputError(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.outputErr != nil {

@@ -225,6 +225,11 @@ func validateOptions(o options) error {
 }
 
 func run(ctx context.Context, o options, recipients []string, in io.Reader, log io.Writer) (err error) {
+	log = mail.TrackOutput(log)
+	accepted := false
+	defer func() {
+		err = mail.JoinOutput(err, log, o.report, accepted || errors.Is(err, mail.ErrAcceptedOutput))
+	}()
 	parentCtx := ctx
 	o, err = applyDefaultSender(o)
 	if err != nil {
@@ -256,12 +261,18 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			o.report.Line("INFO", "Message submission", "disabled; stdin is not read and MAIL FROM, RCPT TO, DATA are not sent")
 		}
 	}
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	hostDone := o.report.Measure("Host/domain discovery")
 	host, domain, err := discoverHost(ctx, o.domain)
 	hostDone()
 	o.report.Value("Hostname", host)
 	o.report.Value("AD domain", domain)
 	o.report.Step("Host/domain discovery", err, fmt.Sprintf("host=%q AD domain=%q", host, domain))
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		return mail.JoinOutput(err, log, o.report, false)
+	}
 	if err != nil {
 		if shouldFallbackToSendmail(parentCtx, o, err) {
 			message, localRecipients, readErr := prepareLocalMessageContext(parentCtx, in, recipients, o.readHeaders, o.ignoreDots)
@@ -319,6 +330,9 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 	if o.tlsMode == "off" {
 		o.report.Value("Transport security", "Disabled; no confidentiality")
 	}
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	var message []byte
 	if o.testMail {
 		for i, recipient := range recipients {
@@ -341,12 +355,20 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		ctx = work
 	}
 	if o.authMethod != "gssapi" {
-		return runCertificateSubmission(ctx, o, recipients, message, log)
+		err = runCertificateSubmission(ctx, o, recipients, message, log)
+		accepted = !o.testMode && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
+		return err
 	}
 	adDone := o.report.Measure("AD identity and canonical mail")
 	session, err := openAD(ctx, o)
 	adDone()
 	o.report.Step("AD identity selection", err, "credential source and identity selected")
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		if session != nil {
+			return mail.JoinOutput(errors.Join(err, session.Close()), log, o.report, false)
+		}
+		return mail.JoinOutput(err, log, o.report, false)
+	}
 	if err != nil {
 		if shouldFallbackToSendmail(parentCtx, o, err) {
 			return sendmailFallback(parentCtx, o, recipients, message, configuredFrom, err, log)
@@ -359,12 +381,12 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 			return
 		}
 		if closeErr := session.Close(); closeErr != nil {
+			o.report.Step("AD credential cleanup", closeErr, "")
 			if err != nil || o.testMode {
 				err = errors.Join(err, closeErr)
 			} else {
-				fmt.Fprintf(log, "Warning: message accepted, but credential cleanup failed: %v\n", closeErr)
+				err = reportAcceptedCleanup(log, o.report, "credential", closeErr)
 			}
-			o.report.Step("AD credential cleanup", closeErr, "")
 		} else {
 			o.report.Step("AD credential cleanup", nil, "credential owner closed")
 		}
@@ -414,6 +436,9 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		fmt.Fprintf(log, "Submitting to %s:%d; principal=%s; source=%s; SPN=%s; TLS=%s\n",
 			o.relay, o.port, session.identity.Principal, session.identity.Source, o.spn, o.tlsMode)
 	}
+	if outputErr := mail.CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	if err := deliver(ctx, o, recipients, message, session, log); err != nil {
 		if shouldFallbackToSendmail(parentCtx, o, err) {
 			sessionClosed = true
@@ -428,6 +453,7 @@ func run(ctx context.Context, o options, recipients []string, in io.Reader, log 
 		}
 		return err
 	}
+	accepted = !o.testMode
 	if o.verbose && !o.testMode {
 		fmt.Fprintln(log, "Message accepted by relay")
 	}

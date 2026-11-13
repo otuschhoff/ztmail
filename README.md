@@ -258,6 +258,11 @@ Use a DNS hostname for `--relay`, not a URL, IP literal or `host:port`.
 `--hostname` overrides SMTP EHLO. Repeatable `--dns-server IP[:port]` selects
 bootstrap resolvers; these are discovery hints, not automatically trusted AD
 data servers. `--timeout` defaults to 60 seconds.
+This is an operation/network deadline, not a strict total-call wall-clock
+limit: input and arbitrary blocking I/O/signers are not forcibly interrupted,
+and owned cleanup has a separate allowance. See
+[transport and failure behavior](docs/advanced-usage.md#transport-and-failure-behavior),
+including accepted-but-status-output-failed errors that must not be retried.
 
 STARTTLS is required by default and never silently downgraded. `--tls off`
 deliberately exposes the envelope and message in plaintext; use it only on a

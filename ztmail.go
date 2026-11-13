@@ -76,7 +76,9 @@ type Options struct {
 	Port int
 	// TLS defaults to TLSRequired with system certificate/hostname verification.
 	TLS TLSMode
-	// Timeout defaults to 60 seconds and bounds the complete Send or Test call.
+	// Timeout defaults to 60 seconds for context-aware operation/network work.
+	// LDAP racing cleanup has a separate five-second allowance. Synchronous CPU
+	// work and arbitrary blocking writers/signers can extend wall-clock latency.
 	Timeout time.Duration
 	// LDAPRaceCandidates opts into immediate complete canonical-mail reads
 	// across 1-8 DCs. Zero preserves ordinary LDAP selection. Each lookup owns
@@ -107,13 +109,15 @@ type Result struct {
 	Identity       kerberos.Identity
 	From           string
 	Recipients     []string
-	// Warnings are post-acceptance QUIT/security cleanup errors. When Accepted
-	// is true and error is nil, do not resend merely because warnings exist.
+	// Warnings include TLS-policy/authentication notices before acceptance or
+	// alongside failures, and post-acceptance QUIT/security cleanup errors.
+	// Check Accepted independently: warnings alone do not prove acceptance.
 	Warnings []error
 }
 
-// Client is immutable after construction and supports concurrent calls. Each
-// call acquires its own lease, SMTP connection and GSSAPI security context.
+// Client is immutable after construction and supports concurrent calls.
+// GSSAPI operations borrow independent leases and security contexts;
+// certificate modes use DNS without credentials or LDAP. Connections are per call.
 // SDK credential/LDAP capacity limits still apply. Client needs no Close:
 // only the application closes the shared AD owner.
 type Client struct {
@@ -384,9 +388,6 @@ func (c *Client) submit(ctx context.Context, data []byte, report *mail.TestRepor
 		Authentication: func(authentication mail.AuthenticationResult) { result.Authentication = authentication },
 		Warning:        func(warning error) { result.Warnings = append(result.Warnings, warning) }},
 		result.Recipients, data, backend, io.Discard)
-	if err != nil {
-		return result, err
-	}
-	result.Accepted = !test
-	return result, nil
+	result.Accepted = !test && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
+	return result, err
 }

@@ -22,6 +22,7 @@ func shouldFallbackToSendmail(ctx context.Context, o options, err error) bool {
 	if runtime.GOOS != "linux" || (o.authMethod != "" && o.authMethod != "gssapi") || o.noSendmailFallback || o.testMode || o.testMail || o.setDefaultFromAD ||
 		os.Getenv(nativeFallbackEnvironment) == "1" ||
 		ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, mail.ErrDeliveryUncertain) ||
+		errors.Is(err, mail.ErrOutputFailed) || errors.Is(err, mail.ErrAcceptedOutput) ||
 		errors.Is(err, errADCleanup) || errors.Is(err, kerberos.ErrClosed) || errors.Is(err, kerberos.ErrCapacity) ||
 		errors.Is(err, kerberos.ErrCredentialsChanged) || errors.Is(err, errADNonCredentialFailure) ||
 		errors.Is(err, errADPasswordFailure) {
@@ -74,6 +75,10 @@ func localSendmailPath(override string) (string, error) {
 }
 
 func submitLocalSendmail(ctx context.Context, executable, from string, recipients []string, message []byte, log io.Writer) error {
+	log = mail.TrackOutput(log)
+	if err := mail.CheckOutput(log, nil, false); err != nil {
+		return err
+	}
 	if len(recipients) == 0 {
 		return errors.New("local sendmail fallback needs recipients in arguments or headers; AD self-recipient lookup is unavailable")
 	}
@@ -100,13 +105,26 @@ func submitLocalSendmail(ctx context.Context, executable, from string, recipient
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start host sendmail: %w", err)
 	}
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("%w: host sendmail failed; do not blindly retry: %w", mail.ErrDeliveryUncertain, errors.Join(err, ctx.Err()))
+	waitErr := cmd.Wait()
+	if cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		outputErr := mail.CheckOutput(log, nil, true)
+		if waitErr != nil && outputErr == nil {
+			return fmt.Errorf("%w: host sendmail status: %w", mail.ErrAcceptedOutput, waitErr)
+		}
+		return mail.JoinOutput(waitErr, log, nil, true)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("%w: host sendmail failed; do not blindly retry: %w", mail.ErrDeliveryUncertain,
+			errors.Join(waitErr, ctx.Err(), mail.CheckOutput(log, nil, false)))
 	}
 	return nil
 }
 
 func sendmailFallback(ctx context.Context, o options, recipients []string, message []byte, from string, cause error, log io.Writer) error {
+	log = mail.TrackOutput(log)
+	if err := mail.CheckOutput(log, o.report, false); err != nil {
+		return mail.JoinOutput(cause, log, o.report, false)
+	}
 	if !shouldFallbackToSendmail(ctx, o, cause) {
 		return fmt.Errorf("host sendmail fallback is not permitted: %w", cause)
 	}
@@ -126,12 +144,15 @@ func sendmailFallback(ctx context.Context, o options, recipients []string, messa
 		reason = "Mail relay unreachable"
 	}
 	if _, err := fmt.Fprintf(log, "Warning: %s; using host sendmail %s.\n", reason, executable); err != nil {
-		return errors.Join(cause, fmt.Errorf("report sendmail fallback: %w", err))
+		return mail.JoinOutput(errors.Join(cause, fmt.Errorf("report sendmail fallback: %w", err)), log, o.report, false)
 	}
 	if o.verbose {
 		if _, err := fmt.Fprintf(log, "Primary submission failed: %v\n", cause); err != nil {
-			return errors.Join(cause, fmt.Errorf("report primary submission failure: %w", err))
+			return mail.JoinOutput(errors.Join(cause, fmt.Errorf("report primary submission failure: %w", err)), log, o.report, false)
 		}
+	}
+	if err := mail.CheckOutput(log, o.report, false); err != nil {
+		return mail.JoinOutput(cause, log, o.report, false)
 	}
 	work, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -140,8 +161,8 @@ func sendmailFallback(ctx context.Context, o options, recipients []string, messa
 	}
 	if o.verbose {
 		if _, err := fmt.Fprintln(log, "Message accepted by host sendmail (local acceptance, not mailbox delivery proof)."); err != nil {
-			return fmt.Errorf("%w: local submission succeeded but status output failed: %w", mail.ErrDeliveryUncertain, err)
+			return mail.CheckOutput(log, o.report, true)
 		}
 	}
-	return nil
+	return mail.CheckOutput(log, o.report, true)
 }

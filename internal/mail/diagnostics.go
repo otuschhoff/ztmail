@@ -24,6 +24,8 @@ type TestReport struct {
 	mu                sync.Mutex
 	output            io.Writer
 	outputErr         error
+	outputQueue       []string
+	outputActive      chan struct{}
 	exchanges         int
 	verbose           bool
 	color             bool
@@ -68,12 +70,76 @@ func (r *TestReport) Line(status, step, detail string) {
 	done := r.Measure("Report output")
 	defer done()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if importantResult(status, step) {
 		r.rows = append(r.rows, reportRow{status, step, detail})
 	}
-	if r.verbose && r.outputErr == nil {
-		_, r.outputErr = fmt.Fprintf(r.output, "[%s] %s: %s\n", status, step, detail)
+	drain := false
+	if r.verbose {
+		drain = r.queueOutputLocked(fmt.Sprintf("[%s] %s: %s\n", status, step, detail))
+	}
+	r.mu.Unlock()
+	if drain {
+		r.drainOutput()
+	}
+}
+
+func (r *TestReport) queueOutputLocked(chunk string) bool {
+	if r.outputErr != nil {
+		return false
+	}
+	r.outputQueue = append(r.outputQueue, chunk)
+	if r.outputActive != nil {
+		return false
+	}
+	r.outputActive = make(chan struct{})
+	return true
+}
+
+func (r *TestReport) drainOutput() {
+	for {
+		r.mu.Lock()
+		if r.outputErr != nil || len(r.outputQueue) == 0 {
+			clear(r.outputQueue)
+			r.outputQueue = nil
+			done := r.outputActive
+			r.outputActive = nil
+			close(done)
+			r.mu.Unlock()
+			return
+		}
+		chunk := r.outputQueue[0]
+		r.outputQueue[0] = ""
+		r.outputQueue = r.outputQueue[1:]
+		r.mu.Unlock()
+
+		n, err := io.WriteString(r.output, chunk)
+		if err == nil && n != len(chunk) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			outputErr := fmt.Errorf("report output: %w", err)
+			r.mu.Lock()
+			r.outputErr = outputErr
+			r.mu.Unlock()
+		}
+	}
+}
+
+// OutputError waits for queued output and returns its retained first failure.
+// Write callbacks may record state or enqueue finite Line calls, but must not
+// call OutputError, Finish or TestMessage, which wait for the active writer.
+func (r *TestReport) OutputError() error {
+	if r == nil {
+		return nil
+	}
+	for {
+		r.mu.Lock()
+		active, err := r.outputActive, r.outputErr
+		r.mu.Unlock()
+		if active == nil {
+			return err
+		}
+		<-active
 	}
 }
 
@@ -214,31 +280,42 @@ func (r *TestReport) DNSDiagnostic(result addns.DiagnosticResult) {
 
 func (r *TestReport) Finish(err *error) {
 	r.Line("INFO", "Endpoint visibility", "Only observed exchanges identify used servers. Cache hits emit no exchange; Windows SSPI KDC traffic is OS-managed and not observable.")
+	outputErr := r.OutputError()
 	r.mu.Lock()
 	count := r.exchanges
-	outputErr := r.outputErr
+	testMail := r.testMail
 	r.mu.Unlock()
-	*err = errors.Join(*err, outputErr)
+	if outputErr != nil && !errors.Is(*err, outputErr) {
+		*err = errors.Join(*err, outputErr)
+	}
 	detail := fmt.Sprintf("authentication checks completed; %d AD exchanges observed; no email sent", count)
-	if r.testMail {
+	if testMail {
 		detail = fmt.Sprintf("testmail checks completed; %d AD exchanges observed; delivery status shown separately", count)
 	}
 	r.Step("Test", *err, detail)
+	latestOutputErr := r.OutputError()
+	if latestOutputErr != nil && !errors.Is(*err, latestOutputErr) {
+		*err = errors.Join(*err, latestOutputErr)
+	}
 	if *err != nil {
+		failure := "Not completed: " + (*err).Error()
 		r.mu.Lock()
 		if r.values["Authentication"] == "" {
-			r.values["Authentication"] = "Not completed: " + (*err).Error()
+			r.values["Authentication"] = failure
 		}
 		r.mu.Unlock()
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if outputErr == nil {
-		*err = errors.Join(*err, r.outputErr)
-	}
+	drain := false
 	if r.outputErr == nil {
-		_, writeErr := fmt.Fprintln(r.output, r.render())
-		*err = errors.Join(*err, writeErr)
+		drain = r.queueOutputLocked(r.render() + "\n")
+	}
+	r.mu.Unlock()
+	if drain {
+		r.drainOutput()
+	}
+	if outputErr := r.OutputError(); outputErr != nil && !errors.Is(*err, outputErr) {
+		*err = errors.Join(*err, outputErr)
 	}
 }
 

@@ -22,12 +22,29 @@ Versions use Semantic Versioning; dates are in UTC.
 - Reject every malformed CA PEM entry rather than skipping invalid blocks
   before or between valid certificates; retain valid LF/CRLF bundles and
   whitespace-separated certificates.
+- Attribute EXTERNAL authentication to SMTP authentication time and retain
+  completed DC response evidence across changing advertised/current/retired
+  addresses. Own retained inventory slices independently of SDK callbacks.
+- Allow report writers to update report state or enqueue finite recursive
+  lines without deadlocking. Preserve ordered synchronous output, short-write
+  failures and independent operational errors without holding the state lock
+  during arbitrary writer calls.
+- Stop credential/submission stages after an observed required-output failure.
+  Preserve confirmed DATA/native exit-zero acceptance with an explicit
+  "accepted; do not retry" error if local status/warning output fails, rather
+  than replaying, falling back or calling output-only failure uncertain DATA.
+  Detect short writes in credential prompts and clear passwords when trailing
+  prompt output fails.
 
 ### Changed
 
 - Complete refactoring Phase 1 with offline wire-command, validation,
   cancellation, ownership and malformed-PEM regressions. Record phase evidence
   and remaining work in the refactoring review.
+- Complete Phase 2's diagnostic/output correctness gates and clarify warning
+  categories, GSSAPI-only credential ownership, operation deadlines, blocking
+  callback limitations and awaited detached cleanup allowances. Concise
+  reports still emit at finalization; no new probe writes or schema changes.
 
 ## [0.3.1] - 2026-11-09
 

@@ -19,14 +19,18 @@ func ExampleClient_Send() {
 			Recipients: []string{"recipient@example.com"},
 			Data:       []byte("Subject: Example\r\n\r\nHello.\r\n"),
 		})
+		for _, warning := range result.Warnings {
+			// Policy/authentication warnings can precede acceptance or an error.
+			fmt.Printf("Submission warning: %v\n", warning)
+		}
 		if err != nil {
 			if errors.Is(err, ztmail.ErrDeliveryUncertain) {
 				return fmt.Errorf("check relay acceptance before retrying: %w", err)
 			}
 			return err
 		}
-		for _, warning := range result.Warnings {
-			fmt.Printf("Accepted by relay; cleanup warning: %v\n", warning)
+		if result.Accepted {
+			fmt.Println("Message accepted by relay (not mailbox delivery proof)")
 		}
 		return nil
 	}

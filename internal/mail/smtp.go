@@ -87,9 +87,14 @@ func (a *gssAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 		return "", nil, errors.New("relay does not advertise AUTH GSSAPI")
 	}
 	a.report.Step("SMTP AUTH mechanism", nil, "GSSAPI advertised")
+	if err := CheckOutput(nil, a.report, false); err != nil {
+		a.localFailure = true
+		return "", nil, err
+	}
 	token, err := a.security.Start()
-	a.localFailure = err != nil
 	a.report.Step("GSSAPI initial token", err, "initial security token created (not printed)")
+	err = JoinOutput(err, nil, a.report, false)
+	a.localFailure = err != nil
 	return "GSSAPI", token, err
 }
 
@@ -113,6 +118,10 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 			a.stage = 1
 			a.report.Step("GSSAPI mutual authentication", nil, "server identity verified")
 		}
+		if err := CheckOutput(nil, a.report, false); err != nil {
+			a.localFailure = true
+			return nil, err
+		}
 		// net/smtp treats nil as end-of-AUTH, not as an empty GSSAPI token.
 		if token == nil {
 			token = []byte{}
@@ -124,6 +133,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 			err = errors.New("empty GSSAPI SASL negotiation response")
 		}
 		a.report.Step("GSSAPI SASL negotiation", err, "no-layer selection protected by GSSAPI")
+		err = JoinOutput(err, nil, a.report, false)
 		if err != nil {
 			a.localFailure = true
 			return nil, fmt.Errorf("AD GSSAPI SASL negotiation: %w", err)
@@ -136,9 +146,17 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 }
 
 func deliver(ctx context.Context, o options, recipients []string, message []byte, backend Resolver, log io.Writer) (err error) {
+	log = TrackOutput(log)
+	accepted := false
+	defer func() {
+		err = JoinOutput(err, log, o.report, accepted)
+	}()
 	o.report.AuthenticationMethod(o.auth)
 	if o.auth == AuthGSSAPI || o.auth == "" {
 		o.report.Value("SPN", o.spn)
+	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -163,6 +181,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 		evidence = configured
 	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	if backend == nil {
 		return errors.New("relay resolver is required")
 	}
@@ -175,6 +196,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		defer done()
 		conn.Close()
 	}()
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			return fmt.Errorf("set SMTP deadline: %w", err)
@@ -199,6 +223,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		evidence.TLSEstablished = true
 		transport = secure
 	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	greetingDone := o.report.Measure("SMTP greeting")
 	c, err := smtp.NewClient(transport, o.relay)
 	err = smtpIOCause(ctx, err)
@@ -212,12 +239,18 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		defer done()
 		c.Close()
 	}()
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	helloDone := o.report.Measure("SMTP EHLO")
 	err = smtpIOCause(ctx, c.Hello(o.hello))
 	helloDone()
 	o.report.Step("SMTP EHLO", err, fmt.Sprintf("hostname=%q", o.hello))
 	if err != nil {
 		return fmt.Errorf("SMTP EHLO: %w", err)
+	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
 	}
 	if o.tlsMode == "required" {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
@@ -245,6 +278,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		state = &tlsState
 		o.report.TLS(tlsState)
 	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	if evidence.Method == AuthGSSAPI {
 		gssBackend, ok := backend.(Backend)
 		if !ok {
@@ -260,16 +296,22 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			done := o.report.Measure("GSSAPI cleanup")
 			defer done()
 			if closeErr := security.Close(); closeErr != nil {
-				if err != nil || o.testMode {
+				o.report.Step("GSSAPI cleanup", closeErr, "")
+				if !accepted {
 					err = errors.Join(err, closeErr)
 				} else {
 					warn(o, log, fmt.Errorf("message accepted, but security context cleanup failed: %w", closeErr))
+					if CheckOutput(log, o.report, true) != nil {
+						err = errors.Join(err, closeErr)
+					}
 				}
-				o.report.Step("GSSAPI cleanup", closeErr, "")
 			} else {
 				o.report.Step("GSSAPI cleanup", nil, "security context closed")
 			}
 		}()
+		if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+			return outputErr
+		}
 		auth := &gssAuth{security: security, report: o.report}
 		authDone := o.report.Measure("SMTP GSSAPI authentication")
 		err = c.Auth(auth)
@@ -296,6 +338,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			return errors.New("mTLS requires a completed TLS handshake and a requested/presented client certificate")
 		}
 		o.report.Step("TLS client certificate presentation", nil, "requested client certificate presented; relay policy is not independently observable")
+		if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+			return outputErr
+		}
 		if evidence.Method == AuthMTLSExternal {
 			done := o.report.Measure("SMTP EXTERNAL authentication")
 			err = smtpIOCause(ctx, externalAuthentication(c))
@@ -310,6 +355,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 	}
 	reportAuthentication(o, *evidence)
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
+	}
 	if o.testMode {
 		quitDone := o.report.Measure("SMTP QUIT")
 		err = smtpIOCause(ctx, c.Quit())
@@ -325,6 +373,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		if err != nil {
 			return fmt.Errorf("build testmail: %w", err)
 		}
+	}
+	if outputErr := CheckOutput(log, o.report, false); outputErr != nil {
+		return outputErr
 	}
 	if err := c.Mail(o.from); err != nil {
 		return fmt.Errorf("SMTP MAIL FROM: %w", smtpIOCause(ctx, err))
@@ -344,6 +395,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("relay did not confirm message acceptance: %w: %w", ErrDeliveryUncertain, smtpIOCause(ctx, err))
 	}
+	accepted = true
 	if o.testMail {
 		o.report.Value("Testmail delivery", "Accepted by relay (not mailbox delivery proof)")
 		o.report.Step("SMTP DATA", nil, "testmail accepted by relay")
@@ -356,6 +408,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		warn(o, log, fmt.Errorf("message accepted, but SMTP QUIT failed: %w", err))
 		if o.testMail {
 			o.report.Line("WARN", "SMTP QUIT", "testmail accepted, but disconnect failed: "+err.Error())
+		}
+		if CheckOutput(log, o.report, true) != nil {
+			return err
 		}
 	} else if o.testMail {
 		o.report.Step("SMTP QUIT", nil, "testmail accepted; disconnected")
@@ -406,6 +461,9 @@ func certificateLifetime(notAfter, now time.Time) string {
 }
 
 func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, error) {
+	if outputErr := CheckOutput(nil, o.report, false); outputErr != nil {
+		return nil, outputErr
+	}
 	dnsDone := o.report.Measure("DNS relay lookup")
 	addresses, err := backend.Resolve(ctx, o.relay)
 	dnsDone()
@@ -419,6 +477,9 @@ func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, erro
 		return nil, fmt.Errorf("%w: %w", ErrRelayUnavailable, err)
 	}
 	o.report.Step("Relay DNS lookup", nil, fmt.Sprintf("host=%q addresses=%v", o.relay, addresses))
+	if outputErr := CheckOutput(nil, o.report, false); outputErr != nil {
+		return nil, outputErr
+	}
 	var failures []error
 	tcpDone := o.report.Measure("SMTP TCP connection")
 	defer tcpDone()
