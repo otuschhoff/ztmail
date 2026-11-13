@@ -166,6 +166,14 @@ The SDK's `directory.CanonicalMail` selects exactly one uppercase `SMTP:`
 primary from `proxyAddresses`, falling back to the single `mail` value if no
 primary exists. Lowercase `smtp:` aliases are not substituted. Ambiguous or
 malformed mail remains an error, not a guessed `user@domain` address.
+SDK 0.8.3 rejects quoted local-parts. For that invalid-mail boundary only,
+ztmail applies a local mailbox-validation extension using the shared bare
+mailbox serializer. It preserves the same primary/fallback, complete/unique
+attribute, alias-validation, ASCII and 254-byte stored-value policies, while
+allowing supported quoted local-parts (including spaces and escaped
+quotes/backslashes). A primary never hides a malformed fallback or alias.
+The extension does not alter the SDK's search, routing or AD ownership, mutate
+directory entries, retry LDAP or replace other directory failures.
 The same scoped read also requests `objectClass`. Only a matched computer
 object with missing mailbox attributes returns an explicit `HostWithoutMail`
 result. AD computer objects inherit `objectClass=user`, so the authenticated

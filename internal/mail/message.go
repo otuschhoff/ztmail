@@ -24,11 +24,59 @@ func EnvelopeAddress(s, domain string, allowNull bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid address %q: %w", s, err)
 	}
-	// net/mail accepts some quoted local parts which net/smtp cannot safely put on the wire.
-	if strings.ContainsAny(a.Address, "\r\n\x00<>") {
+	return mailboxSpec(a.Address)
+}
+
+func mailboxSpec(address string) (string, error) {
+	if strings.ContainsAny(address, "\r\n\x00<>") {
 		return "", errors.New("unsupported envelope address")
 	}
-	return a.Address, nil
+	// ParseAddress decodes local-part quotes; String restores required quoting and escaping.
+	formatted := (&mail.Address{Address: address}).String()
+	return formatted[1 : len(formatted)-1], nil
+}
+
+func bareMailboxSpec(s string) (string, error) {
+	address, err := mail.ParseAddress(s)
+	if err != nil || address.Name != "" || strings.TrimSpace(s) != s || strings.ContainsAny(s, "\r\n\x00") {
+		return "", errors.New("requires a single bare mailbox")
+	}
+	at := strings.LastIndexByte(s, '@')
+	if at < 1 {
+		return "", errors.New("requires a single bare mailbox")
+	}
+	local := s[:at]
+	if strings.HasPrefix(local, "\"") {
+		if len(local) < 2 || local[len(local)-1] != '"' {
+			return "", errors.New("requires a single bare mailbox")
+		}
+		for i := 1; i < len(local)-1; i++ {
+			if local[i] == '\\' {
+				i++
+			} else if local[i] == '"' {
+				return "", errors.New("requires a single bare mailbox")
+			}
+		}
+		domainAt := strings.LastIndexByte(address.Address, '@')
+		if s[at+1:] != address.Address[domainAt+1:] {
+			return "", errors.New("requires a single bare mailbox")
+		}
+	} else if s != address.Address {
+		return "", errors.New("requires a single bare mailbox")
+	}
+	return mailboxSpec(address.Address)
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] < 33 || name[i] > 126 || name[i] == ':' {
+			return false
+		}
+	}
+	return true
 }
 
 type headerField struct {
@@ -112,6 +160,9 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 			if !ok || name == "" {
 				return nil, nil, invalidMessage(fmt.Errorf("line %d: expected a header before the blank line, but this line is not \"Name: value\"", lineNumber))
 			}
+			if !validHeaderName(name) {
+				return nil, nil, invalidMessage(fmt.Errorf("line %d: invalid header field name %q", lineNumber, name))
+			}
 			name = strings.ToLower(name)
 			fields = append(fields, headerField{name, strings.TrimSpace(value)})
 			skip = name == "bcc" || name == "resent-bcc"
@@ -163,7 +214,11 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 				return nil, nil, fmt.Errorf("invalid %s header: %w", f.name, err)
 			}
 			for _, a := range list {
-				recipients = append(recipients, a.Address)
+				spec, err := mailboxSpec(a.Address)
+				if err != nil {
+					return nil, nil, fmt.Errorf("invalid %s header: %w", f.name, err)
+				}
+				recipients = append(recipients, spec)
 			}
 		}
 	}
@@ -222,8 +277,8 @@ func ApplySender(message []byte, explicit, canonical, domain string) ([]byte, st
 }
 
 func RewriteSender(message []byte, sender string) ([]byte, error) {
-	address, err := mail.ParseAddress(sender)
-	if err != nil || address.Name != "" || address.Address != sender || strings.ContainsAny(sender, "\r\n\x00") {
+	spec, err := bareMailboxSpec(sender)
+	if err != nil {
 		return nil, errors.New("sender rewrite requires a single bare mailbox")
 	}
 	newline := "\n"
@@ -231,8 +286,8 @@ func RewriteSender(message []byte, sender string) ([]byte, error) {
 		newline = "\r\n"
 	}
 	var out bytes.Buffer
-	out.WriteString("From: " + address.String() + newline)
-	skip, senderWritten := false, false
+	out.WriteString("From: <" + spec + ">" + newline)
+	skip, senderWritten, fieldSeen := false, false, false
 	for offset := 0; offset < len(message); {
 		end := bytes.IndexByte(message[offset:], '\n')
 		if end < 0 {
@@ -247,14 +302,19 @@ func RewriteSender(message []byte, sender string) ([]byte, error) {
 			out.Write(message[offset:])
 			return out.Bytes(), nil
 		}
-		if text[0] != ' ' && text[0] != '\t' {
-			name, _, found := strings.Cut(text, ":")
-			if !found {
+		if text[0] == ' ' || text[0] == '\t' {
+			if !fieldSeen {
 				return nil, errors.New("malformed header during sender rewrite")
 			}
+		} else {
+			name, _, found := strings.Cut(text, ":")
+			if !found || !validHeaderName(name) {
+				return nil, errors.New("malformed header during sender rewrite")
+			}
+			fieldSeen = true
 			skip = strings.EqualFold(name, "from") || strings.EqualFold(name, "sender")
 			if strings.EqualFold(name, "sender") && !senderWritten {
-				out.WriteString("Sender: " + address.String() + newline)
+				out.WriteString("Sender: <" + spec + ">" + newline)
 				senderWritten = true
 			}
 		}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime"
 	"slices"
 	"time"
@@ -57,6 +58,14 @@ func cloneClientCertificate(input *tls.Certificate) (*tls.Certificate, error) {
 	signer, ok := input.PrivateKey.(crypto.Signer)
 	if !ok {
 		return nil, errors.New("client private key must support signing")
+	}
+	// Custom signers can have any nil-able underlying type, not only pointers.
+	value := reflect.ValueOf(signer)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if value.IsNil() {
+			return nil, errors.New("client private key must not be nil")
+		}
 	}
 	result := *input
 	result.Certificate = make([][]byte, len(input.Certificate))
@@ -140,11 +149,28 @@ func LoadServerCAs(path string) ([][]byte, error) {
 	}
 	var result [][]byte
 	for len(bytes.TrimSpace(data)) > 0 {
-		if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("-----BEGIN CERTIFICATE-----")) {
+		data = bytes.TrimSpace(data)
+		begin, end := []byte("-----BEGIN CERTIFICATE-----"), []byte("-----END CERTIFICATE-----")
+		if !bytes.HasPrefix(data, begin) {
 			return nil, errors.New("SMTP CA bundle contains non-certificate or malformed PEM")
 		}
-		block, rest := pem.Decode(data)
-		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+		// pem.Decode skips malformed blocks, so give it exactly one framed entry.
+		endIndex := bytes.Index(data[len(begin):], end)
+		if endIndex < 0 {
+			return nil, errors.New("SMTP CA bundle contains invalid certificate PEM")
+		}
+		endIndex += len(begin)
+		body := data[len(begin):endIndex]
+		if bytes.Contains(body, []byte("-----BEGIN")) || bytes.Contains(body, []byte("-----END")) {
+			return nil, errors.New("SMTP CA bundle contains invalid certificate PEM")
+		}
+		blockEnd := endIndex + len(end)
+		endRest, rest, _ := bytes.Cut(data[blockEnd:], []byte("\n"))
+		if len(bytes.TrimSpace(endRest)) != 0 {
+			return nil, errors.New("SMTP CA bundle contains invalid certificate PEM")
+		}
+		block, blockRest := pem.Decode(data[:blockEnd])
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 || len(bytes.TrimSpace(blockRest)) != 0 {
 			return nil, errors.New("SMTP CA bundle contains invalid certificate PEM")
 		}
 		if _, err := x509.ParseCertificate(block.Bytes); err != nil {

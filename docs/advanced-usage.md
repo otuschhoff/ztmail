@@ -96,6 +96,10 @@ not LDAP or the relay's client-CA trust:
 | `--tls-ca roots.pem --tls-ca-mode replace` | Only the required nonempty PEM CA bundle; no system fallback |
 
 Malformed PEM, invalid CAs, empty bundles and unavailable root stores are errors.
+Each CA bundle entry is validated in order: an invalid block before or between
+valid certificates, nested/mismatched markers, PEM headers and trailing garbage
+are rejected rather than skipped. Whitespace-separated LF/CRLF bundles, with
+or without a final newline, remain supported.
 TLS remains at least 1.2 with relay-hostname/SNI verification, even when dialing
 SDK-resolved numeric addresses. `--tls off` rejects certificate/trust options.
 
@@ -470,10 +474,18 @@ printf 'From: Alice <alice@corp.example.com>\nTo: bob@corp.example.com\nSubject:
 - `-t` adds recipients from `To`, `Cc`, and `Bcc`. When Resent fields exist,
   only the newest contiguous Resent block's recipients are selected.
   Header recipient syntax must use complete RFC mailbox addresses.
+- Supported quoted local-parts, for example `-f '"a b"@corp.example.com'`, retain
+  required quotes/escapes in MAIL/RCPT commands, saved senders and native
+  sendmail arguments. Unnecessary quotes are normalized consistently.
+  Native file/pipe/include-target restrictions still apply.
 - All `Bcc` and `Resent-Bcc` fields, including folded continuation lines, are
   removed from the transmitted message even without `-t`. Other header bytes
   (except From/Sender) and body content are preserved, apart from SMTP
   line-ending normalization.
+- Header names must be RFC 5322 `ftext`: printable ASCII other than `:`.
+  Whitespace/control/non-ASCII names, including `Bcc :` or `Bcc` followed by a
+  tab before `:`, fail locally before authentication/submission, not by
+  attempting to normalize them.
 - Without positional recipients, headers are read automatically as with `-t`.
   If neither supplies recipients, the authenticated user's canonical AD mail
   becomes the recipient, independently of any sender override. A missing or

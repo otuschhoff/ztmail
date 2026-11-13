@@ -45,6 +45,9 @@ func CanonicalMail(ctx context.Context, client directory.UniqueFinder, identity 
 		return CanonicalMailbox{}, err
 	}
 	address, mailErr := directory.CanonicalMail(entry)
+	if errors.Is(mailErr, directory.ErrInvalidMail) {
+		address, mailErr = canonicalQuotedMail(entry)
+	}
 	if !errors.Is(mailErr, directory.ErrMissingAttribute) {
 		return CanonicalMailbox{Address: address}, mailErr
 	}
@@ -56,6 +59,79 @@ func CanonicalMail(ctx context.Context, client directory.UniqueFinder, identity 
 		return CanonicalMailbox{HostWithoutMail: true}, nil
 	}
 	return CanonicalMailbox{}, mailErr
+}
+
+// SDK v0.8.3 rejects quoted local-parts. Extend only that validation boundary,
+// retaining its primary/fallback selection and strict attribute/alias policy.
+func canonicalQuotedMail(entry *adldap.Entry) (string, error) {
+	if entry == nil {
+		return "", directory.ErrMalformed
+	}
+	var proxies [][]byte
+	found := false
+	for _, attribute := range entry.Attributes {
+		name, _, optioned := strings.Cut(attribute.Name, ";")
+		if !strings.EqualFold(name, "proxyAddresses") {
+			continue
+		}
+		if optioned {
+			return "", directory.ErrIncompleteAttribute
+		}
+		if found {
+			return "", directory.ErrAmbiguousAttribute
+		}
+		found, proxies = true, attribute.Values
+	}
+	primary := ""
+	for _, value := range proxies {
+		proxy := string(value)
+		if proxy == "" || !utf8.Valid(value) || strings.ContainsAny(proxy, "\r\n\x00") {
+			return "", directory.ErrInvalidMail
+		}
+		if len(proxy) < 5 || !strings.EqualFold(proxy[:5], "smtp:") {
+			continue
+		}
+		if proxy[:5] != "SMTP:" && proxy[:5] != "smtp:" {
+			return "", directory.ErrInvalidMail
+		}
+		address, err := directoryMailboxSpec(proxy[5:])
+		if err != nil {
+			return "", err
+		}
+		if proxy[:5] == "SMTP:" {
+			if primary != "" {
+				return "", directory.ErrAmbiguousAttribute
+			}
+			primary = address
+		}
+	}
+	fallback, err := directory.SingleValue(entry, "mail")
+	if err == nil {
+		fallback, err = directoryMailboxSpec(fallback)
+	}
+	if err != nil && !errors.Is(err, directory.ErrMissingAttribute) {
+		return "", err
+	}
+	if primary != "" {
+		return primary, nil
+	}
+	return fallback, err
+}
+
+func directoryMailboxSpec(value string) (string, error) {
+	if value == "" || len(value) > 254 {
+		return "", directory.ErrInvalidMail
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 32 || value[i] > 126 {
+			return "", directory.ErrInvalidMail
+		}
+	}
+	address, err := bareMailboxSpec(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", directory.ErrInvalidMail, err)
+	}
+	return address, nil
 }
 
 func directoryComputer(entry *adldap.Entry) (bool, error) {

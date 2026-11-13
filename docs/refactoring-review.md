@@ -8,7 +8,12 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** review only; no application changes, commits, or releases.
+**Disposition:** the original review changed no application code. Phase 0 and
+Phase 1 are now complete; execution records below describe their approved
+changes and verification. Remaining phases are not authorized by completion.
+
+The executive assessment and finding evidence describe the review baseline,
+not an assertion that already resolved Phase 1 defects remain in current code.
 
 ## Executive assessment
 
@@ -266,9 +271,9 @@ Confidence applies to the observed mechanism, not to unmeasured impact.
 
 | ID | Priority | Classification | Finding |
 | --- | --- | --- | --- |
-| R01 | P1 | Confirmed correctness gap | Quoted mailbox local-parts lose required envelope quoting |
-| R02 | P1 | Confirmed validation gap | Invalid header field names pass local preparation |
-| R03 | P1 | Confirmed error-contract gap | SMTP cancellation can lose context sentinel identity |
+| R01 | P1 | Resolved in Phase 1 | Quoted mailbox local-parts lose required envelope quoting |
+| R02 | P1 | Resolved in Phase 1 | Invalid header field names pass local preparation |
+| R03 | P1 | Resolved in Phase 1 | SMTP cancellation can lose context sentinel identity |
 | R04 | P2 | Confirmed consistency/documentation gap | Warning/output handling differs across CLI, library, and fallback |
 | R05 | P2 | Confirmed diagnostic defect | EXTERNAL auth duration is categorized as handshake time |
 | R06 | P2 | Confirmed diagnostic defect | DC inventory updates replace historical address evidence |
@@ -281,8 +286,8 @@ Confidence applies to the observed mechanism, not to unmeasured impact.
 | R13 | P3 | Optimization hypothesis | Immutable TLS material is prepared repeatedly |
 | R14 | P2 | Confirmed contract mismatch | Complete-call timeout wording exceeds enforceable guarantees |
 | R15 | P2 | Confirmed quality-gate gap | Local review checks and test-isolation expectations are not enforced in CI |
-| R16 | P1 | Confirmed construction safety gap | A typed-nil certificate signer can panic instead of returning an error |
-| R17 | P2 | Confirmed validation gap | Strict CA-bundle loading can silently skip a malformed PEM block |
+| R16 | P1 | Resolved in Phase 1 | A typed-nil certificate signer can panic instead of returning an error |
+| R17 | P2 | Resolved in Phase 1 | Strict CA-bundle loading can silently skip a malformed PEM block |
 
 ### R01. Envelope mailbox canonicalization
 
@@ -1002,11 +1007,12 @@ until representative materiality and functional-equivalence gates are met.
 | No premature production fixes or optimizations | No production source/API/dependency/CI/version changes; no red regression suite, silent policy assumptions, throughput claims or blanket linter additions |
 | Persistent execution guidance | Approved decisions, inventory, dimensions, baseline results and recapture commands committed in existing documentation with the fixtures |
 
-No Phase 0 exit criterion remains unresolved. R01-R17 remain **open**, **pending
+No Phase 0 exit criterion remains unresolved. At that phase's completion,
+R01-R17 remained **open**, **pending
 their selected correction**, or **pending measurement/accepted resource policy**
-as described above; completing this baseline phase does not close those
-production findings. In particular, R10/R16 are still correctness-first later
-tasks, not optional optimizations. The next task may be a selected, independently
+as described above; completing the baseline phase did not close those
+production findings. In particular, R10/R16 were correctness-first later
+tasks, not optional optimizations. The next task required a selected, independently
 approved Phase 1 correction or Phase 2 diagnostic correction; do not infer
 authorization to run the remaining phases from the Phase 0 commit.
 
@@ -1030,6 +1036,57 @@ certificate-loading code and run serially; neither needs the mailbox decision.
 **Exit gate:** focused tests pass, then `go test -race ./...` and `go vet ./...`.
 No sender, recipient, authentication, acceptance, or fallback changes outside
 the explicitly tested corrections.
+
+#### Phase 1 execution record (2026-11-13, completed)
+
+**Starting commit:** `a5c3c09`; application 0.3.1, AD SDK 0.8.3 and Go 1.26.9
+unchanged. The five-task inventory, including directly coupled canonical AD
+mail, CLI/native/saved-sender and public-library surfaces, was explicitly
+approved. No Phase 2 correction, exported signature, dependency, CI, version,
+release or push change was made.
+
+Each correction began with a failing regression against its original
+implementation. The tests reproduced decoded quoted-mailbox output, accepted
+invalid header names, lost SMTP context identity, a typed-nil signer panic and
+malformed PEM blocks skipped before valid ones. Re-evaluation found two
+additional coupled gaps: SDK 0.8.3 rejected quoted canonical AD mail entirely,
+and EOF/timeout-shaped errors from local GSSAPI token callbacks could acquire
+false cancellation identity. Both were corrected and covered before the final
+phase check; they were not left as deferred findings.
+
+| Exit criterion | Verified behavior and evidence |
+| --- | --- |
+| P1-A / R01, coherent mailbox representation | Shared bare-mailbox serialization preserves necessary local-part quoting/escaping and normalizes unnecessary quotes. Explicit/header recipients, sender rewrites, canonical/self-recipient fallback and saved/native paths agree. Exact library MAIL/RCPT commands cover spaces, quotes, backslashes, consecutive dots and quoted atoms; shared tests also cover edge dots, quoted `@`, IPv4 domain literals and existing UTF-8 local addresses. Null envelopes, aliases, input/body isolation and recipient deduplication retain existing tests. |
+| Canonical AD coupling | Ordinary validation still uses SDK `directory.CanonicalMail`; an invalid-mail-only local extension handles supported quoted local-parts because SDK 0.8.3 cannot. Tests preserve primary/fallback selection, non-substitution of aliases, validation of all SMTP aliases and fallback values, complete/unique attributes, stored ASCII/length restrictions and untouched directory entries. SDK search/routing/ownership remain unchanged. |
+| P1-B / R02, strict header names and privacy | Byte-oriented `ftext` validation precedes classification/copying in preparation and sender rewriting. Exhaustive non-CR/LF/colon byte tests distinguish allowed ASCII from controls/non-ASCII; separate cases cover empty names, embedded CR, whitespace before the colon and orphan continuations. Mixed-case/folded blind fields, quoted recipients in the latest Resent block and opaque bodies are preserved/stripped as intended. Public GSSAPI/mTLS/mTLS-EXTERNAL invalid-mailbox tests abort before acquisition or resolution; malformed CLI headers never invoke the fake native MTA. |
+| P1-C / R03, stage-specific cancellation | Canceled/expired fixtures cover greeting, EHLO, implicit TLS, STARTTLS command/handshake/post-TLS EHLO, GSSAPI/EXTERNAL, MAIL/RCPT, DATA command/write/response and QUIT. Failed network boundaries retain original I/O causes plus applicable context identity. Deadline-timer lag is inferred only for a network timeout at an elapsed context deadline. Protocol/security/token errors remain independent of late cancellation, including EOF/timeout-shaped local token failures. Unconfirmed DATA remains uncertain; confirmed DATA remains successful with context-bearing QUIT warnings. |
+| P1-D / R16, signer safety and ownership | Guarded reflection rejects underlying nil values before calling signer methods. Four signer shapes (RSA, ECDSA, Ed25519 slice, custom pointer) fail both preparation and public construction. Two valid-custom-signer cases and existing key-match/copy/concurrent certificate tests remain green. No panic recovery, type whitelist or key ownership change. |
+| P1-E / R17, non-skipping PEM | Isolate each certificate entry and reject interior/nested markers before standard decoding. Eighty malformed-entry combinations cover prefix/interior/suffix placement, base64/DER failures, headers, mismatched/unmatched markers and trailing material; six valid LF/CRLF/whitespace/no-final-newline bundles succeed. Existing trust and file-permission/FIFO policies remain unchanged. |
+| Integration, ownership and delivery safety | Combined focused corrections pass twice with race detection; the broader SMTP/GSSAPI/certificate lifecycle selector passes three repetitions after token-error re-evaluation. Full shuffled race/coverage suite passes twice, including existing acceptance/no-replay/fallback, lease/context cleanup, copy isolation, native fake-MTA and benchmark-fixture tests. |
+| Build and documentation | Native build/vet/CLI link, CGO-free Windows amd64 and Darwin arm64 cross-build/vet/CLI links, Go formatting, diff whitespace and release-note extraction tests pass. Direct library/usage/implementation contracts and Unreleased changelog are updated. Cross-builds are not native Windows/macOS or live AD validation. |
+
+The final full-suite command was:
+
+```sh
+go test -json -race -shuffle=1794593178716668121 -count=2 \
+  -coverprofile="$EVIDENCE_DIR/coverage.out" ./... > "$EVIDENCE_DIR/tests.json"
+go tool cover -func="$EVIDENCE_DIR/coverage.out" > "$EVIDENCE_DIR/functions.txt"
+```
+
+It recorded **2,428 passing test/subtest events**, zero failures and six skip
+events (three distinct tests, each repeated twice): the intentional
+`TestSMTPTestTLSHelper` and `TestSIGINTMessageHelper` subprocess helpers, and
+`TestLibraryMTLSEndToEnd/cli` because isolated port 53 is unavailable.
+Statement coverage is public library **93.2%**, CLI **70.0%**, internal mail
+**93.4%**, weighted total **85.9%** (Phase 0: 85.1%). Function-level coverage and
+the exact behavior matrix above were checked; aggregate coverage alone is not
+the exit criterion. Raw JSON/coverage evidence is retained outside the checkout.
+
+**Completion decision:** no Phase 1 exit criterion remains unresolved.
+R01/R02/R03/R16/R17 are closed; R04-R15, including the correctness-first R10
+writer reentry defect, retain their existing findings/policies and later-phase
+gates. This phase makes no throughput, general blocking-callback cancellation,
+live AD or native-platform certification claim.
 
 ### Phase 2: repair diagnostic fidelity and public wording
 

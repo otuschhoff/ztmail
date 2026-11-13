@@ -24,6 +24,9 @@ Null-envelope `From: "<>"` preserves sender headers. `Test` needs neither.
 SMTP authentication; `Accepted` remains separate DATA-acceptance evidence.
 Mutable certificate/CA DER and selector slices are copied at `New`.
 The private signer is borrowed and must remain immutable and concurrency-safe.
+Nil underlying signer values, including typed-nil custom pointers and nil
+Ed25519 keys, are configuration errors before signer methods are invoked.
+Valid custom signers remain supported; arbitrary signer panics are not recovered.
 
 Import `github.com/otuschhoff/ztmail`. The application supplies an existing
 `*adclient.Client` created with `adclient.NewAD`; ztmail does not create another
@@ -119,6 +122,13 @@ Bcc/Resent-Bcc headers are always stripped, and duplicate recipients are
 deduplicated. Message structure and envelope addresses are validated before
 credential acquisition.
 
+Header field names must contain only printable ASCII other than `:` (RFC 5322
+`ftext`); whitespace/control/non-ASCII variants such as `Bcc :` are rejected,
+not normalized. Supported quoted local-parts retain required quotes/escapes in
+envelope addresses, including `Result.From` and `Result.Recipients`; unnecessary
+quotes are normalized away. Explicit and header addresses use the same
+representation, while From/Sender headers remain RFC mailbox syntax.
+
 By default, the canonical AD mail address becomes the envelope sender and
 From/Sender headers. `Message.From` explicitly overrides them and skips the
 mail lookup. `Message.From: "<>"` uses the null envelope and preserves sender
@@ -139,6 +149,11 @@ QUIT/context-cleanup failures after acceptance are warnings, not send failures.
 Before acceptance, errors are returned normally. An error matching
 `ErrDeliveryUncertain` means DATA started but acceptance could not be confirmed;
 do not blindly retry. Neither API performs automatic SMTP retries.
+Failed SMTP network operations retain both the original I/O cause and
+`context.Canceled`/`context.DeadlineExceeded` when cancellation or the operation
+deadline terminated them. These causes can coexist with `ErrDeliveryUncertain`.
+An unrelated protocol rejection is not reclassified by later cancellation;
+cancellation after known acceptance remains a post-acceptance warning.
 
 `mailer.Test(ctx, reportWriter)` checks canonical mail and SMTP authentication
 without sending email; it always leaves `Accepted` false. It returns cleanup

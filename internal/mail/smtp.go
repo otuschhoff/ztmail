@@ -44,10 +44,35 @@ type Backend interface {
 }
 
 type gssAuth struct {
-	security  SecurityContext
-	stage     int
-	confirmed bool
-	report    *TestReport
+	security     SecurityContext
+	stage        int
+	confirmed    bool
+	report       *TestReport
+	localFailure bool
+}
+
+// Snapshot cancellation at the failed I/O boundary, not after reporting or cleanup.
+func smtpIOCause(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	var networkErr net.Error
+	if !errors.As(err, &networkErr) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return err
+	}
+	if cause := ctx.Err(); cause != nil {
+		if errors.Is(err, cause) {
+			return err
+		}
+		return errors.Join(err, cause)
+	}
+	// The socket deadline can fire before the context's timer is scheduled.
+	if networkErr != nil && networkErr.Timeout() {
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return errors.Join(err, context.DeadlineExceeded)
+		}
+	}
+	return err
 }
 
 func (a *gssAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
@@ -63,6 +88,7 @@ func (a *gssAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 	}
 	a.report.Step("SMTP AUTH mechanism", nil, "GSSAPI advertised")
 	token, err := a.security.Start()
+	a.localFailure = err != nil
 	a.report.Step("GSSAPI initial token", err, "initial security token created (not printed)")
 	return "GSSAPI", token, err
 }
@@ -79,6 +105,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 	case 0:
 		token, done, err := a.security.Step(challenge)
 		if err != nil {
+			a.localFailure = true
 			a.report.Step("GSSAPI mutual authentication", err, "")
 			return nil, fmt.Errorf("GSSAPI mutual authentication: %w", err)
 		}
@@ -98,6 +125,7 @@ func (a *gssAuth) Next(challenge []byte, more bool) ([]byte, error) {
 		}
 		a.report.Step("GSSAPI SASL negotiation", err, "no-layer selection protected by GSSAPI")
 		if err != nil {
+			a.localFailure = true
 			return nil, fmt.Errorf("AD GSSAPI SASL negotiation: %w", err)
 		}
 		a.stage = 2
@@ -158,7 +186,9 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	if o.tlsMode == "implicit" {
 		secure := tls.Client(conn, tlsConfig)
 		tlsDone := o.report.Measure("SMTP implicit TLS")
-		err := secure.HandshakeContext(ctx)
+		// The connection deadline and cancellation closer interrupt TLS while
+		// retaining its I/O error (HandshakeContext can replace it with ctx.Err).
+		err := smtpIOCause(ctx, secure.Handshake())
 		tlsDone()
 		if err != nil {
 			o.report.Step("Implicit TLS", err, "")
@@ -171,6 +201,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	}
 	greetingDone := o.report.Measure("SMTP greeting")
 	c, err := smtp.NewClient(transport, o.relay)
+	err = smtpIOCause(ctx, err)
 	greetingDone()
 	o.report.Step("SMTP greeting", err, "relay greeting received")
 	if err != nil {
@@ -182,7 +213,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		c.Close()
 	}()
 	helloDone := o.report.Measure("SMTP EHLO")
-	err = c.Hello(o.hello)
+	err = smtpIOCause(ctx, c.Hello(o.hello))
 	helloDone()
 	o.report.Step("SMTP EHLO", err, fmt.Sprintf("hostname=%q", o.hello))
 	if err != nil {
@@ -194,7 +225,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 			return errors.New("relay does not offer STARTTLS; refusing an unencrypted submission")
 		}
 		tlsDone := o.report.Measure("SMTP STARTTLS")
-		err = c.StartTLS(tlsConfig)
+		err = smtpIOCause(ctx, c.StartTLS(tlsConfig))
 		if state, ok := c.TLSConnectionState(); ok && state.HandshakeComplete {
 			tlsEstablished = true
 			evidence.TLSEstablished = true
@@ -242,6 +273,10 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		auth := &gssAuth{security: security, report: o.report}
 		authDone := o.report.Measure("SMTP GSSAPI authentication")
 		err = c.Auth(auth)
+		// Token providers can return EOF or timeout errors unrelated to SMTP I/O.
+		if !auth.localFailure {
+			err = smtpIOCause(ctx, err)
+		}
 		authDone()
 		if provider, ok := security.(kerberos.TicketMetadataProvider); ok {
 			o.report.KerberosTicket(provider.TicketMetadata())
@@ -263,7 +298,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		o.report.Step("TLS client certificate presentation", nil, "requested client certificate presented; relay policy is not independently observable")
 		if evidence.Method == AuthMTLSExternal {
 			done := o.report.Measure("SMTP EXTERNAL authentication")
-			err = externalAuthentication(c)
+			err = smtpIOCause(ctx, externalAuthentication(c))
 			done()
 			o.report.Step("SMTP AUTH EXTERNAL", err, "relay confirmed certificate-backed SMTP authentication")
 			if err != nil {
@@ -277,7 +312,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	reportAuthentication(o, *evidence)
 	if o.testMode {
 		quitDone := o.report.Measure("SMTP QUIT")
-		err = c.Quit()
+		err = smtpIOCause(ctx, c.Quit())
 		quitDone()
 		o.report.Step("SMTP QUIT", err, "disconnected without MAIL FROM, RCPT TO or DATA")
 		if err != nil {
@@ -292,22 +327,22 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 		}
 	}
 	if err := c.Mail(o.from); err != nil {
-		return fmt.Errorf("SMTP MAIL FROM: %w", err)
+		return fmt.Errorf("SMTP MAIL FROM: %w", smtpIOCause(ctx, err))
 	}
 	for _, recipient := range recipients {
 		if err := c.Rcpt(recipient); err != nil {
-			return fmt.Errorf("SMTP RCPT TO %s (message not sent to any recipient): %w", recipient, err)
+			return fmt.Errorf("SMTP RCPT TO %s (message not sent to any recipient): %w", recipient, smtpIOCause(ctx, err))
 		}
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("SMTP DATA: %w", err)
+		return fmt.Errorf("SMTP DATA: %w", smtpIOCause(ctx, err))
 	}
 	if _, err := w.Write(message); err != nil {
-		return fmt.Errorf("write message: %w: %w", ErrDeliveryUncertain, err)
+		return fmt.Errorf("write message: %w: %w", ErrDeliveryUncertain, smtpIOCause(ctx, err))
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("relay did not confirm message acceptance: %w: %w", ErrDeliveryUncertain, err)
+		return fmt.Errorf("relay did not confirm message acceptance: %w: %w", ErrDeliveryUncertain, smtpIOCause(ctx, err))
 	}
 	if o.testMail {
 		o.report.Value("Testmail delivery", "Accepted by relay (not mailbox delivery proof)")
@@ -315,7 +350,7 @@ func deliver(ctx context.Context, o options, recipients []string, message []byte
 	}
 	// A QUIT failure after a positive DATA reply must not cause the caller to resend.
 	quitDone := o.report.Measure("SMTP QUIT")
-	quitErr := c.Quit()
+	quitErr := smtpIOCause(ctx, c.Quit())
 	quitDone()
 	if err := quitErr; err != nil {
 		warn(o, log, fmt.Errorf("message accepted, but SMTP QUIT failed: %w", err))

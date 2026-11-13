@@ -5,6 +5,30 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve required quoting and escaping in supported SMTP mailbox local-parts
+  across explicit/header recipients, sender rewriting, canonical AD mail,
+  saved senders and native sendmail arguments. Normalize unnecessary quoting
+  consistently without changing null-envelope, alias or blind-recipient policy.
+- Reject non-ASCII, whitespace and control bytes in header field names before
+  copying or classifying them, including disguised Bcc/Resent-Bcc fields.
+- Preserve cancellation/deadline identity and original SMTP I/O causes at
+  failed protocol stages. Keep unconfirmed DATA uncertain and confirmed DATA
+  accepted despite cancellation during QUIT or cleanup; do not reclassify
+  unrelated protocol/security errors as cancellation.
+- Reject typed-nil certificate signers before invoking their methods, including
+  custom signers and nil Ed25519 keys, without restricting valid custom signers.
+- Reject every malformed CA PEM entry rather than skipping invalid blocks
+  before or between valid certificates; retain valid LF/CRLF bundles and
+  whitespace-separated certificates.
+
+### Changed
+
+- Complete refactoring Phase 1 with offline wire-command, validation,
+  cancellation, ownership and malformed-PEM regressions. Record phase evidence
+  and remaining work in the refactoring review.
+
 ## [0.3.1] - 2026-11-09
 
 ### Fixed
