@@ -279,15 +279,15 @@ Confidence applies to the observed mechanism, not to unmeasured impact.
 | R04 | P2 | Resolved in Phase 2 | Warning/output handling differs across CLI, library, and fallback |
 | R05 | P2 | Resolved in Phase 2 | EXTERNAL auth duration is categorized as handshake time |
 | R06 | P2 | Resolved in Phase 2 | DC inventory updates replace historical address evidence |
-| R07 | P2 | Confirmed maintainability/UX issue | CLI orchestration mixes state and performs some configuration checks after input |
-| R08 | P2 | Measured testing gap | Real orchestration and native paths are less covered than helper contracts |
-| R09 | P2 | Resource-design concern; performance unmeasured | Message buffering, copying, and folded-header accumulation |
-| R10 | P1 | Reentry resolved in Phase 2; measured optimization remains open | Arbitrary report output under the state mutex can self-deadlock |
-| R11 | P2 | Confirmed algorithmic cost; impact unmeasured | Quadratic runtime aggregation and repeated formatting work |
-| R12 | P2 | Connection-policy trade-off | Sequential address dialing delays later reachable addresses |
-| R13 | P3 | Optimization hypothesis | Immutable TLS material is prepared repeatedly |
+| R07 | P2 | Resolved in Phase 3 | CLI orchestration mixes state and performs some configuration checks after input |
+| R08 | P2 | Offline boundary/fuzz coverage resolved; native CI pending; live pilots unperformed | Real orchestration and native paths are less covered than helper contracts |
+| R09 | P2 | Measured optimization resolved in Phase 4; unrestricted admission policy documented in Phase 5 | Message buffering, copying, and folded-header accumulation |
+| R10 | P1 | Reentry resolved in Phase 2; owned snapshot/resource work resolved in Phase 4 | Arbitrary report output under the state mutex can self-deadlock |
+| R11 | P2 | Measured sweep/formatting optimization resolved in Phase 4 | Quadratic runtime aggregation and repeated formatting work |
+| R12 | P2 | Controlled latency/ownership gates resolved in Phase 5 | Sequential address dialing delays later reachable addresses |
+| R13 | P3 | Measured immutable CA reuse resolved in Phase 4; further signer caching not justified | Immutable TLS material is prepared repeatedly |
 | R14 | P2 | Resolved in Phase 2 | Complete-call timeout wording exceeds enforceable guarantees |
-| R15 | P2 | Confirmed quality-gate gap | Local review checks and test-isolation expectations are not enforced in CI |
+| R15 | P2 | Selected formatting/shuffled-test gates resolved in Phase 5 | Local review checks and test-isolation expectations are not enforced in CI |
 | R16 | P1 | Resolved in Phase 1 | A typed-nil certificate signer can panic instead of returning an error |
 | R17 | P2 | Resolved in Phase 1 | Strict CA-bundle loading can silently skip a malformed PEM block |
 
@@ -1681,6 +1681,29 @@ remains after re-evaluation. Phase 6 release/pilots require their own authorizat
    combinations, compatibility changes, and rollback instructions.
 4. Update the changelog and version only under release authorization. Do not
    rewrite a published release tag to ship refactoring.
+
+#### Phase 6 execution scope (2026-11-14; validation in progress)
+
+**Input:** Phase 5 `30ea103`, source 0.3.1, AD SDK 0.8.3 and Go 1.26.9.
+The user explicitly authorized preparing patch **0.3.2**, a dated changelog,
+main pushes to execute/fix the six-target Build and Windows/macOS Native smoke
+workflows, and a committed/pushed closeout. **No version tag, published release
+or live AD/SMTP pilot is authorized.** Native CI is offline and does not
+certify interactive terminal echo/cancellation or domain-joined SSPI.
+
+The version constant, exact metadata/CLI assertions, build examples and curated
+0.3.2 notes are updated. Published 0.3.1 notes/tags/assets remain untouched.
+Current finding classifications now reflect completed Phases 1-5, rather than
+leaving measured fixes marked as baseline hypotheses. The build guide records
+non-destructive rollback to the verified immutable `v0.3.1` source
+`1d08ad5c438fd940d9344fb7b061939523c2f773`, with no replay of accepted/uncertain
+messages and explicit notice that rollback reintroduces corrected defects.
+
+Local `make test TEST_SHUFFLE=301032026`, independent JSON race/coverage capture,
+twice-shuffled exact version/side-effect tests and curated
+`v0.3.2`/`0.3.2` extraction passed before the validation push. The candidate's
+six-target builds and both remote workflows must finish before closeout can be
+declared; older green GitHub builds at the pre-refactoring source do not qualify.
 
 ## Reusable task prompt
 

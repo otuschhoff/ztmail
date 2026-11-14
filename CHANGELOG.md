@@ -5,6 +5,10 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-14
+
+Prepared patch version; no `v0.3.2` tag or GitHub Release has been published.
+
 ### Fixed
 
 - Start later admitted relay addresses promptly after a stalled TCP candidate:
@@ -12,7 +16,6 @@ Versions use Semantic Versioning; dates are in UTC.
   retaining the final/single candidate's operation deadline. Keep attempts
   sequential, preserve cancellation and independent TCP/output/close failures,
   and close connections rejected by required-output failure without SMTP replay.
-
 - Preserve required quoting and escaping in supported SMTP mailbox local-parts
   across explicit/header recipients, sender rewriting, canonical AD mail,
   saved senders and native sendmail arguments. Normalize unnecessary quoting
@@ -50,11 +53,10 @@ Versions use Semantic Versioning; dates are in UTC.
 
 - Add message/mailbox/HTML/schema fuzz seeds to ordinary tests and separate
   bounded campaigns; enforce non-mutating formatting and shuffled race tests.
-  Add offline Windows/macOS native host/config/console/TLS smoke CI, with
-  native execution pending until authorized push and live pilots separate.
+  Add offline Windows/macOS native host/config/console/TLS smoke CI; native
+  validation and live pilots remain separate from cross-compilation.
 - Document unrestricted input lengths and caller-side byte/concurrency
   admission instead of introducing new message/header/recipient limits.
-
 - Reduce message-preparation copying and folded-header accumulation costs,
   preserving input ownership, body bytes, envelope rules and blind-recipient
   stripping.
@@ -66,17 +68,28 @@ Versions use Semantic Versioning; dates are in UTC.
   across repeated operations. Keep system-root loading, signer/key matching,
   time/hostname/path verification, policy decisions and authentication evidence
   operation-local.
-- Complete refactoring Phase 1 with offline wire-command, validation,
-  cancellation, ownership and malformed-PEM regressions. Record phase evidence
-  and remaining work in the refactoring review.
-- Complete Phase 2's diagnostic/output correctness gates and clarify warning
-  categories, GSSAPI-only credential ownership, operation deadlines, blocking
-  callback limitations and awaited detached cleanup allowances. Concise
-  reports still emit at finalization; no new probe writes or schema changes.
-- Complete Phase 3's CLI boundary characterizations and separate raw flags
-  from per-execution report, credential and prepared TLS state. Extract target/
-  message preparation and GSSAPI submission without changing sender precedence,
-  password timeouts, cleanup ownership or native-fallback policy.
+- Clarify warning categories, GSSAPI-only credential ownership, operation
+  deadlines, blocking callback limitations and awaited detached cleanup
+  allowances. Concise reports still emit at finalization.
+- Document non-destructive rollback to the immutable previous release without
+  message replay, and distinguish prepared source versions from published tags.
+
+### Compatibility and limitations
+
+- Public options/APIs, JSON v2, body/input ownership, saved-sender paths,
+  authentication isolation and no-automatic-replay behavior remain unchanged.
+  Header field names now strictly reject invalid RFC syntax; valid quoted
+  mailbox local-parts retain required SMTP envelope quoting.
+- Required-output failures can now return explicit errors even with confirmed
+  acceptance. Inspect acceptance independently; do not automatically retry an
+  accepted or uncertain message.
+- Message/header/recipient lengths remain unrestricted. Deadlines do not
+  preempt arbitrary synchronous I/O/signers or guarantee total wall-clock/RAM
+  bounds; owned LDAP cleanup has a separate five-second allowance.
+- Native Windows/macOS system/append-root expiry grace remains unsupported;
+  replacement roots are supported. macOS binaries are not signed/notarized.
+  Offline/native CI does not certify interactive password echo/cancellation,
+  domain-joined SSPI, live AD/LDAP/KDC/SMTP, or production throughput/capacity.
 
 ## [0.3.1] - 2026-11-09
 

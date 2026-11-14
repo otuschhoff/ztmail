@@ -38,12 +38,14 @@ To build just one target with the same CGO-free and version metadata settings:
 make build-one TARGET_OS=linux TARGET_ARCH=amd64
 make test
 ./dist/ztmail-linux-amd64 --version
-# 0.3.1+20261101-110716.abcdef0
+# 0.3.2+20261101-110716.abcdef0
 ```
 
-The semantic version is **0.3.1**. Every supported build includes UTC build time
+The source semantic version is **0.3.2**, prepared but not tagged or published.
+The latest published release remains 0.3.1 until a separately authorized release.
+Every supported build includes UTC build time
 and exactly seven characters of the checked-out commit SHA as SemVer build
-metadata: `0.3.1+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
+metadata: `0.3.2+YYYYMMDD-hhmmss.<commitSha>`. A multi-target build uses one
 timestamp/SHA for every binary. `BUILD_TIME` and `COMMIT_SHA` can be supplied to
 Make for controlled rebuilds; otherwise they come from the UTC clock and Git HEAD.
 The executable now lives in `cmd/ztmail`; `go build ./cmd/ztmail` builds the CLI,
@@ -228,6 +230,8 @@ duplicate releases; prerelease tags such as
 Before creating a new version tag:
 
 1. Bump the semantic version and its tests/documentation.
+   Confirm build/native CI for the selected commit and remove prepared/unpublished
+   status text only when publication is authorized.
 2. Move the relevant `Unreleased` changes into a dated section such as
    `## [0.1.4] - 2026-11-01`, using headings like `Added`, `Changed`, and `Fixed`.
 3. Include user-visible behavior changes, compatibility notes, and known
@@ -267,3 +271,46 @@ Tags use plain SemVer, starting with `v0.1.0`; timestamps belong in binaries,
 not release tags. Download binaries from the repository's GitHub Releases page;
 Actions artifacts are also retained for individual builds. On Linux/macOS,
 mark a downloaded bare executable as executable with `chmod +x`.
+
+## Rollback without message replay
+
+Rollback changes the deployed binary or consumer dependency, not message
+acceptance. Do not resubmit a message with confirmed acceptance, an
+accepted-but-status-output-failed error, or `ErrDeliveryUncertain` simply because
+the deployment is being rolled back. Resolve uncertainty operationally with the
+relay; neither version can make blind replay safe.
+
+The immutable published fallback is `v0.3.1`, reviewed source
+`1d08ad5c438fd940d9344fb7b061939523c2f773`. Prefer the published target-specific
+binary and its checksums, or build that tag in a separate checkout using its
+Makefile. Do not reset a shared worktree, rewrite the tag, replace published
+assets, remove user configuration, or copy credentials into source.
+
+For example, on Linux amd64, set `ROLLBACK_DIR` to an existing empty absolute
+directory outside the checkout:
+
+```sh
+set -eu
+: "${ROLLBACK_DIR:?Set an existing empty absolute rollback directory}"
+gh release download v0.3.1 --repo otuschhoff/ztmail \
+  --pattern ztmail-linux-amd64 --pattern SHA256SUMS --dir "$ROLLBACK_DIR"
+(cd "$ROLLBACK_DIR" && sha256sum --check --ignore-missing SHA256SUMS)
+chmod +x "$ROLLBACK_DIR/ztmail-linux-amd64"
+"$ROLLBACK_DIR/ztmail-linux-amd64" --version
+```
+
+Stop on a download/checksum/version failure. `--ignore-missing` applies only
+because the checksum file lists all six binaries but this example downloads
+one. Choose the correct OS/architecture and its checksum tooling on other
+platforms. Stage the verified binary, drain admitted operations and their owned
+cleanup, then switch the deployment using the application's normal procedure.
+For library consumers, pin `github.com/otuschhoff/ztmail@v0.3.1` in the consumer
+module and rebuild/test it; do not alter this repository's dependency manifests.
+
+Rollback restores the earlier behavior and **reintroduces the corrected
+mailbox/header, cancellation/output and diagnostic defects**. It is not an
+equivalent safety profile. Public API, JSON v2 and saved-sender paths were
+preserved by the refactoring; no storage migration or configuration deletion is
+required. Record the exact binary/dependency SHA, configuration and reason for
+rollback, without recording secrets. Offline tests do not authorize a live
+AD/SMTP submission or certify the production environment.
