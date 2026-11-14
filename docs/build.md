@@ -85,7 +85,8 @@ unsupported system/append expiry-grace combination (replace roots remain
 supported). It vets/links a native binary and checks its metadata version.
 The Windows runner has a console even though workflow steps are noninteractive;
 its job requires successful open/close and separately tests explicit failure in
-an isolated `CREATE_NO_WINDOW` child. macOS requires the observed absence of a
+an isolated detached child that calls `FreeConsole` and verifies the missing
+console before the adapter check. macOS requires the observed absence of a
 controlling terminal. Tests never read a password or mutate parent console/
 terminal modes, host DNS or trust.
 It requires the same private SDK read token as the build workflow.

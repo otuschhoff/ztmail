@@ -1711,8 +1711,12 @@ job failed in run `43630913319`: the noninteractive runner successfully opened
 its native console, contradicting the workflow's assumed `absent` expectation.
 The application adapter was correct; no production password behavior changes.
 The workflow now requires Windows `present` and macOS `absent`, plus an awaited,
-30-second-bounded Windows child with `CREATE_NO_WINDOW` that independently
-requires an explicit console-open error. Both availability/error paths are
+30-second-bounded Windows child that independently requires an explicit
+console-open error. The initial creation-flag-only child still opened a console
+on the native runner (`43631382376`); the fixture now explicitly detaches the
+child with `FreeConsole` and verifies unavailable console state before calling
+the product adapter. Its successful helper PASS marker is required, so an
+unmatched/skipped helper cannot produce a false green. Both availability/error paths are
 tested without reading a secret, changing parent console state or weakening
 the native gate. Remote revalidation is required before completion.
 
