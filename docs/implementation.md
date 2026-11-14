@@ -288,6 +288,11 @@ builders. Testmail uses one snapshot timestamp and stable schema/table IDs,
 so its representations describe the same pre-DATA state. Final delivery and
 cleanup cannot appear in the message that is itself being submitted.
 
+Domain emphasis uses one lazy, render-local matcher per table. Cells and
+embedded technical-name fragments reuse it without changing HTML escaping or
+name-boundary rules; plain and uncoloured output bypass matcher construction.
+There is no process-global or per-client formatting cache.
+
 The debug report distinguishes discovery advertisements from actual exchanges.
 It reads detached, availability/provenance-tagged ticket metadata from the
 actual SMTP security context rather than exporting tickets or keys. Cached

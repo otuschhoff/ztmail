@@ -28,6 +28,13 @@ type reportTable struct {
 	currentDateUTC string
 }
 
+type reportFormatter struct {
+	format        reportFormat
+	color         bool
+	domain        string
+	domainPattern *regexp.Regexp
+}
+
 const (
 	currentYearDateKey  = "Current-year date (UTC)"
 	currentMonthDateKey = "Current-month date (UTC)"
@@ -35,6 +42,7 @@ const (
 )
 
 func (t reportTable) render(format reportFormat, color bool, domain string) string {
+	formatter := reportFormatter{format: format, color: color, domain: domain}
 	numeric := t.numericColumns()
 	for _, config := range t.configs {
 		if config.Align != text.AlignRight {
@@ -86,7 +94,7 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 		for _, row := range t.rows {
 			cells := make(table.Row, len(row))
 			for j, cell := range row {
-				cells[j] = formatReportCell(fmt.Sprint(cell), t.cellKey(row, j), format, color, domain)
+				cells[j] = formatter.formatReportCell(fmt.Sprint(cell), t.cellKey(row, j))
 			}
 			writer.AppendRow(cells)
 		}
@@ -126,7 +134,7 @@ func (t reportTable) render(format reportFormat, color bool, domain string) stri
 				tag, scope = "th", ` scope="row"`
 			}
 			result.WriteString("<" + tag + scope + ` style="text-align:` + columnAlignment(numeric, j) + `;vertical-align:top;padding:8px;border:1px solid #d1d5db;white-space:pre-wrap">` +
-				formatReportCell(fmt.Sprint(cell), t.cellKey(row, j), format, color, domain) + "</" + tag + ">")
+				formatter.formatReportCell(fmt.Sprint(cell), t.cellKey(row, j)) + "</" + tag + ">")
 		}
 		result.WriteString("</tr>")
 	}
@@ -210,14 +218,22 @@ func (t reportTable) cellKey(row table.Row, column int) string {
 }
 
 func formatReportCell(value, key string, format reportFormat, color bool, domain string) (result string) {
+	formatter := reportFormatter{format: format, color: color, domain: domain}
+	return formatter.formatReportCell(value, key)
+}
+
+func (f *reportFormatter) formatReportCell(value, key string) (result string) {
+	format, color := f.format, f.color
 	technical := format == reportHTML && technicalReportCell(key) &&
 		value != "-" && value != "" && !strings.HasPrefix(value, "Unavailable") && !strings.HasPrefix(value, "Not reached")
 	if technical {
 		defer func() { result = htmlMonospace(result) }()
 	}
-	styled := formatDomain(value, format, color, domain)
+	var styled string
 	if format == reportHTML && !technical && key != "Property" && key != "Runtime breakdown" && key != "Step" && key != "Check" {
-		styled = formatHTMLTechnical(value, domain)
+		styled = f.formatHTMLTechnical(value)
+	} else {
+		styled = f.formatDomain(value)
 	}
 	if format == reportPlain || (format == reportTerminal && !color) {
 		return styled
@@ -325,18 +341,35 @@ func htmlMonospace(styled string) string {
 }
 
 func formatHTMLTechnical(value, domain string) string {
+	formatter := reportFormatter{format: reportHTML, domain: domain}
+	return formatter.formatHTMLTechnical(value)
+}
+
+func (f *reportFormatter) formatHTMLTechnical(value string) string {
 	var result strings.Builder
 	last := 0
 	for _, match := range reportTechnicalName.FindAllStringIndex(value, -1) {
-		result.WriteString(formatDomain(value[last:match[0]], reportHTML, false, domain))
-		result.WriteString(htmlMonospace(formatDomain(value[match[0]:match[1]], reportHTML, false, domain)))
+		result.WriteString(f.formatDomain(value[last:match[0]]))
+		result.WriteString(htmlMonospace(f.formatDomain(value[match[0]:match[1]])))
 		last = match[1]
 	}
-	result.WriteString(formatDomain(value[last:], reportHTML, false, domain))
+	result.WriteString(f.formatDomain(value[last:]))
 	return result.String()
 }
 
 func formatDomain(value string, format reportFormat, color bool, domain string) string {
+	if domain == "" || format == reportPlain || (format == reportTerminal && !color) {
+		if format == reportHTML {
+			return html.EscapeString(value)
+		}
+		return value
+	}
+	formatter := reportFormatter{format: format, color: color, domain: domain}
+	return formatter.formatDomain(value)
+}
+
+func (f *reportFormatter) formatDomain(value string) string {
+	format, color, domain := f.format, f.color, f.domain
 	escape := func(value string) string {
 		if format == reportHTML {
 			return html.EscapeString(value)
@@ -346,10 +379,12 @@ func formatDomain(value string, format reportFormat, color bool, domain string) 
 	if domain == "" || format == reportPlain || (format == reportTerminal && !color) {
 		return escape(value)
 	}
-	re := regexp.MustCompile(`(?i)[.@]` + regexp.QuoteMeta(domain) + `\b`)
+	if f.domainPattern == nil {
+		f.domainPattern = regexp.MustCompile(`(?i)[.@]` + regexp.QuoteMeta(domain) + `\b`)
+	}
 	var result strings.Builder
 	last := 0
-	for _, match := range re.FindAllStringIndex(value, -1) {
+	for _, match := range f.domainPattern.FindAllStringIndex(value, -1) {
 		if match[1] < len(value) && (value[match[1]] == '.' || value[match[1]] == '-') {
 			continue
 		}

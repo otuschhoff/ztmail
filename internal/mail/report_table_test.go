@@ -9,6 +9,43 @@ import (
 	"github.com/jedib0t/go-pretty/v6/text"
 )
 
+func TestReportFormatterDomainReuse(t *testing.T) {
+	for _, domain := range []string{"", "corp.example", "corp[1].example"} {
+		for _, mode := range domainBenchmarkFormats {
+			formatter := reportFormatter{format: mode.format, color: mode.color, domain: domain}
+			formatter.formatReportCell("host."+domain, "Hostname")
+			pattern := formatter.domainPattern
+			wantPattern := domain != "" && mode.format != reportPlain
+			if (pattern != nil) != wantPattern {
+				t.Fatalf("domain=%q mode=%s compiled=%t, want %t", domain, mode.name, pattern != nil, wantPattern)
+			}
+			for _, value := range []string{
+				"dc.corp.example:389; user@CORP.EXAMPLE",
+				"relay.corp.example.attacker.test; node.corp.example-other.test",
+				"host.corp[1].example; CN=<smtp>; <offline & synthetic>",
+				"OK (CN=<smtp>; TLS1.3)",
+				"-", "",
+			} {
+				for _, key := range []string{"Hostname", "Authentication", "", "Step"} {
+					got := formatter.formatReportCell(value, key)
+					if expected := formatReportCell(value, key, mode.format, mode.color, domain); got != expected {
+						t.Fatalf("domain=%q mode=%s key=%s: %q, want %q", domain, mode.name, key, got, expected)
+					}
+					if formatter.domainPattern != pattern {
+						t.Fatal("cell formatting replaced its render-local domain matcher")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestEmptyReportTableDoesNotCompileDomain(t *testing.T) {
+	for _, format := range []reportFormat{reportPlain, reportTerminal, reportHTML} {
+		reportTable{}.render(format, true, string([]byte{0xff}))
+	}
+}
+
 func TestReportTableBorderStyles(t *testing.T) {
 	report := reportTable{header: table.Row{"Key", "Value"}, rows: []table.Row{
 		{"Authentication", "OK"}, {"Hostname", "worker.corp.example"},
