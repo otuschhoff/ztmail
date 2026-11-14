@@ -2,11 +2,14 @@ package mail
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	netmail "net/mail"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +56,161 @@ func testMessageBenchmarkFixture(observations int, debug bool) *TestReport {
 		}
 	}
 	return r
+}
+
+func BenchmarkTestMessageObserverWait(b *testing.B) {
+	const observers = 4
+	var workers sync.WaitGroup
+	b.Cleanup(workers.Wait)
+	var totalWait, maximumWait time.Duration
+	for b.Loop() {
+		b.StopTimer()
+		report := testMessageBenchmarkFixture(1000, true)
+		started := make(chan struct{})
+		type renderResult struct {
+			data []byte
+			err  error
+		}
+		rendered := make(chan renderResult, 1)
+		b.StartTimer()
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			close(started)
+			data, err := report.TestMessage("", []string{"recipient@corp.example"})
+			rendered <- renderResult{data, err}
+		}()
+		<-started
+		time.Sleep(time.Millisecond)
+		select {
+		case result := <-rendered:
+			b.Fatalf("renderer completed before observer arrival: bytes=%d error=%v", len(result.data), result.err)
+		default:
+		}
+		arrivals := make(chan time.Duration, observers)
+		for i := 0; i < observers; i++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				begin := time.Now()
+				report.Trace(context.Background(), observe.TraceEvent{
+					Kind: observe.OperationTrace, Phase: observe.TraceCompleted,
+					Operation: "Synthetic observer during rendering", Duration: time.Millisecond,
+				})
+				arrivals <- time.Since(begin)
+			}()
+		}
+		var longest time.Duration
+		for i := 0; i < observers; i++ {
+			wait := <-arrivals
+			totalWait += wait
+			longest = max(longest, wait)
+		}
+		maximumWait += longest
+		result := <-rendered
+		workers.Wait()
+		b.StopTimer()
+		if result.err != nil || len(result.data) == 0 || len(report.traces) != 1000+observers+1 {
+			b.Fatalf("render/observer results: bytes=%d error=%v traces=%d", len(result.data), result.err, len(report.traces))
+		}
+		b.StartTimer()
+	}
+	b.ReportMetric(float64(totalWait)/float64(b.N*observers), "observer-ns/op")
+	b.ReportMetric(float64(maximumWait)/float64(b.N), "max-observer-ns/op")
+}
+
+func BenchmarkFinish(b *testing.B) {
+	for _, size := range testMessageBenchmarkCases {
+		b.Run(fmt.Sprintf("%s/observations=%d", size.name, size.observations), func(b *testing.B) {
+			report := testMessageBenchmarkFixture(size.observations, size.debug)
+			var output bytes.Buffer
+			report.output = &output
+			traceCount, rowCount := len(report.traces), len(report.rows)
+			b.ReportAllocs()
+			for b.Loop() {
+				var err error
+				report.Finish(&err)
+				if err != nil || output.Len() == 0 {
+					b.Fatalf("final report: bytes=%d error=%v", output.Len(), err)
+				}
+				b.StopTimer()
+				output.Reset()
+				report.traces = report.traces[:traceCount]
+				report.traceEnds = report.traceEnds[:traceCount]
+				report.rows = report.rows[:rowCount]
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+func BenchmarkConcurrentTestMessage(b *testing.B) {
+	const calls = 4
+	for _, shared := range []bool{false, true} {
+		b.Run(fmt.Sprintf("calls=%d/shared=%t/observations=1000", calls, shared), func(b *testing.B) {
+			ctx, cancel := context.WithCancel(context.Background())
+			var workers sync.WaitGroup
+			b.Cleanup(func() {
+				cancel()
+				workers.Wait()
+			})
+			var retained int64
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				var reports [calls]*TestReport
+				for i := range reports {
+					if shared && i > 0 {
+						reports[i] = reports[0]
+					} else {
+						reports[i] = testMessageBenchmarkFixture(1000, true)
+					}
+				}
+				runtime.GC()
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				type preparedResult struct {
+					size int
+					err  error
+				}
+				ready := make(chan preparedResult, calls)
+				resume := make(chan struct{})
+				b.StartTimer()
+				for i := range reports {
+					workers.Add(1)
+					go func() {
+						defer workers.Done()
+						data, err := reports[i].TestMessage("", []string{"recipient@corp.example"})
+						select {
+						case ready <- preparedResult{len(data), err}:
+						case <-ctx.Done():
+							return
+						}
+						select {
+						case <-resume:
+						case <-ctx.Done():
+						}
+						runtime.KeepAlive(data)
+					}()
+				}
+				for i := 0; i < calls; i++ {
+					result := <-ready
+					if result.err != nil || result.size == 0 {
+						b.Fatalf("concurrent testmail: bytes=%d error=%v", result.size, result.err)
+					}
+				}
+				b.StopTimer()
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				retained += int64(after.HeapAlloc) - int64(before.HeapAlloc)
+				close(resume)
+				workers.Wait()
+				runtime.KeepAlive(reports)
+				b.StartTimer()
+			}
+			b.ReportMetric(float64(retained)/float64(b.N), "retained-B/op")
+		})
+	}
 }
 
 func BenchmarkTestMessage(b *testing.B) {
