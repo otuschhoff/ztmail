@@ -55,7 +55,10 @@ func (r *TestReport) authenticationTable() reportTable {
 }
 
 func (r *TestReport) renderAuthentication(format reportFormat) string {
-	t := r.authenticationTable()
+	return r.renderAuthenticationTable(format, r.authenticationTable())
+}
+
+func (r *TestReport) renderAuthenticationTable(format reportFormat, t reportTable) string {
 	if format == reportPlain {
 		t.header = nil
 	}

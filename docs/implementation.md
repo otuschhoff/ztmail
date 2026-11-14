@@ -284,7 +284,12 @@ Operational details are in
 ## Diagnostic data and limits
 
 Terminal tables, text/HTML diagnostic mail and JSON attachments share table
-builders. Testmail uses one snapshot timestamp and stable schema/table IDs,
+builders. Testmail builds a typed, render-local table bundle once and reuses
+it for JSON, text and HTML; format-specific header/column adaptations do not
+mutate the shared tables. The multipart alternatives stream directly into the
+outer body part, and quoted-printable framing is written in chunks rather than
+copying a complete wrapped body. There is no shared buffer pool.
+Testmail uses one snapshot timestamp and stable schema/table IDs,
 so its representations describe the same pre-DATA state. Final delivery and
 cleanup cannot appear in the message that is itself being submitted.
 

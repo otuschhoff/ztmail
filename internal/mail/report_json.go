@@ -23,6 +23,10 @@ type jsonTestReport struct {
 }
 
 func (r *TestReport) jsonSnapshot() ([]byte, error) {
+	return r.jsonSnapshotTables(r.reportTables())
+}
+
+func (r *TestReport) jsonSnapshotTables(tables reportTables) ([]byte, error) {
 	snapshot := jsonTestReport{
 		SchemaVersion:  2,
 		SnapshotAt:     r.snapshotTime().UTC(),
@@ -52,25 +56,25 @@ func (r *TestReport) jsonSnapshot() ([]byte, error) {
 		}
 		snapshot.Tables = append(snapshot.Tables, result)
 	}
-	appendTable("summary", "Summary", r.summaryTable())
-	if issues := r.issuesTable(); len(issues.rows) > 0 {
+	appendTable("summary", "Summary", tables.summary)
+	if issues := tables.issues; len(issues.rows) > 0 {
 		appendTable("issues", "Checks / issues", issues)
 	}
 	if r.debug {
-		appendTable("runtime", "Runtime breakdown", r.runtimeBreakdownTable())
-		dcs := r.dcObservationTable()
+		appendTable("runtime", "Runtime breakdown", tables.runtime)
+		dcs := tables.dcs
 		if len(dcs.rows) > 0 {
 			appendTable("dc_observations", "DC observations", dcs)
 		} else {
 			snapshot.Notes = append(snapshot.Notes, noDCResponseLatencies)
 		}
 		if r.verbose {
-			appendTable("step_timings", "Step timings", r.stepTimingsTable())
+			appendTable("step_timings", "Step timings", tables.timings)
 		}
-		appendTable("tls", "Server TLS certificate / connection", r.tlsDetailsTable())
-		appendTable("authentication", "Authentication evidence / local client certificate", r.authenticationTable())
-		appendTable("crypto", "Cryptography (TLS / Kerberos)", r.cryptoTable())
-		appendTable("validity", "Validity (TLS certificates / Kerberos)", r.validityTable())
+		appendTable("tls", "Server TLS certificate / connection", tables.tls)
+		appendTable("authentication", "Authentication evidence / local client certificate", tables.authentication)
+		appendTable("crypto", "Cryptography (TLS / Kerberos)", tables.crypto)
+		appendTable("validity", "Validity (TLS certificates / Kerberos)", tables.validity)
 		snapshot.Notes = append(snapshot.Notes,
 			"Runtime intervals overlap and are counted once; detailed step durations are not additive.",
 			r.cryptoNote(),

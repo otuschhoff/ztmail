@@ -202,20 +202,34 @@ func (r *TestReport) stepTimingsTable() reportTable {
 }
 
 func (r *TestReport) renderDebug(format reportFormat) string {
-	dcs := r.dcObservationTable()
+	return r.renderDebugTables(format, r.debugTables())
+}
+
+func (r *TestReport) renderDebugTables(format reportFormat, tables reportTables) string {
+	dcs := tables.dcs
 	dcResults := dcs.render(format, r.color, r.values["AD domain"])
 	if len(dcs.rows) == 0 {
 		dcResults = reportNote(format, noDCResponseLatencies)
 	}
-	result := r.runtimeBreakdownFormat(format) + "\n" +
-		reportNote(format, "DC observations (only endpoints with completed response latency)") + "\n" + dcResults +
-		"\n" + reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs.") +
-		"\n" + reportNote(format, "Detailed step timings require --verbose.")
+	var result strings.Builder
+	result.WriteString(r.runtimeBreakdownTableFormat(format, tables.runtime))
+	result.WriteByte('\n')
+	result.WriteString(reportNote(format, "DC observations (only endpoints with completed response latency)"))
+	result.WriteByte('\n')
+	result.WriteString(dcResults)
+	result.WriteByte('\n')
+	result.WriteString(reportNote(format, "SSPI KDC endpoints/wire timing: OS-managed / unavailable. DNS rows use observed resolver endpoints matched to discovered DCs."))
+	result.WriteByte('\n')
+	result.WriteString(reportNote(format, "Detailed step timings require --verbose."))
 	if r.verbose {
-		result += "\n" + reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)") + "\n" + r.stepTimingsTable().render(format, r.color, r.values["AD domain"])
+		result.WriteByte('\n')
+		result.WriteString(reportNote(format, "Step timings (nested/concurrent durations overlap; not additive)"))
+		result.WriteByte('\n')
+		result.WriteString(tables.timings.render(format, r.color, r.values["AD domain"]))
 	}
-	result += "\n" + r.renderTLSDetails(format)
-	return result
+	result.WriteByte('\n')
+	result.WriteString(r.renderTLSDetailsTables(format, tables))
+	return result.String()
 }
 
 func matchesDCEndpoint(event observe.TraceEvent, endpoint discovery.Endpoint) bool {
@@ -406,7 +420,10 @@ func (r *TestReport) runtimeBreakdownTable() reportTable {
 }
 
 func (r *TestReport) runtimeBreakdownFormat(format reportFormat) string {
-	t := r.runtimeBreakdownTable()
+	return r.runtimeBreakdownTableFormat(format, r.runtimeBreakdownTable())
+}
+
+func (r *TestReport) runtimeBreakdownTableFormat(format reportFormat, t reportTable) string {
 	if format == reportPlain {
 		t.header = nil
 	}

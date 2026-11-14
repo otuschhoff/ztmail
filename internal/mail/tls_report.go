@@ -249,12 +249,19 @@ func (r *TestReport) tlsDetailsTable() reportTable {
 }
 
 func (r *TestReport) renderTLSDetails(format reportFormat) string {
-	t := r.tlsDetailsTable()
+	return r.renderTLSDetailsTables(format, reportTables{
+		tls: r.tlsDetailsTable(), authentication: r.authenticationTable(),
+		crypto: r.cryptoTable(), validity: r.validityTable(),
+	})
+}
+
+func (r *TestReport) renderTLSDetailsTables(format reportFormat, tables reportTables) string {
+	t := tables.tls
 	if format == reportPlain {
 		t.header = nil
 	}
 	return reportNote(format, "Server TLS certificate / connection") + "\n" +
 		t.render(format, r.color, r.values["AD domain"]) + "\n" +
-		r.renderAuthentication(format) + "\n" +
-		r.renderCrypto(format) + "\n" + r.renderValidity(format)
+		r.renderAuthenticationTable(format, tables.authentication) + "\n" +
+		r.renderCryptoTable(format, tables.crypto) + "\n" + r.renderValidityTable(format, tables.validity)
 }

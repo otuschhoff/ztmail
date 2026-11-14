@@ -152,7 +152,10 @@ func (r *TestReport) cryptoTable() reportTable {
 }
 
 func (r *TestReport) renderCrypto(format reportFormat) string {
-	t := r.cryptoTable()
+	return r.renderCryptoTable(format, r.cryptoTable())
+}
+
+func (r *TestReport) renderCryptoTable(format reportFormat, t reportTable) string {
 	if format == reportPlain {
 		t.header = nil
 		rows := t.rows
@@ -264,7 +267,11 @@ func (r *TestReport) validityTable() reportTable {
 }
 
 func (r *TestReport) renderValidity(format reportFormat) string {
+	return r.renderValidityTable(format, r.validityTable())
+}
+
+func (r *TestReport) renderValidityTable(format reportFormat, t reportTable) string {
 	return reportNote(format, "Validity (TLS certificates / Kerberos)") + "\n" +
-		r.validityTable().render(format, r.color, r.values["AD domain"]) + "\n" +
+		t.render(format, r.color, r.values["AD domain"]) + "\n" +
 		reportNote(format, validityReportNote)
 }

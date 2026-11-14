@@ -405,26 +405,61 @@ func (r *TestReport) summaryTable() reportTable {
 }
 
 func (r *TestReport) renderFormat(format reportFormat) string {
-	t := r.summaryTable()
-	result := t.render(format, r.color, r.values["AD domain"])
+	return r.renderTables(format, r.reportTables())
+}
+
+type reportTables struct {
+	summary, issues, runtime, dcs, timings, tls, authentication, crypto, validity reportTable
+}
+
+func (r *TestReport) reportTables() reportTables {
+	var tables reportTables
+	if r.debug {
+		tables = r.debugTables()
+	}
+	tables.summary, tables.issues = r.summaryTable(), r.issuesTable()
+	return tables
+}
+
+func (r *TestReport) debugTables() reportTables {
+	tables := reportTables{
+		runtime: r.runtimeBreakdownTable(), dcs: r.dcObservationTable(),
+		tls: r.tlsDetailsTable(), authentication: r.authenticationTable(),
+		crypto: r.cryptoTable(), validity: r.validityTable(),
+	}
+	if r.verbose {
+		tables.timings = r.stepTimingsTable()
+	}
+	return tables
+}
+
+func (r *TestReport) renderTables(format reportFormat, tables reportTables) string {
+	t := tables.summary
+	var result strings.Builder
+	result.WriteString(t.render(format, r.color, r.values["AD domain"]))
 	// Failures and warnings must remain visible even if authentication succeeded.
-	if issues := r.renderIssues(format); issues != "" {
-		result += "\n" + issues
+	if issues := r.renderIssuesTable(format, tables.issues); issues != "" {
+		result.WriteByte('\n')
+		result.WriteString(issues)
 	}
 	if r.debug {
-		result += "\n" + r.renderDebug(format)
+		result.WriteByte('\n')
+		result.WriteString(r.renderDebugTables(format, tables))
 	}
 	if format != reportTerminal {
-		return result
+		return result.String()
 	}
 	if r.testMail {
 		delivery := r.values["Testmail delivery"]
 		if delivery == "" {
 			delivery = "Not confirmed; consult the error before retrying."
 		}
-		return result + "\nTestmail delivery: " + delivery
+		result.WriteString("\nTestmail delivery: ")
+		result.WriteString(delivery)
+		return result.String()
 	}
-	return result + "\nNo email sent."
+	result.WriteString("\nNo email sent.")
+	return result.String()
 }
 
 func (r *TestReport) issuesTable() reportTable {
@@ -443,7 +478,10 @@ func (r *TestReport) issuesTable() reportTable {
 }
 
 func (r *TestReport) renderIssues(format reportFormat) string {
-	t := r.issuesTable()
+	return r.renderIssuesTable(format, r.issuesTable())
+}
+
+func (r *TestReport) renderIssuesTable(format reportFormat, t reportTable) string {
 	if len(t.rows) == 0 {
 		return ""
 	}

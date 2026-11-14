@@ -16,6 +16,32 @@ import (
 	"github.com/otuschhoff/adbind/ad/observe"
 )
 
+func TestReportTablesRemainReusableAcrossFormats(t *testing.T) {
+	for _, method := range []AuthMode{AuthGSSAPI, AuthMTLS, AuthMTLSExternal} {
+		t.Run(string(method), func(t *testing.T) {
+			report := testMessageBenchmarkFixture(10, true)
+			report.snapshotAt = fixtureEpoch.Add(time.Second)
+			report.authentication.Method = method
+			report.authentication.ClientCertificate = &CertificateInfo{Subject: "client <&>", PublicKey: "Ed25519", ClassicalKeyStrength: 128}
+			tables := report.reportTables()
+			before, err := report.jsonSnapshotTables(tables)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, format := range []reportFormat{reportPlain, reportHTML, reportTerminal, reportPlain, reportHTML} {
+				expected := report.renderFormat(format)
+				if got := report.renderTables(format, tables); got != expected {
+					t.Fatalf("shared tables changed %v rendering", format)
+				}
+				after, err := report.jsonSnapshotTables(tables)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("format %v mutated shared tables: %v", format, err)
+				}
+			}
+		})
+	}
+}
+
 func TestReportSnapshotOwnsAllRenderingState(t *testing.T) {
 	report := testMessageBenchmarkFixture(10, true)
 	report.color, report.testMail, report.passwordPrompted = true, true, true

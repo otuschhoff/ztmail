@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
@@ -35,14 +36,14 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		return nil, err
 	}
 	snapshotAt := copyReport.snapshotAt
-	jsonData, err := copyReport.jsonSnapshot()
+	tables := copyReport.reportTables()
+	jsonData, err := copyReport.jsonSnapshotTables(tables)
 	if err != nil {
 		return nil, err
 	}
 	var message bytes.Buffer
 	multipartWriter := multipart.NewWriter(&message)
-	var alternatives bytes.Buffer
-	alternativeWriter := multipart.NewWriter(&alternatives)
+	alternativeBoundary := rand.Text()
 	subject := "ztmail diagnostic test"
 	if copyReport.debug {
 		subject += " (debug)"
@@ -51,6 +52,16 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		"Subject: %s\r\nMIME-Version: 1.0\r\n"+
 		"Content-Type: multipart/mixed; boundary=%q\r\n\r\n",
 		snapshotAt.Format(time.RFC1123Z), rand.Text(), sender, strings.Join(to, ", "), subject, multipartWriter.Boundary())
+	bodyPart, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+		"Content-Type": {fmt.Sprintf("multipart/alternative; boundary=%q", alternativeBoundary)},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create testmail body: %w", err)
+	}
+	alternativeWriter := multipart.NewWriter(bodyPart)
+	if err := alternativeWriter.SetBoundary(alternativeBoundary); err != nil {
+		return nil, fmt.Errorf("set testmail alternative boundary: %w", err)
+	}
 	for _, format := range []reportFormat{reportPlain, reportHTML} {
 		contentType := "text/plain; charset=UTF-8"
 		if format == reportHTML {
@@ -62,18 +73,21 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 		if err != nil {
 			return nil, fmt.Errorf("create testmail part: %w", err)
 		}
-		body := reportNote(format, "ztmail diagnostic test message") + "\n\n" +
+		prelude := reportNote(format, "ztmail diagnostic test message") + "\n\n" +
 			reportNote(format, "Snapshot taken after transport authentication, before sending this message (before DATA); TLS-only mode has no SMTP AUTH confirmation.") + "\n" +
 			reportNote(format, "DATA acceptance, QUIT and final cleanup are not included; consult the local report.") + "\n" +
-			reportNote(format, "This message contains account names and internal topology. Review before sharing.") + "\n\n" +
-			copyReport.renderFormat(format) + "\n"
+			reportNote(format, "This message contains account names and internal topology. Review before sharing.") + "\n\n"
+		prefix, suffix := "", ""
 		if format == reportHTML {
-			body = `<!doctype html><html><head><meta charset="utf-8"><title>ztmail diagnostic test</title></head>` +
-				`<body style="font-family:Arial,sans-serif;color:#111827;background:#ffffff;line-height:1.5">` + body + "</body></html>"
+			prefix = `<!doctype html><html><head><meta charset="utf-8"><title>ztmail diagnostic test</title></head>` +
+				`<body style="font-family:Arial,sans-serif;color:#111827;background:#ffffff;line-height:1.5">`
+			suffix = "</body></html>"
 		}
 		writer := quotedprintable.NewWriter(part)
-		if _, err := writer.Write([]byte(body)); err != nil {
-			return nil, fmt.Errorf("encode testmail part: %w", err)
+		for _, chunk := range []string{prefix, prelude, copyReport.renderTables(format, tables), "\n", suffix} {
+			if _, err := io.WriteString(writer, chunk); err != nil {
+				return nil, fmt.Errorf("encode testmail part: %w", err)
+			}
 		}
 		if err := writer.Close(); err != nil {
 			return nil, fmt.Errorf("finish testmail part: %w", err)
@@ -81,15 +95,6 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	}
 	if err := alternativeWriter.Close(); err != nil {
 		return nil, fmt.Errorf("finish testmail alternatives: %w", err)
-	}
-	bodyPart, err := multipartWriter.CreatePart(textproto.MIMEHeader{
-		"Content-Type": {fmt.Sprintf("multipart/alternative; boundary=%q", alternativeWriter.Boundary())},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create testmail body: %w", err)
-	}
-	if _, err := bodyPart.Write(alternatives.Bytes()); err != nil {
-		return nil, fmt.Errorf("write testmail body: %w", err)
 	}
 	attachment, err := multipartWriter.CreatePart(textproto.MIMEHeader{
 		"Content-Type":              {"application/json; charset=UTF-8; name=ztmail-report.json"},
