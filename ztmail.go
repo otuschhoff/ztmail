@@ -120,9 +120,10 @@ type Result struct {
 // SDK credential/LDAP capacity limits still apply. Client needs no Close:
 // only the application closes the shared AD owner.
 type Client struct {
-	options  Options
-	acquire  func(context.Context) (session, error)
-	resolver mail.Resolver
+	options       Options
+	acquire       func(context.Context) (session, error)
+	resolver      mail.Resolver
+	preparedTrust mail.Config
 }
 
 type session interface {
@@ -223,7 +224,7 @@ func New(o Options) (*Client, error) {
 	if o.LDAPRaceCandidates < 0 || o.LDAPRaceCandidates > 8 {
 		return nil, errors.New("LDAPRaceCandidates must be between 0 and 8")
 	}
-	client := &Client{options: o}
+	client := &Client{options: o, preparedTrust: prepared}
 	client.resolver = mail.ADResolver{Client: o.AD}
 	if o.Auth == AuthGSSAPI {
 		client.acquire = func(ctx context.Context) (session, error) {
@@ -385,7 +386,7 @@ func (c *Client) submit(ctx context.Context, data []byte, report *mail.TestRepor
 		From: result.From, Test: test, Report: report,
 		Auth: c.options.Auth, ClientCertificate: c.options.ClientCertificate, ServerTrust: c.options.ServerTrust,
 		Authentication: func(authentication mail.AuthenticationResult) { result.Authentication = authentication },
-		Warning:        func(warning error) { result.Warnings = append(result.Warnings, warning) }},
+		Warning:        func(warning error) { result.Warnings = append(result.Warnings, warning) }}.WithPreparedTrust(c.preparedTrust),
 		result.Recipients, data, backend, io.Discard)
 	result.Accepted = !test && (err == nil || errors.Is(err, mail.ErrAcceptedOutput))
 	return result, err

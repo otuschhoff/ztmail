@@ -20,6 +20,14 @@ type Config struct {
 	ClientCertificate                *tls.Certificate
 	ServerTrust                      ServerTrust
 	Authentication                   func(AuthenticationResult)
+	preparedTrust                    *preparedServerTrust
+}
+
+// WithPreparedTrust reuses owned CA parsing, never verification or signer decisions.
+// PrepareAuthentication still validates the current public trust input on every call.
+func (c Config) WithPreparedTrust(source Config) Config {
+	c.preparedTrust = source.preparedTrust
+	return c
 }
 
 type options struct {
@@ -34,6 +42,7 @@ type options struct {
 	clientCertificate                *tls.Certificate
 	serverTrust                      ServerTrust
 	authentication                   func(AuthenticationResult)
+	preparedTrust                    *preparedServerTrust
 }
 
 func Deliver(ctx context.Context, c Config, recipients []string, message []byte, backend Resolver, log io.Writer) error {
@@ -47,6 +56,7 @@ func Deliver(ctx context.Context, c Config, recipients []string, message []byte,
 	}
 	return deliver(ctx, options{relay: c.Relay, hello: c.Hello, spn: c.SPN, from: c.From,
 		tlsMode: c.TLSMode, port: c.Port, timeout: c.Timeout, testMode: c.Test, testMail: c.TestMail, report: c.Report, warning: c.Warning,
-		auth: c.Auth, clientCertificate: c.ClientCertificate, serverTrust: c.ServerTrust, authentication: c.Authentication},
+		auth: c.Auth, clientCertificate: c.ClientCertificate, serverTrust: c.ServerTrust, authentication: c.Authentication,
+		preparedTrust: c.preparedTrust},
 		recipients, message, backend, log)
 }

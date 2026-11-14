@@ -33,7 +33,7 @@ func PrepareAuthentication(c Config) (Config, error) {
 		return Config{}, errors.New("authentication method must be gssapi, mtls, or mtls-external")
 	}
 	var err error
-	c.ServerTrust, err = cloneServerTrust(c.ServerTrust)
+	c.ServerTrust, c.preparedTrust, err = prepareServerTrust(c.ServerTrust, c.preparedTrust)
 	if err != nil {
 		return Config{}, err
 	}

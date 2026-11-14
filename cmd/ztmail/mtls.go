@@ -96,6 +96,7 @@ func loadAuthenticationOptions(o operationOptions) (operationOptions, error) {
 		return o, err
 	}
 	o.clientCertificate, o.tlsTrust = prepared.ClientCertificate, prepared.ServerTrust
+	o.preparedTrust = prepared
 	return o, nil
 }
 

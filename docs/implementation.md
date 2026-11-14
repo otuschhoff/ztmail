@@ -76,6 +76,17 @@ compatible certificate requests/selection and implements exact
 `AUTH EXTERNAL =` / optional empty `=` continuation / mandatory 235 behavior
 using the existing SMTP client's sequenced command interface.
 
+Prepared authentication retains independently owned, parsed custom CAs and an
+immutable replacement-root pool. The library client and CLI preparation pass
+that private material into submission. Reuse requires exact current DER bytes,
+order and count; changed input is parsed and validated again. Returned mutable
+trust bytes do not alias the retained parser data. System roots are still read
+per operation, and append mode adds prepared CAs to a fresh system pool.
+Root mode, selectors and exceptions are validated on every operation. Signer
+identity/key matching, client-certificate validity, server hostname/time/path
+verification and exception use are not cached. There is no global root cache or
+new public configuration option.
+
 The shared SMTP transport handles STARTTLS with post-TLS EHLO or implicit TLS.
 TLS completion, certificate presentation, SMTP AUTH and DATA acceptance remain
 independent. TLS-only mode sends no AUTH; EXTERNAL never runs GSSAPI.

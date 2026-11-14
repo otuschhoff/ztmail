@@ -75,7 +75,7 @@ func authenticationTLS(o options, log io.Writer) (*tls.Config, *AuthenticationRe
 	evidence.ServerVerification.IssuerExceptionConfigured = o.serverTrust.InsecureAllowUnverifiableIssuer
 	evidence.ServerVerification.AllowConfigured = len(o.serverTrust.Allow) > 0
 	evidence.ServerVerification.DenyConfigured = len(o.serverTrust.Deny) > 0
-	roots, err := serverRoots(o.serverTrust)
+	roots, err := preparedServerRoots(o.serverTrust, o.preparedTrust)
 	if err != nil {
 		return nil, nil, err
 	}

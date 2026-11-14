@@ -2,14 +2,20 @@ package mail
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
+	"net/netip"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -117,6 +123,141 @@ func BenchmarkServerRoots(b *testing.B) {
 	}
 }
 
+func BenchmarkRepeatedCertificateDelivery(b *testing.B) {
+	for _, bundle := range []int{1, 32} {
+		for _, size := range []int{1 << 10, 1 << 20} {
+			for _, method := range []AuthMode{AuthMTLS, AuthMTLSExternal} {
+				b.Run(fmt.Sprintf("%s/roots=%d/bytes=%d", method, bundle, size), func(b *testing.B) {
+					config, deliver := repeatedCertificateDeliveryFixture(b, method, bundle, size)
+					b.ReportAllocs()
+					b.SetBytes(int64(size))
+					for b.Loop() {
+						if err := deliver(b.Context(), config); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func BenchmarkConcurrentCertificateDelivery(b *testing.B) {
+	const calls = 4
+	for _, bundle := range []int{1, 32} {
+		for _, size := range []int{1 << 10, 1 << 20} {
+			b.Run(fmt.Sprintf("calls=%d/roots=%d/bytes=%d", calls, bundle, size), func(b *testing.B) {
+				var configs [calls]Config
+				var send [calls]func(context.Context, Config) error
+				for i := range configs {
+					configs[i], send[i] = repeatedCertificateDeliveryFixture(b, AuthMTLSExternal, bundle, size)
+				}
+				var workers sync.WaitGroup
+				b.Cleanup(workers.Wait)
+				b.ReportAllocs()
+				b.SetBytes(int64(calls * size))
+				for b.Loop() {
+					results := make(chan error, calls)
+					for i := range configs {
+						workers.Go(func() { results <- send[i](b.Context(), configs[i]) })
+					}
+					workers.Wait()
+					for range calls {
+						if err := <-results; err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func repeatedCertificateDeliveryFixture(tb testing.TB, method AuthMode, bundle, size int) (Config, func(context.Context, Config) error) {
+	tb.Helper()
+	fixture := newCertificateSMTPFixture(tb)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	tb.Cleanup(func() { listener.Close(); workers.Wait() })
+	results := make(chan smtpResult, 1)
+	workers.Go(func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			results <- serveCertificateSMTP(conn, fixture, true, true, false)
+		}
+	})
+	var auth AuthenticationResult
+	config := Config{Auth: method, Relay: "relay.example.test", Hello: "host.example.test", TLSMode: "implicit",
+		Port: listener.Addr().(*net.TCPAddr).Port, Timeout: 5 * time.Second,
+		ClientCertificate: fixture.client, ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{fixture.ca.Raw}},
+		From: "sender@corp.example", Warning: func(error) {}, Authentication: func(value AuthenticationResult) { auth = value }}
+	config.ClientCertificate.Certificate = append(config.ClientCertificate.Certificate, fixture.ca.Raw)
+	if bundle > 1 {
+		extra := tlsBenchConfig(tb, 0, bundle-1)
+		config.ServerTrust.Certificates = append(config.ServerTrust.Certificates, extra.ServerTrust.Certificates...)
+	}
+	// Like an already constructed library client, own validated input before repeated operations.
+	config, err = PrepareAuthentication(config)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	header := []byte("Subject: synthetic TLS delivery benchmark\r\n\r\n")
+	message := bytes.Repeat([]byte{'x'}, size)
+	copy(message, header)
+	for i := len(header); i < len(message); i++ {
+		switch (i - len(header)) % 76 {
+		case 74:
+			message[i] = '\r'
+		case 75:
+			message[i] = '\n'
+		}
+	}
+	message = append(message, '\r', '\n')
+	expected := strings.ReplaceAll(string(message), "\r\n", "\n")
+	return config, func(ctx context.Context, config Config) error {
+		auth = AuthenticationResult{}
+		err := Deliver(ctx, config, []string{"recipient@corp.example"}, message, certificateResolver{netip.MustParseAddr("127.0.0.1")}, io.Discard)
+		if err != nil {
+			return err
+		}
+		result := <-results
+		dataCount := 0
+		for _, command := range result.commands {
+			if command == "DATA" {
+				dataCount++
+			}
+		}
+		if result.err != nil || result.message != expected || dataCount != 1 ||
+			!auth.TLSEstablished || !auth.ClientCertificatePresented || !auth.ServerVerification.Trusted ||
+			auth.SMTPAuthConfirmed != (method == AuthMTLSExternal) {
+			return fmt.Errorf("incorrect repeated TLS delivery: server=%v DATA=%d bytes=%d authentication=%+v",
+				result.err, dataCount, len(result.message), auth)
+		}
+		return nil
+	}
+}
+
+func TestBenchmarkRepeatedCertificateDeliveryFixture(t *testing.T) {
+	for _, method := range []AuthMode{AuthMTLS, AuthMTLSExternal} {
+		for _, bundle := range []int{1, 32} {
+			t.Run(fmt.Sprintf("%s/roots=%d", method, bundle), func(t *testing.T) {
+				config, deliver := repeatedCertificateDeliveryFixture(t, method, bundle, 1<<10)
+				for range 2 {
+					if err := deliver(t.Context(), config); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestBenchmarkTLSCredentialsFixtures(t *testing.T) {
 	for _, chain := range []int{0, 1, 2, 4, 8} {
 		for _, bundle := range []int{0, 1, 8, 32, 128} {
@@ -168,8 +309,14 @@ func TestBenchmarkTLSCredentialsFixtures(t *testing.T) {
 					}
 				}
 				expected, err := PrepareAuthentication(snapshot)
-				if err != nil || !reflect.DeepEqual(out, expected) {
+				actualView, expectedView := out, expected
+				actualView.preparedTrust, expectedView.preparedTrust = nil, nil
+				if err != nil || !reflect.DeepEqual(actualView, expectedView) {
 					t.Fatalf("prepared output aliases mutable fixture input: %v", err)
+				}
+				if bundle > 0 && (!reflect.DeepEqual(out.preparedTrust.certificates, expected.preparedTrust.certificates) ||
+					!out.preparedTrust.replaceRoots.Equal(expected.preparedTrust.replaceRoots)) {
+					t.Fatal("prepared CA parser data aliases mutable fixture input")
 				}
 			})
 		}

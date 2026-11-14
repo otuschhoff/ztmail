@@ -37,7 +37,7 @@ type certificateSMTPFixture struct {
 	externalBeforeTLSOnly bool
 }
 
-func newCertificateSMTPFixture(t *testing.T) certificateSMTPFixture {
+func newCertificateSMTPFixture(t testing.TB) certificateSMTPFixture {
 	t.Helper()
 	now := time.Now()
 	ca, key := prerequisiteCertificate(t, &x509.Certificate{

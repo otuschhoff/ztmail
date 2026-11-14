@@ -47,6 +47,7 @@ type operationOptions struct {
 	report                  *testReport
 	clientCertificate       *tls.Certificate
 	tlsTrust                mail.ServerTrust
+	preparedTrust           mail.Config
 }
 
 func main() {

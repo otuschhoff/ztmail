@@ -241,7 +241,7 @@ func TestMTLSPrerequisiteExternalWire(t *testing.T) {
 	}
 }
 
-func prerequisiteCertificate(t *testing.T, template, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
+func prerequisiteCertificate(t testing.TB, template, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

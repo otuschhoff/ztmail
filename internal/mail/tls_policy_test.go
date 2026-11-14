@@ -2,14 +2,20 @@ package mail
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"io"
 	"math/big"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -25,6 +31,169 @@ func TestServerTrustScopeAndCopy(t *testing.T) {
 	if errors.Is(err, ErrTLSFeatureUnavailable) != native || (!native && err != nil) {
 		t.Fatalf("native-root grace scope: %v", err)
 	}
+}
+
+func TestPreparedServerTrustOwnershipAndInvalidation(t *testing.T) {
+	for _, change := range []string{"unchanged", "reorder", "remove", "replace", "append", "system", "malformed", "not-ca", "selector"} {
+		t.Run(change, func(t *testing.T) {
+			input := tlsBenchConfig(t, 0, 2)
+			source, err := PrepareAuthentication(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := input.WithPreparedTrust(source)
+			wantOK := true
+			switch change {
+			case "reorder":
+				current.ServerTrust.Certificates[0], current.ServerTrust.Certificates[1] = current.ServerTrust.Certificates[1], current.ServerTrust.Certificates[0]
+			case "remove":
+				current.ServerTrust.Certificates = current.ServerTrust.Certificates[:1]
+			case "replace":
+				cert, _ := tlsBenchCertificate(t, "new-root", true, nil, nil)
+				current.ServerTrust.Certificates[0] = cert.Raw
+			case "append":
+				current.ServerTrust.Mode = RootsAppend
+			case "system":
+				current.ServerTrust.Mode, current.ServerTrust.Certificates = RootsSystem, nil
+			case "malformed":
+				current.ServerTrust.Certificates[0] = []byte("bad DER")
+				wantOK = false
+			case "not-ca":
+				cert, _ := tlsBenchCertificate(t, "not-ca", false, nil, nil)
+				current.ServerTrust.Certificates[0] = cert.Raw
+				wantOK = false
+			case "selector":
+				current.ServerTrust.Deny[0].Kind = "invalid"
+				wantOK = false
+			}
+			prepared, err := PrepareAuthentication(current)
+			if (err == nil) != wantOK {
+				t.Fatalf("changed input validation: %v", err)
+			}
+			if !wantOK {
+				return
+			}
+			if change == "unchanged" && prepared.preparedTrust != source.preparedTrust {
+				t.Fatal("unchanged CA input did not reuse immutable material")
+			}
+			if prepared.ServerTrust.Mode == RootsReplace {
+				fresh, err := serverRoots(prepared.ServerTrust)
+				if err != nil || !prepared.preparedTrust.replaceRoots.Equal(fresh) {
+					t.Fatalf("prepared roots differ from current configured roots: %v", err)
+				}
+			}
+			for _, der := range source.ServerTrust.Certificates {
+				der[0] ^= 1
+			}
+			for _, cert := range source.preparedTrust.certificates {
+				if _, err := x509.ParseCertificate(cert.Raw); err != nil {
+					t.Fatalf("returned trust mutation corrupted immutable parser bytes: %v", err)
+				}
+			}
+			if _, err := PrepareAuthentication(source); err == nil {
+				t.Fatal("mutated returned DER bypassed validation through retained parser data")
+			}
+		})
+	}
+}
+
+func TestPreparedTLSVerificationRemainsOperationLocal(t *testing.T) {
+	fixture := newCertificateSMTPFixture(t)
+	base, err := PrepareAuthentication(Config{Auth: AuthMTLS, ClientCertificate: fixture.client, TLSMode: "implicit",
+		ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{fixture.ca.Raw}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := x509.ParseCertificate(fixture.server.Certificates[0].Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{server, fixture.ca},
+		VerifiedChains: [][]*x509.Certificate{{server, fixture.ca}}}
+	type result struct {
+		config   *tls.Config
+		evidence *AuthenticationResult
+		err      error
+	}
+	results := make(chan result, 4)
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Go(func() {
+			call, err := PrepareAuthentication(base)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			config, evidence, err := authenticationTLS(options{auth: call.Auth, relay: "relay.example.test",
+				clientCertificate: call.ClientCertificate, serverTrust: call.ServerTrust, preparedTrust: call.preparedTrust}, io.Discard)
+			if err == nil {
+				err = config.VerifyConnection(state)
+			}
+			results <- result{config, evidence, err}
+		})
+	}
+	workers.Wait()
+	configs := make(map[*tls.Config]bool)
+	evidence := make(map[*AuthenticationResult]bool)
+	for range 4 {
+		result := <-results
+		if result.err != nil || result.config.RootCAs != base.preparedTrust.replaceRoots ||
+			!result.evidence.ServerVerification.PolicyPassed || configs[result.config] || evidence[result.evidence] {
+			t.Fatalf("shared CA parsing lost operation-local TLS/evidence: %+v", result)
+		}
+		configs[result.config], evidence[result.evidence] = true, true
+	}
+	base.ServerTrust.Deny = []CASelector{{Kind: CACertificateSHA256, Digest: sha256.Sum256(fixture.ca.Raw)}}
+	denied, err := PrepareAuthentication(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, deniedEvidence, err := authenticationTLS(options{auth: denied.Auth, relay: "relay.example.test",
+		clientCertificate: denied.ClientCertificate, serverTrust: denied.ServerTrust, preparedTrust: denied.preparedTrust}, io.Discard)
+	if err != nil || config.VerifyConnection(state) == nil || deniedEvidence.ServerVerification.PolicyPassed {
+		t.Fatalf("prior acceptance bypassed changed CA deny policy: %v", err)
+	}
+}
+
+func TestPreparedTrustDoesNotCacheSignerOrTimeDecisions(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newCertificateSMTPFixture(t)
+		original := fixture.client.PrivateKey.(crypto.Signer)
+		signer := &tlsValidationSigner{Signer: original}
+		fixture.client.PrivateKey = signer
+		base, err := PrepareAuthentication(Config{Auth: AuthMTLS, ClientCertificate: fixture.client, TLSMode: "implicit",
+			ServerTrust: ServerTrust{Mode: RootsReplace, Certificates: [][]byte{fixture.ca.Raw}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer.Signer = fixture.caKey
+		if _, err := PrepareAuthentication(base); err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("CA reuse bypassed changed signer public-key validation: %v", err)
+		}
+		signer.Signer = original
+		config, _, err := authenticationTLS(options{auth: base.Auth, relay: "relay.example.test",
+			clientCertificate: base.ClientCertificate, serverTrust: base.ServerTrust, preparedTrust: base.preparedTrust}, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := x509.ParseCertificate(fixture.server.Certificates[0].Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{server, fixture.ca},
+			VerifiedChains: [][]*x509.Certificate{{server, fixture.ca}}}
+		if err := config.VerifyConnection(state); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Hour)
+		if err := config.VerifyConnection(state); err == nil {
+			t.Fatal("previously valid server path remained accepted after expiry")
+		}
+		if _, err := config.GetClientCertificate(&tls.CertificateRequestInfo{Version: tls.VersionTLS13,
+			SignatureSchemes: []tls.SignatureScheme{tls.ECDSAWithP256AndSHA256}}); err == nil {
+			t.Fatal("previously valid client certificate remained accepted after expiry")
+		}
+	})
 }
 
 func TestServerVerificationNamedExceptions(t *testing.T) {

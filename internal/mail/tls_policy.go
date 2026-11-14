@@ -65,7 +65,17 @@ func ParseCASelector(kind CASelectorKind, value string) (CASelector, error) {
 	return CASelector{Kind: kind, Digest: digest}, nil
 }
 
+type preparedServerTrust struct {
+	certificates []*x509.Certificate
+	replaceRoots *x509.CertPool
+}
+
 func cloneServerTrust(o ServerTrust) (ServerTrust, error) {
+	trust, _, err := prepareServerTrust(o, nil)
+	return trust, err
+}
+
+func prepareServerTrust(o ServerTrust, previous *preparedServerTrust) (ServerTrust, *preparedServerTrust, error) {
 	if o.Mode == "" {
 		o.Mode = RootsSystem
 		if len(o.Certificates) > 0 {
@@ -75,44 +85,78 @@ func cloneServerTrust(o ServerTrust) (ServerTrust, error) {
 	switch o.Mode {
 	case RootsSystem:
 		if len(o.Certificates) != 0 {
-			return ServerTrust{}, errors.New("system root mode cannot include custom CA certificates")
+			return ServerTrust{}, nil, errors.New("system root mode cannot include custom CA certificates")
 		}
 	case RootsAppend, RootsReplace:
 		if len(o.Certificates) == 0 {
-			return ServerTrust{}, errors.New("append/replace root mode requires CA certificates")
+			return ServerTrust{}, nil, errors.New("append/replace root mode requires CA certificates")
 		}
 	default:
-		return ServerTrust{}, errors.New("TLS root mode must be system, append, or replace")
+		return ServerTrust{}, nil, errors.New("TLS root mode must be system, append, or replace")
 	}
 	if o.ExpiredServerCertificateGrace < 0 {
-		return ServerTrust{}, errors.New("server certificate expiry grace cannot be negative")
+		return ServerTrust{}, nil, errors.New("server certificate expiry grace cannot be negative")
 	}
 	if o.ExpiredServerCertificateGrace > 0 && o.Mode != RootsReplace &&
 		(runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "ios") {
-		return ServerTrust{}, fmt.Errorf("%w: expiry grace with native system/append roots; use PEM replace mode", ErrTLSFeatureUnavailable)
+		return ServerTrust{}, nil, fmt.Errorf("%w: expiry grace with native system/append roots; use PEM replace mode", ErrTLSFeatureUnavailable)
 	}
 	original := o.Certificates
+	reuse := previous != nil && len(previous.certificates) == len(original)
+	if reuse {
+		for i, der := range original {
+			if !bytes.Equal(der, previous.certificates[i].Raw) {
+				reuse = false
+				break
+			}
+		}
+	}
+	var prepared *preparedServerTrust
+	if reuse {
+		prepared = previous
+	} else if len(original) > 0 {
+		prepared = &preparedServerTrust{certificates: make([]*x509.Certificate, len(original))}
+	}
 	o.Certificates = make([][]byte, len(original))
 	for i, der := range original {
 		o.Certificates[i] = bytes.Clone(der)
-		cert, err := x509.ParseCertificate(o.Certificates[i])
+		if reuse {
+			continue
+		}
+		// Cached parser data owns bytes independently of returned, mutable trust input.
+		cert, err := x509.ParseCertificate(bytes.Clone(der))
 		if err != nil {
-			return ServerTrust{}, fmt.Errorf("TLS root certificate %d: %w", i+1, err)
+			return ServerTrust{}, nil, fmt.Errorf("TLS root certificate %d: %w", i+1, err)
 		}
 		if !cert.IsCA || !cert.BasicConstraintsValid || (cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0) {
-			return ServerTrust{}, fmt.Errorf("TLS root certificate %d is not a signing CA", i+1)
+			return ServerTrust{}, nil, fmt.Errorf("TLS root certificate %d is not a signing CA", i+1)
 		}
+		prepared.certificates[i] = cert
 	}
 	o.Allow, o.Deny = slices.Clone(o.Allow), slices.Clone(o.Deny)
 	for _, selector := range append(slices.Clone(o.Allow), o.Deny...) {
 		if selector.Kind != CACertificateSHA256 && selector.Kind != CASPKISHA256 {
-			return ServerTrust{}, errors.New("invalid CA selector kind")
+			return ServerTrust{}, nil, errors.New("invalid CA selector kind")
 		}
 	}
-	return o, nil
+	if o.Mode == RootsReplace && prepared.replaceRoots == nil {
+		// Do not mutate previously shared material when changing root mode.
+		prepared = &preparedServerTrust{certificates: prepared.certificates, replaceRoots: x509.NewCertPool()}
+		for _, cert := range prepared.certificates {
+			prepared.replaceRoots.AddCert(cert)
+		}
+	}
+	return o, prepared, nil
 }
 
 func serverRoots(o ServerTrust) (*x509.CertPool, error) {
+	return preparedServerRoots(o, nil)
+}
+
+func preparedServerRoots(o ServerTrust, prepared *preparedServerTrust) (*x509.CertPool, error) {
+	if o.Mode == RootsReplace && prepared != nil && prepared.replaceRoots != nil {
+		return prepared.replaceRoots, nil
+	}
 	var roots *x509.CertPool
 	if o.Mode == RootsReplace {
 		roots = x509.NewCertPool()
@@ -126,10 +170,16 @@ func serverRoots(o ServerTrust) (*x509.CertPool, error) {
 			return nil, errors.New("system TLS roots unavailable")
 		}
 	}
-	for _, der := range o.Certificates {
-		cert, err := x509.ParseCertificate(der)
-		if err != nil {
-			return nil, fmt.Errorf("TLS CA certificate: %w", err)
+	for i, der := range o.Certificates {
+		var cert *x509.Certificate
+		if prepared != nil {
+			cert = prepared.certificates[i]
+		} else {
+			var err error
+			cert, err = x509.ParseCertificate(der)
+			if err != nil {
+				return nil, fmt.Errorf("TLS CA certificate: %w", err)
+			}
 		}
 		roots.AddCert(cert)
 	}
