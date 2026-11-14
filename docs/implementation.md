@@ -262,6 +262,14 @@ signatures covering changed headers can be invalidated. Bcc fields and folds
 are stripped while their extracted recipients remain in the envelope. SMTP
 performs wire line-ending normalization and dot-stuffing.
 
+Reader inputs retain buffered EOF, input-error and interactive dot-termination
+behavior without allocating a separate slice for every body line. Long-line
+fragments cannot be mistaken for standalone dot terminators. Library byte-slice
+inputs use the same parser without first copying the input into a reader buffer;
+the prepared message and envelope still have independent ownership. Folded
+header values accumulate linearly. Both paths retain standard-library message
+validation, blind-recipient stripping and byte-for-byte MIME body preservation.
+
 Before acceptance, failures remain errors. Loss of acknowledgement during
 DATA can leave delivery uncertain; no automatic SMTP replay is attempted.
 Native process failure after startup is also conservatively uncertain.

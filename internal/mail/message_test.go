@@ -3,6 +3,8 @@ package mail
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -146,6 +148,112 @@ func (failingReader) Read([]byte) (int, error) { return 0, errors.New("input fai
 func TestPrepareMessageReadFailure(t *testing.T) {
 	if _, _, err := PrepareMessage(failingReader{}, nil, "example.com", true, true); err == nil || !strings.Contains(err.Error(), "input failed") {
 		t.Fatalf("expected input error; got %v", err)
+	}
+}
+
+type messageEndReader struct {
+	data []byte
+	err  error
+}
+
+type emptyMessageReader struct {
+	calls int
+}
+
+func (r *emptyMessageReader) Read([]byte) (int, error) {
+	r.calls++
+	return 0, nil
+}
+
+func TestPrepareMessageNoReaderProgress(t *testing.T) {
+	for _, ignore := range []bool{false, true} {
+		reader := &emptyMessageReader{}
+		if _, _, err := PrepareMessage(reader, nil, "example.test", false, ignore); !errors.Is(err, io.ErrNoProgress) || reader.calls != 100 {
+			t.Fatalf("ignoreDots=%t calls=%d error=%v", ignore, reader.calls, err)
+		}
+	}
+}
+
+func (r *messageEndReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func TestPrepareMessageReaderBoundaries(t *testing.T) {
+	header := "Subject: test\n\n"
+	readErr := errors.New("message source failed")
+	for _, tc := range []struct {
+		name, body, want string
+		end              error
+		ignore           bool
+		fail             bool
+	}{
+		{"EOF with bytes", "body", "body", io.EOF, true, false},
+		{"EOF with dots", "body\n.\nafter", "body\n.\nafter", io.EOF, true, false},
+		{"dot before error", "body\n.\nafter", "body\n", readErr, false, false},
+		{"unterminated dot", "body\n.", "body\n", io.EOF, false, false},
+		{"data with error", "body", "", readErr, true, true},
+		{"interactive data with error", "body", "", readErr, false, true},
+		{"fragment is not dot line", strings.Repeat("x", 8192-len(header)) + ".\nafter\n.\n", strings.Repeat("x", 8192-len(header)) + ".\nafter\n", io.EOF, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &messageEndReader{[]byte(header + tc.body), tc.end}
+			data, _, err := PrepareMessage(reader, []string{"to@example.test"}, "example.test", false, tc.ignore)
+			if tc.fail {
+				if !errors.Is(err, readErr) || !strings.HasPrefix(err.Error(), "read message: ") || data != nil {
+					t.Fatalf("data=%q error=%v", data, err)
+				}
+			} else if err != nil || string(data) != header+tc.want {
+				t.Fatalf("data=%q error=%v", data, err)
+			}
+		})
+	}
+}
+
+func TestPrepareMessageBytesMatchesReaderAndOwnsOutput(t *testing.T) {
+	for _, input := range []string{
+		"Subject: test\n\n\x00body\n.\nno final newline",
+		"To: \"a b\"@example.test,\r\n\tsecond@example.test\r\nBcc: blind@example.test\r\n\t(comment)\r\n\r\nopaque\r\n",
+		"Resent-To: newest@example.test\nResent-Bcc: hidden@example.test\nResent-To: older@example.test\nTo: original@example.test\n\nbody",
+		"X-Folded: " + strings.Repeat("\n\tvalue", 512) + "\nTo: to@example.test\n\nbody",
+		"",
+		"\tOrphan\n\nbody",
+		"Bcc : hidden@example.test\n\nbody",
+		"To: invalid <\n\nbody",
+		"Subject: no separator\n",
+	} {
+		for _, headers := range []bool{false, true} {
+			raw := []byte(input)
+			original := bytes.Clone(raw)
+			args := []string{"explicit@example.test"}
+			expected, recipients, expectedErr := PrepareMessage(bytes.NewReader(raw), args, "example.test", headers, true)
+			got, gotRecipients, err := PrepareMessageBytes(raw, args, "example.test", headers)
+			if fmt.Sprint(err) != fmt.Sprint(expectedErr) || !bytes.Equal(got, expected) || !reflect.DeepEqual(gotRecipients, recipients) {
+				t.Fatalf("headers=%t input=%q output=%q recipients=%q error=%v; expected %q %q %v", headers, input, got, gotRecipients, err, expected, recipients, expectedErr)
+			}
+			if !bytes.Equal(raw, original) || args[0] != "explicit@example.test" {
+				t.Fatal("preparation modified caller-owned input")
+			}
+			if err != nil {
+				continue
+			}
+			got[0] ^= 1
+			gotRecipients[0] = "changed@example.test"
+			if !bytes.Equal(raw, original) || args[0] != "explicit@example.test" {
+				t.Fatal("output aliases caller-owned input")
+			}
+			saved := bytes.Clone(got)
+			for i := range raw {
+				raw[i] ^= 1
+			}
+			if !bytes.Equal(got, saved) {
+				t.Fatal("caller mutation changed prepared output")
+			}
+		}
 	}
 }
 

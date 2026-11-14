@@ -95,6 +95,11 @@ func PrepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 	return prepareMessage(in, args, domain, fromHeaders, ignoreDots, false)
 }
 
+// PrepareMessageBytes preserves dot lines and returns independently owned message bytes and recipients.
+func PrepareMessageBytes(data []byte, args []string, domain string, fromHeaders bool) ([]byte, []string, error) {
+	return prepareMessageBytes(data, args, domain, fromHeaders, false)
+}
+
 func PrepareLocalMessage(in io.Reader, args []string, fromHeaders, ignoreDots bool) ([]byte, []string, error) {
 	return prepareMessage(in, args, "", fromHeaders, ignoreDots, true)
 }
@@ -112,26 +117,36 @@ func LocalEnvelopeAddress(s string) (string, error) {
 func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ignoreDots, local bool) ([]byte, []string, error) {
 	r := bufio.NewReader(in)
 	var raw bytes.Buffer
+	partial := false
 	for {
-		line, err := r.ReadBytes('\n')
-		if !ignoreDots && bytes.Equal(bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r")), []byte(".")) {
+		line, err := r.ReadSlice('\n')
+		if !ignoreDots && !partial && bytes.Equal(bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r")), []byte(".")) {
 			break
 		}
 		raw.Write(line)
+		if err == bufio.ErrBufferFull {
+			partial = true
+			continue
+		}
 		if err != nil {
 			if err != io.EOF {
 				return nil, nil, fmt.Errorf("read message: %w", err)
 			}
 			break
 		}
+		partial = false
 	}
-	data := raw.Bytes()
+	return prepareMessageBytes(raw.Bytes(), args, domain, fromHeaders, local)
+}
+
+func prepareMessageBytes(data []byte, args []string, domain string, fromHeaders, local bool) ([]byte, []string, error) {
 	if len(data) == 0 {
 		return nil, nil, invalidMessage(errors.New("message input is empty"))
 	}
 	// Preserve header bytes and MIME body exactly, removing blind-recipient fields and their folds.
 	var clean bytes.Buffer
 	var fields []headerField
+	var foldedValue strings.Builder
 	offset, skip, bodyFound := 0, false, false
 	lineNumber := 0
 	for offset < len(data) {
@@ -154,8 +169,15 @@ func prepareMessage(in io.Reader, args []string, domain string, fromHeaders, ign
 			if len(fields) == 0 {
 				return nil, nil, invalidMessage(fmt.Errorf("line %d: header continuation has no preceding field", lineNumber))
 			}
-			fields[len(fields)-1].value += " " + strings.TrimSpace(text)
+			field := &fields[len(fields)-1]
+			if foldedValue.Len() == 0 {
+				foldedValue.WriteString(field.value)
+			}
+			foldedValue.WriteByte(' ')
+			foldedValue.WriteString(strings.TrimSpace(text))
+			field.value = foldedValue.String()
 		} else {
+			foldedValue.Reset()
 			name, value, ok := strings.Cut(text, ":")
 			if !ok || name == "" {
 				return nil, nil, invalidMessage(fmt.Errorf("line %d: expected a header before the blank line, but this line is not \"Name: value\"", lineNumber))

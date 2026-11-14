@@ -3,7 +3,6 @@
 package ztmail
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -300,8 +299,8 @@ func (c *Client) send(ctx context.Context, message Message, output io.Writer, te
 		}
 	}
 	if !test {
-		data, result.Recipients, err = mail.PrepareMessage(bytes.NewReader(message.Data),
-			message.Recipients, c.options.Domain, message.ReadRecipients, true)
+		data, result.Recipients, err = mail.PrepareMessageBytes(message.Data,
+			message.Recipients, c.options.Domain, message.ReadRecipients)
 		if err != nil {
 			return result, err
 		}
