@@ -312,38 +312,78 @@ func (r *TestReport) runtimeBreakdown() string {
 	return r.runtimeBreakdownFormat(reportTerminal)
 }
 
-func (r *TestReport) runtimeBreakdownTable() reportTable {
-	type interval struct {
-		start, end time.Time
-		category   int
+func (r *TestReport) runtimeDurations() [runtimeOther + 1]time.Duration {
+	type point struct {
+		at              time.Time
+		category, delta int
 	}
+	var durations [runtimeOther + 1]time.Duration
 	end := r.snapshotTime()
-	points := []time.Time{r.started, end}
-	var spans []interval
+	tracked := 0
+	var categories []int
 	for i, event := range r.traces {
 		category := runtimeCategory(event)
-		if category == runtimeOther {
+		if category != runtimeOther {
+			if categories == nil {
+				categories = make([]int, len(r.traces))
+			}
+			// Zero marks untracked entries; offset IDs so DNS remains distinct.
+			categories[i] = category + 1
+			tracked++
+		}
+	}
+	if tracked == 0 {
+		start := r.started
+		if end.Before(start) {
+			start, end = end, start
+		}
+		durations[runtimeOther] = end.Sub(start)
+		return durations
+	}
+	points := make([]point, 0, 2+2*tracked)
+	points = append(points, point{at: r.started}, point{at: end})
+	for i, stored := range categories {
+		if stored == 0 {
 			continue
 		}
+		category := stored - 1
+		event := r.traces[i]
 		finish := r.traceEnds[i]
 		start := finish.Add(-event.Duration)
 		if start.Before(r.started) {
 			start = r.started
 		}
-		spans = append(spans, interval{start, finish, category})
-		points = append(points, start, finish)
+		delta := 0
+		// Empty/reversed spans retain timeline boundaries without covering an interval.
+		if start.Before(finish) {
+			delta = 1
+		}
+		points = append(points, point{start, category, delta}, point{finish, category, -delta})
 	}
-	sort.Slice(points, func(i, j int) bool { return points[i].Before(points[j]) })
-	durations := make([]time.Duration, runtimeOther+1)
-	for i := 1; i < len(points); i++ {
+	sort.Slice(points, func(i, j int) bool { return points[i].at.Before(points[j].at) })
+	var active [runtimeOther + 1]int
+	previous := points[0].at
+	for i := 0; i < len(points); {
+		current := points[i].at
 		category := runtimeOther
-		for _, span := range spans {
-			if !points[i-1].Before(span.start) && !points[i].After(span.end) && span.category < category {
-				category = span.category
+		for candidate := 0; candidate < runtimeOther; candidate++ {
+			if active[candidate] > 0 {
+				category = candidate
+				break
 			}
 		}
-		durations[category] += points[i].Sub(points[i-1])
+		durations[category] += current.Sub(previous)
+		for i < len(points) && points[i].at.Equal(current) {
+			active[points[i].category] += points[i].delta
+			i++
+		}
+		previous = current
 	}
+	return durations
+}
+
+func (r *TestReport) runtimeBreakdownTable() reportTable {
+	durations := r.runtimeDurations()
 	t := reportTable{header: table.Row{"Runtime breakdown", "Elapsed"}}
 	labels := []string{"DNS", "Kerberos credentials / tickets", "LDAP", "SMTP handshake", "SMTP auth",
 		"SMTP QUIT", "Cleanup", "Host/domain discovery", "Local user lookup", "Credential prompting",

@@ -295,7 +295,11 @@ work is not presented as fresh network traffic, and Windows-managed KDC
 details remain unavailable rather than being inferred.
 
 Timing intervals can overlap; runtime attribution counts elapsed intervals
-once, whereas detailed step durations must not be summed. Crypto estimates
+once using sorted endpoint events and fixed-category active counts, whereas
+detailed step durations must not be summed. Tied endpoints are applied together;
+the existing category precedence, clipping, row order and display thresholds
+are unchanged. Empty or wholly untracked reports need no event storage.
+Crypto estimates
 describe observable classical key strength, not certification or a complete
 authentication-security assessment. See the [diagnostics guide](diagnostics.md)
 for exact reporting, threshold and JSON semantics.

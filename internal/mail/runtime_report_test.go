@@ -2,12 +2,72 @@ package mail
 
 import (
 	"io"
+	"math/rand/v2"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/otuschhoff/adbind/ad/observe"
 )
+
+// Keep the former interval scan as an independent exact-duration compatibility oracle.
+func runtimeScanOracle(r *TestReport) [runtimeOther + 1]time.Duration {
+	type interval struct {
+		start, end time.Time
+		category   int
+	}
+	points := []time.Time{r.started, r.snapshotTime()}
+	var spans []interval
+	for i, event := range r.traces {
+		category := runtimeCategory(event)
+		if category == runtimeOther {
+			continue
+		}
+		finish := r.traceEnds[i]
+		start := finish.Add(-event.Duration)
+		if start.Before(r.started) {
+			start = r.started
+		}
+		spans = append(spans, interval{start, finish, category})
+		points = append(points, start, finish)
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].Before(points[j]) })
+	var durations [runtimeOther + 1]time.Duration
+	for i := 1; i < len(points); i++ {
+		category := runtimeOther
+		for _, span := range spans {
+			if !points[i-1].Before(span.start) && !points[i].After(span.end) && span.category < category {
+				category = span.category
+			}
+		}
+		durations[category] += points[i].Sub(points[i-1])
+	}
+	return durations
+}
+
+func TestRuntimeDurationsMatchesScan(t *testing.T) {
+	operations := []string{"DNS", "service_ticket", "LDAP search", "SMTP connection", "SMTP EXTERNAL authentication",
+		"SMTP QUIT", "GSSAPI cleanup", "Host/domain discovery", "Local user lookup", "Credential prompt",
+		"Report preparation", "AD client setup", "untracked"}
+	random := rand.New(rand.NewPCG(4, 733420))
+	for _, count := range []int{0, 1, 2, 10, 100, 1000} {
+		for trial := 0; trial < 10; trial++ {
+			report := &TestReport{started: fixtureEpoch, snapshotAt: fixtureEpoch.Add(time.Duration(trial-3) * time.Millisecond)}
+			for i := 0; i < count; i++ {
+				report.traces = append(report.traces, observe.TraceEvent{
+					Operation: operations[random.IntN(len(operations))],
+					Duration:  time.Duration(random.IntN(65)-15) * time.Millisecond,
+				})
+				report.traceEnds = append(report.traceEnds, fixtureEpoch.Add(time.Duration(random.IntN(60)-20)*time.Millisecond))
+			}
+			expected := runtimeScanOracle(report)
+			if got := report.runtimeDurations(); got != expected {
+				t.Fatalf("count=%d trial=%d durations=%v, want %v", count, trial, got, expected)
+			}
+		}
+	}
+}
 
 func TestRuntimeCategories(t *testing.T) {
 	for _, test := range []struct {

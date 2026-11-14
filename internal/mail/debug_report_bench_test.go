@@ -52,6 +52,37 @@ func runtimeBenchmarkFixture(spans int) (*TestReport, map[string]time.Duration) 
 	return r, expected
 }
 
+func BenchmarkRuntimeBreakdownSmall(b *testing.B) {
+	for _, spans := range []int{0, 5, 10, 100} {
+		b.Run(fmt.Sprintf("spans=%d", spans), func(b *testing.B) {
+			r, expected := runtimeBenchmarkFixture(spans)
+			b.ReportAllocs()
+			for b.Loop() {
+				if result := r.runtimeBreakdownTable(); len(result.rows) != len(expected) {
+					b.Fatalf("runtime categories=%d, want %d", len(result.rows), len(expected))
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkRuntimeBreakdownUntracked(b *testing.B) {
+	for _, spans := range []int{5, 100} {
+		b.Run(fmt.Sprintf("spans=%d", spans), func(b *testing.B) {
+			r, _ := runtimeBenchmarkFixture(spans)
+			for i := range r.traces {
+				r.traces[i].Operation, r.traces[i].Protocol = "untracked", ""
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if result := r.runtimeBreakdownTable(); len(result.rows) != 1 {
+					b.Fatalf("runtime categories=%d, want only untracked time", len(result.rows))
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkRuntimeBreakdown(b *testing.B) {
 	for _, spans := range []int{1000, 2000, 4000} {
 		b.Run(fmt.Sprintf("spans=%d", spans), func(b *testing.B) {
