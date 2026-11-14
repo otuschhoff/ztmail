@@ -8,11 +8,12 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** the original review changed no application code. Phases 0-5
+**Disposition:** the original review changed no application code. Phases 0-6
 are now complete; execution records below describe their approved
-changes and verification. Phase 5 native Windows/macOS execution is explicitly
-pending under the user's approved local-only closeout; implemented CI is not
-native certification. Remaining phases are not authorized by completion.
+changes and verification. Phase 6 prepared source 0.3.2 and verified six-target
+Build plus actual Windows/macOS offline native checks after authorized pushes.
+No tag, published release, live/interactive pilot or production certification
+was authorized. Accepted/deferred boundaries are recorded explicitly below.
 
 The executive assessment and finding evidence describe the review baseline,
 not an assertion that already resolved defects remain in current code.
@@ -280,7 +281,7 @@ Confidence applies to the observed mechanism, not to unmeasured impact.
 | R05 | P2 | Resolved in Phase 2 | EXTERNAL auth duration is categorized as handshake time |
 | R06 | P2 | Resolved in Phase 2 | DC inventory updates replace historical address evidence |
 | R07 | P2 | Resolved in Phase 3 | CLI orchestration mixes state and performs some configuration checks after input |
-| R08 | P2 | Offline boundary/fuzz coverage resolved; native CI pending; live pilots unperformed | Real orchestration and native paths are less covered than helper contracts |
+| R08 | P2 | Offline boundaries/fuzz and selected native smoke resolved; live/interactive limitations accepted | Real orchestration and native paths are less covered than helper contracts |
 | R09 | P2 | Measured optimization resolved in Phase 4; unrestricted admission policy documented in Phase 5 | Message buffering, copying, and folded-header accumulation |
 | R10 | P1 | Reentry resolved in Phase 2; owned snapshot/resource work resolved in Phase 4 | Arbitrary report output under the state mutex can self-deadlock |
 | R11 | P2 | Measured sweep/formatting optimization resolved in Phase 4 | Quadratic runtime aggregation and repeated formatting work |
@@ -1682,7 +1683,7 @@ remains after re-evaluation. Phase 6 release/pilots require their own authorizat
 4. Update the changelog and version only under release authorization. Do not
    rewrite a published release tag to ship refactoring.
 
-#### Phase 6 execution scope (2026-11-14; validation in progress)
+#### Phase 6 execution record (2026-11-14)
 
 **Input:** Phase 5 `30ea103`, source 0.3.1, AD SDK 0.8.3 and Go 1.26.9.
 The user explicitly authorized preparing patch **0.3.2**, a dated changelog,
@@ -1718,7 +1719,45 @@ child with `FreeConsole` and verifies unavailable console state before calling
 the product adapter. Its successful helper PASS marker is required, so an
 unmatched/skipped helper cannot produce a false green. Both availability/error paths are
 tested without reading a secret, changing parent console state or weakening
-the native gate. Remote revalidation is required before completion.
+the native gate. Native revalidation then passed on `7dbb7af`, including actual
+detached Windows child execution, system/append grace rejection, replace-mode
+support and platform-specific console outcomes.
+
+**Verified release-preparation gates:**
+
+| Gate | Actual evidence |
+| --- | --- |
+| Patch metadata and curated notes | Candidate `bc36d1b` prepares 0.3.2; exact full-version/CLI assertions pass twice under race, `v0.3.2`/`0.3.2` extraction selects one dated nonempty entry, published 0.3.1/older sections are byte-for-byte preserved |
+| Shared local checks | `make test TEST_SHUFFLE=301032026` passes formatting, existing release-note tests, shuffled race packages and vet, repeated after native fixes |
+| Independent race/coverage capture | 1,555 passing test/subtest events, zero failures, three existing skip events; 3,144/3,462 covered statements (90.8%). Helper-only SIGINT/TLS tests and unavailable isolated port-53 real-CLI fixture remain explicit skips |
+| Local six-target builds | Repository `make build-one`, CGO-free native-tagged vet and linked CLI for Linux/Windows/Darwin amd64/arm64; all six metadata records contain `CGO_ENABLED=0`, and native Linux amd64 version matches 0.3.2 plus one shared UTC stamp/candidate SHA |
+| Remote six-target workflow | [Build run 43631826895](https://github.com/otuschhoff/ztmail/actions/runs/43631826895), exact `7dbb7afa039682dffb0245bf2f2b027cfd47922f`: metadata and all six target jobs succeed; Linux tests/version pass and release job is **skipped** |
+| Actual native Windows | [Native run 43631826830](https://github.com/otuschhoff/ztmail/actions/runs/43631826830), same exact SHA, Windows amd64/Go 1.26.9 (`windows-2025-vs2026`): host/suffix, isolated atomic sender, available console and verified missing-console child, native TLS-root/grace scopes, vet/link/version all pass |
+| Actual native macOS | Same run/SHA, Darwin arm64/Go 1.26.9 (`macos-26-arm64`): host/suffix, isolated sender, absent controlling terminal and TLS-root/grace scopes, vet/link/version all pass. Capacity annotation is informational, not a failed/skipped test |
+| Final history/scope | All 17 findings have evidence or explicit accepted/deferred boundaries; rollback tag resolves to reviewed `1d08ad5`, release assets/checksum names exist, published notes are unchanged and no `v0.3.2` tag/release is created |
+
+**Repeated re-evaluation:** earlier green Build runs did not hide native failures.
+The two Windows native precondition regressions were recorded and corrected,
+then the actual detached state and helper execution were verified before
+accepting the native result. No product prompt change or skip was used to make
+the test green. Public exported options/methods and JSON v2 remain unchanged;
+borrowed-owner/signer lifetime, input/body/privacy, accepted/uncertain results
+and SMTP no-replay contracts remain covered. No dependency, new resource cap,
+new linter/shutdown policy or authentication fallback was added.
+
+Raw local race/coverage/curated-note/build metadata, failed and passing native
+logs, exact-SHA job JSON and workflow watch evidence are retained outside the
+checkout. Temporary six-target CLI and Windows test executables are removed
+at closeout; unrelated ignore/editor changes and the attached reference file
+remain untouched.
+
+**Completion decision:** all selected Phase 6 preparation/validation/closeout
+gates pass; no in-scope finding remains. Source **0.3.2** is prepared and main
+pushes are authorized, but a version tag/publication is deliberately excluded.
+The consolidated ledger records accepted unsupported/native/live/resource
+boundaries rather than claiming they were tested or repaired. The final
+closeout commit is pushed and its exact-SHA Build/Native checks are revalidated
+before reporting completion. Publishing or live pilots require new authorization.
 
 #### Consolidated finding dispositions
 
@@ -1735,7 +1774,7 @@ phase execution records retain exact regression/measurement and commit details.
 | R05 | Resolved with evidence, Phase 2 `570d8bb` | EXTERNAL exchange attributed to authentication rather than TLS; [runtime attribution](../internal/mail/runtime_report_test.go) separates nested work and cleanup |
 | R06 | Resolved with evidence, Phase 2 `570d8bb` | [Owned DC history](../internal/mail/debug_report_history_test.go) retains changed/retired address observations without aliasing callback slices |
 | R07 | Resolved with evidence, Phase 3 through `733d420` | Per-command dependencies, raw/per-operation state and preparation/submission boundaries; invalid numeric DNS rejects before input/discovery/credentials, with local-only sender behavior preserved |
-| R08 | Offline boundaries/fuzz resolved; native CI verification in progress; live/interactive pilots accepted as unperformed | Command ownership/side-effect tests, [message/mailbox fuzz targets](../internal/mail/message_fuzz_test.go), [format/schema fuzz targets](../internal/mail/report_table_fuzz_test.go), [native smoke workflow](../.github/workflows/native-smoke.yml). Do not treat ordinary injection, no-console tests or cross-builds as joined-host/interactive/live AD certification |
+| R08 | Offline boundaries/fuzz and selected actual native smoke resolved; live/interactive pilots accepted as unperformed | Command ownership/side-effect tests, [message/mailbox fuzz targets](../internal/mail/message_fuzz_test.go), [format/schema fuzz targets](../internal/mail/report_table_fuzz_test.go), actual Windows amd64/macOS arm64 [native workflow](../.github/workflows/native-smoke.yml) success. Do not treat ordinary injection, no-console tests or cross-builds as joined-host/interactive/live AD certification |
 | R09 | Measured optimization resolved, Phase 4; unrestricted resource policy accepted/documented, Phase 5 | 10 MiB public preparation time 25.364 -> 7.003 ms and bytes -60.40%; folded-header accumulation linear. No implicit message/header/recipient cap; [caller admission](library.md#caller-admission-and-resource-bounds) remains required |
 | R10 | Correctness resolved, Phase 2; measured snapshot/resource work resolved, Phase 4 | [Owned snapshots and observer progress](../internal/mail/report_snapshot_test.go), reentrant writer/error identity and mid-render output barriers. Mean observer wait -99.94%; small snapshot Finish cost +7.01% is retained and below the approved gate |
 | R11 | Measured optimization resolved, Phase 4 | Sweep/reference agreement, lazy render-local domain formatting and unchanged schema/output. Ten paired runtime doubling samples stay below 3x (maxima 2.185/2.096); no claim of arbitrary workload linear wall-clock latency |

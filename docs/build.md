@@ -107,10 +107,15 @@ relays, test no-email authentication before an expressly approved submission,
 review reports for private topology, and never include passwords in logs.
 
 Linux execution and Windows/macOS cross-vet/link checks are not native platform
-certification. At Phase 5 closeout the new remote native workflow is implemented
-but **not executed**: the user approved recording it as pending and committing
-locally without push. Its success must be recorded after authorized CI execution;
-live AD/KDC/LDAP/SMTP pilots remain unperformed and separate from offline CI.
+certification. Phase 5 initially left remote execution pending under local-only
+approval. Phase 6 authorized main pushes and obtained actual Windows amd64 and
+macOS arm64 native smoke/vet/link/version success on Go 1.26.9 at `7dbb7af`:
+[Native smoke](https://github.com/otuschhoff/ztmail/actions/runs/43631826830)
+and the [six-target Build](https://github.com/otuschhoff/ztmail/actions/runs/43631826895)
+passed. Windows arm64, Darwin amd64 and Linux arm64 remain cross-build evidence,
+not native runtime checks. Live AD/KDC/LDAP/SMTP, interactive echo/cancellation
+and domain-joined SSPI pilots remain unperformed and separate from offline CI.
+Source 0.3.2 is prepared; no tag or published release was authorized.
 
 For Windows-specific compile/vet checks from a non-Windows host:
 

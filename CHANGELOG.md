@@ -53,8 +53,9 @@ Prepared patch version; no `v0.3.2` tag or GitHub Release has been published.
 
 - Add message/mailbox/HTML/schema fuzz seeds to ordinary tests and separate
   bounded campaigns; enforce non-mutating formatting and shuffled race tests.
-  Add offline Windows/macOS native host/config/console/TLS smoke CI; native
-  validation and live pilots remain separate from cross-compilation.
+  Validate offline Windows amd64/macOS arm64 native host/config/console/TLS
+  smoke CI, including a verified detached Windows console-error path.
+  Native validation and live pilots remain separate from cross-compilation.
 - Document unrestricted input lengths and caller-side byte/concurrency
   admission instead of introducing new message/header/recipient limits.
 - Reduce message-preparation copying and folded-header accumulation costs,
