@@ -25,7 +25,7 @@ import (
 	"github.com/otuschhoff/ztmail/internal/mail"
 )
 
-func testAD(t *testing.T) *adclient.Client {
+func testAD(t testing.TB) *adclient.Client {
 	t.Helper()
 	trust, err := adclient.NewTrust(adclient.TrustPolicy{Protection: "tls"})
 	if err != nil {
