@@ -8,7 +8,7 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** the original review changed no application code. Phases 0-3
+**Disposition:** the original review changed no application code. Phases 0-4
 are now complete; execution records below describe their approved
 changes and verification. Remaining phases are not authorized by completion.
 
@@ -1375,6 +1375,186 @@ need and explicit ownership/clearing rules.
 regression on small messages, byte/decoded-MIME equivalence, and full race suite.
 If profiles show negligible cost, close the task with evidence and keep the
 simpler existing implementation.
+
+#### Phase 4 execution record (2026-11-14, completed)
+
+The user authorized all four Phase 4 targets and confirmed **four concurrent
+calls**. Application 0.3.1, AD SDK 0.8.3, public options/APIs, JSON schema v2,
+delivery semantics and unrestricted input/observation limits remain unchanged.
+This phase does not authorize a release, push/tag, Phase 5 connection policy or
+new resource limits.
+
+**Approved gates and measurement conditions**
+
+- At least **20% representative time** or **25% allocated-byte improvement**;
+  no statistically supported **greater than 10% small-input slowdown**.
+- Four-call peak-RSS increase at most **10%**. RSS and retained heap are separate
+  measurements, not inferred from allocated bytes or added across processes.
+- Runtime doubling below **3x** in repeated measurements, not a CI timer
+  assertion. If rendering contention is material, observer wait falls at least
+  **75%**.
+- Linux amd64, QEMU Virtual CPU 2.5+, kernel 6.12.113+deb13-amd64, Go **1.26.9**,
+  `GOMAXPROCS=1`. Benchmarks/profiles/builds were run serially on a shared VM;
+  external load was not controllable. Four goroutines do not establish
+  four-core throughput. Repeated comparisons use ten samples and `benchstat`.
+- Fresh baseline binaries and profiles were captured before editing. Each
+  target is compared with its isolated preceding implementation, not credited
+  with another target's gain. Memory samples use five isolated processes per
+  case and Linux `wait4` maximum RSS in KiB. Original-source overlays use the
+  canonical checkout path; distinct build IDs were checked. An alias-path
+  overlay that silently selected candidate source was rejected.
+- Public message benchmarks execute actual `Client.Send` preparation and stop
+  at an explicit offline resolver failure before relay I/O. Report fixtures
+  generate actual MIME/JSON and retain returned messages at a four-call barrier.
+  TLS fixtures execute complete loopback mTLS submissions, optional EXTERNAL,
+  exact received message, one DATA and QUIT. Their server allocations/crypto
+  are included; they do not certify corporate DNS/AD or production SMTP latency.
+
+**Implemented changes and measured results**
+
+| Target / isolated workload | Before -> after | Interpretation |
+| --- | --- | --- |
+| P4-A reader, 10 MiB | 24.81 -> 16.20 ms; 52.54 -> 42.01 MiB/op | Time -34.71%; 138,096 -> 122 allocations |
+| P4-A folded value, 16 KiB | 594.3 -> 130.1 us; 2,492.9 -> 341.8 KiB/op | Time -78.11%, bytes -86.29%; linear accumulation |
+| P4-A public preparation, 1 KiB / 1 MiB / 10 MiB | 18.82 -> 13.91 us / 2.576 -> 0.573 ms / 25.364 -> 7.003 ms | Time -26.07 / -77.76 / -72.39%; 10 MiB bytes -60.40% |
+| P4-A reader, 1 KiB | 15.42 -> 14.38 us | No small-input regression |
+| P4-B runtime, 1,000 / 2,000 / 4,000 spans | 15.337 -> 0.536 ms / 59.951 -> 1.107 ms / 230.832 -> 2.281 ms | Time -96.50 / -98.15 / -99.01%; bytes -65.75 / -72.42 / -73.93% |
+| P4-B runtime doubling | Ten paired maximum ratios 2.185 and 2.096 | Every measured doubling below 3x |
+| P4-B runtime, 0 / 5 / 10 / 100 spans | Time -69.31 / -11.82 / -24.35 / -77.03% | Empty/untracked fast path avoids event storage |
+| P4-B formatting, small / medium / rich MIME | 1.241 -> 0.785 ms / 7.651 -> 4.361 ms / 156.75 -> 87.48 ms | Time -36.78 / -43.00 / -44.20%; bytes -48.18 / -52.98 / -51.15% |
+| P4-C observer mean / maximum wait | 45,152.39 -> 27.10 us / 45,190.5 -> 106.8 us | -99.94 / -99.76%, exceeding the contention gate |
+| P4-C owned snapshot, small / medium / rich Finish | Time +7.01 / +2.68 / +2.78% | Required ownership has a measured cost, below 10% |
+| P4-C owned snapshot, small / medium MIME | Time +2.61 / +5.64% | No substantial small-input regression |
+| P4-C table/buffer reuse, small / medium / rich MIME | 253.1 -> 188.0 KiB/op / 1.571 -> 1.397 MiB/op / 34.08 -> 27.06 MiB/op | Bytes -25.71 / -11.05 / -20.61%; rich saves about 7 MiB/call |
+| P4-C table/buffer reuse, small / medium / rich MIME | Time -6.93 / -9.10 / -4.36% | Savings are not merely an allocation-count change on a tiny input |
+| P4-D repeated TLS, 32 roots, 1 KiB, mTLS / EXTERNAL | 2.836 -> 2.376 ms / 2.870 -> 2.426 ms | Time -16.24 / -15.45%; time alone is not the materiality proof |
+| P4-D same complete operations | 372.7 -> 184.7 KiB/op / 372.8 -> 184.7 KiB/op | Bytes -50.46 / -50.45%; material repeated-operation benefit |
+| P4-D one root, 1 KiB | No supported time change; bytes about -4% | Client-certificate-only cost does not justify additional caching |
+| P4-D 32 roots, 1 MiB | Allocated bytes -5.17%; time changes -3.72 / +2.30% | No claim of a comparable large-message or network speedup |
+
+Material rows above are supported by repeated distributions, not one-shot
+smoke timings. `benchstat` reports `p=0.000` for the key message, runtime,
+formatter, observer, table-allocation and TLS-allocation gains (`p<0.001` at
+its display precision). The small standalone formatting paths were sampled
+longer when noise made the first comparison inconclusive: coloured ten-fragment
+formatting had no supported change (`p=0.853`), HTML was +1.14%, and the other
+small/no-op helpers did not show a supported slowdown greater than 10%.
+
+**Four-call maximum-RSS evidence**
+
+| Case | Before -> after median KiB | Change |
+| --- | --- | --- |
+| Public preparation, 1 MiB | 31,912 -> 28,708 | -10.04% |
+| Public preparation, 10 MiB | 222,940 -> 126,192 | -43.40% |
+| Snapshot rendering, separate reports | 60,784 -> 61,488 | +1.16% |
+| Snapshot rendering, shared report | 51,496 -> 54,656 | +6.14% |
+| Final table/buffer reuse, separate reports, versus original locking | 60,784 -> 61,752 | +1.59% |
+| Final table/buffer reuse, shared report, versus original locking | 51,496 -> 52,420 | +1.79% |
+| TLS, one root, 1 KiB | 17,684 -> 17,740 | +0.32% |
+| TLS, one root, 1 MiB | 36,456 -> 36,444 | -0.03% |
+| TLS, 32 roots, 1 KiB | 20,272 -> 19,848 | -2.09% |
+| TLS, 32 roots, 1 MiB | 38,692 -> 40,876 | +5.64% |
+
+Every case meets the agreed RSS gate. These are distributions on synthetic
+inputs, not production memory ceilings. Returned/retained data still scales
+with message and observation sizes; this phase introduces no truncation,
+collection caps, asynchronous drops or pools for secret/message buffers.
+
+**Correctness and repeated re-evaluation**
+
+1. Reader and byte preparation share parsing/validation/privacy logic.
+   Long buffered fragments cannot turn a line's final dot into an unintended
+   terminator; byte input retains dots and independent output ownership.
+   Data-plus-EOF/error, no-progress readers, dot handling, folded values,
+   bidirectional ownership and actual public preparation regressions pass.
+   A proposed bulk `io.Copy` lost the former no-progress failure and was
+   rejected. Buffer-growth hints without material benefit were removed.
+2. Runtime categories are classified once; sorted tied endpoint groups update
+   fixed active-category counts. An independent former-scan oracle compares
+   exact durations for irregular timestamps, overlaps, future/past endpoints
+   and empty/reversed spans. Existing precedence and unusual boundary semantics
+   remain intact. Re-evaluation caught and fixed a 22% empty-report slowdown;
+   an intermediate double-classification allocation regression was discarded.
+3. Domain matching is lazy and local to a table/render, never client/global.
+   Goldens, literal-domain/suffix boundaries, escaping, empty tables and
+   cross-mode helpers remain unchanged. A standalone no-op helper regression
+   was corrected before committing.
+4. Snapshot capture clones maps, issue/trace/end-time slices, every nested
+   advertised/current/retired inventory/address group, both TLS-row levels,
+   validity and client-certificate metadata. Ticket metadata is detached scalar
+   data. Output workers/errors/queues/writers/mutexes are not copied.
+   Per-report `renderMu` preserves same-report serialization; observers use the
+   separate state mutex. Controlled render gates prove live Value/Trace/
+   Inventory/ticket updates proceed and do not change captured output.
+5. Output failure arriving during MIME generation returns no usable bytes.
+   A loopback SMTP regression proves it stops before MAIL/RCPT/DATA, matches
+   its cause once, and is neither accepted nor uncertain. Existing `JoinOutput`
+   supplies classification without redundant transport error wrapping.
+   All controlled-gate/output workers are released and awaited on failure.
+6. The typed snapshot table bundle is passed explicitly to JSON/plain/HTML.
+   Plain header/cryptography adaptations do not mutate it; repeated cross-format
+   tests preserve columns, rows, ordering and notes for all authentication modes.
+   Alternatives stream through the outer body part; quoted-printable framing
+   uses chunks. An extra nested-builder-sharing layer had negligible benefit
+   and was removed. An observer experiment that completed before arrival
+   failed explicitly and was replaced, not relabeled as successful evidence.
+7. Private TLS material owns CA DER independently of returned mutable trust
+   bytes. Exact current bytes/order/count authorize parsing reuse; changed
+   inputs revalidate. Replacement pools are immutable, and root-mode changes
+   never mutate shared material. System/append pools are requested per operation,
+   preserving the standard library's platform/runtime trust-loading behavior.
+   Mutation, malformed/non-CA input, reorder/count/replacement, mode/selector
+   changes and concurrent calls pass. Changed signer keys and deterministic
+   post-expiry client/server checks prove decisions are not cached. CA-policy
+   denial after earlier acceptance fails closed with fresh evidence.
+
+CPU/allocation and mutex/block profiles corroborate the chosen targets.
+Post-snapshot contention profiles no longer attribute observer blocking to
+report-state rendering. Complete TLS allocation attribution drops repeated
+CA/root parsing after reuse; TLS cryptography, socket work and server fixture
+parsing remain real costs. Do not add overlapping cumulative profile percentages
+as if they were disjoint work.
+
+**Final validation**
+
+```bash
+go test -race -shuffle=733420 -count=2 -coverprofile="$EVIDENCE_DIR/final.cover" \
+  -json ./... > "$EVIDENCE_DIR/final-tests.json"
+go tool cover -func="$EVIDENCE_DIR/final.cover"
+GOMAXPROCS=1 go test -run='^$' -bench=. -benchmem -benchtime=1x -count=1 ./...
+```
+
+- **3,014 passing test/subtest events**, zero failures, six existing skip
+  events across two runs. The three distinct skips remain the two subprocess
+  helpers and the isolated-DNS-port-dependent real-CLI library subtest.
+- Coverage: public library **93.1%** (148/159), CLI **83.7%** (911/1,089),
+  internal mail **93.7%** (2,057/2,195), statement-weighted total **90.5%**
+  (3,116/3,443). This is not branch coverage or platform certification.
+- All **118 benchmark variants** passed a final fixture smoke; those one-shot
+  timings are not used for materiality. Focused new ownership/runtime/MIME/
+  cache/TLS/output suites were run twice under shuffled race before commits.
+- Native vet/build, CGO-free linked CLI `--version`, Windows amd64 and Darwin
+  arm64 CGO-free cross-vet/build/link, tracked-Go formatting, whitespace and
+  existing release-note extraction tests pass. Cross-builds do not establish
+  native terminal/OS trust behavior.
+- Raw benchmark distributions, RSS samples, profiles, JSON and coverage remain
+  session-local, outside the checkout. Temporary binaries/overlay source are
+  removed after verification; unrelated ignore/editor changes are not staged.
+
+**Execution commits:** `be40aa7` (public preparation/memory fixtures),
+`0acb6f2` (message path), `b53bc78` (runtime sweep), `849f4a1` (formatter),
+`f3e8b1d` (observer/report fixtures), `8fd72be` (owned snapshots),
+`fa8eaa5` (table/buffer reuse), `e79d824` (repeated TLS evidence/CA reuse).
+Each optimization commit records its own measurements, re-evaluation and
+verification; this execution record is the phase closeout.
+
+**Completion decision:** all approved P4-A/B/C/D gates are satisfied. R09's
+measured preparation work, R10's snapshot/resource optimization, R11 and R13
+are complete. R09/R10's resource-policy questions remain intentionally coupled
+to R15 and Phase 5: memory/observation caps were not authorized. R12 dialing,
+native platform/real terminal/live AD checks and operational-limit decisions
+remain Phase 5 work. Further certificate/signer caching is not justified by
+the one-root operation measurements and is not included.
 
 ### Phase 5: connection policy, platform checks, and operational bounds
 

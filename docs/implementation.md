@@ -80,8 +80,10 @@ Prepared authentication retains independently owned, parsed custom CAs and an
 immutable replacement-root pool. The library client and CLI preparation pass
 that private material into submission. Reuse requires exact current DER bytes,
 order and count; changed input is parsed and validated again. Returned mutable
-trust bytes do not alias the retained parser data. System roots are still read
-per operation, and append mode adds prepared CAs to a fresh system pool.
+trust bytes do not alias the retained parser data. A system-root pool is still
+requested per operation through the standard library, retaining its existing
+platform/runtime trust-loading behavior; append mode adds prepared CAs to that
+operation's pool.
 Root mode, selectors and exceptions are validated on every operation. Signer
 identity/key matching, client-certificate validity, server hostname/time/path
 verification and exception use are not cached. There is no global root cache or

@@ -42,6 +42,17 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ### Changed
 
+- Reduce message-preparation copying and folded-header accumulation costs,
+  preserving input ownership, body bytes, envelope rules and blind-recipient
+  stripping.
+- Use an endpoint sweep for diagnostic runtime attribution and render-local
+  domain formatting. Render owned report snapshots outside the observation
+  lock and reuse tables/MIME buffers without changing JSON v2 or decoded output.
+  Required-output failures during rendering still abort before the envelope.
+- Reuse independently owned custom-CA parsing and replacement-root preparation
+  across repeated operations. Keep system-root loading, signer/key matching,
+  time/hostname/path verification, policy decisions and authentication evidence
+  operation-local.
 - Complete refactoring Phase 1 with offline wire-command, validation,
   cancellation, ownership and malformed-PEM regressions. Record phase evidence
   and remaining work in the refactoring review.
