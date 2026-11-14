@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,8 @@ import (
 )
 
 type TestReport struct {
+	// Preserve per-report render serialization without blocking state observers.
+	renderMu          sync.Mutex
 	mu                sync.Mutex
 	output            io.Writer
 	outputErr         error
@@ -305,12 +309,21 @@ func (r *TestReport) Finish(err *error) {
 		}
 		r.mu.Unlock()
 	}
+	r.renderMu.Lock()
 	r.mu.Lock()
-	drain := false
+	var snapshot *TestReport
 	if r.outputErr == nil {
-		drain = r.queueOutputLocked(r.render() + "\n")
+		snapshot = r.snapshotLocked(r.snapshotTime())
 	}
 	r.mu.Unlock()
+	drain := false
+	if snapshot != nil {
+		chunk := snapshot.render() + "\n"
+		r.mu.Lock()
+		drain = r.queueOutputLocked(chunk)
+		r.mu.Unlock()
+	}
+	r.renderMu.Unlock()
 	if drain {
 		r.drainOutput()
 	}
@@ -328,6 +341,35 @@ func (r *TestReport) snapshotTime() time.Time {
 		return r.snapshotAt
 	}
 	return time.Now()
+}
+
+func (r *TestReport) snapshotLocked(at time.Time) *TestReport {
+	snapshot := &TestReport{
+		values: maps.Clone(r.values), rows: slices.Clone(r.rows),
+		started: r.started, snapshotAt: at, debug: r.debug, verbose: r.verbose, color: r.color, testMail: r.testMail,
+		traces: slices.Clone(r.traces), traceEnds: slices.Clone(r.traceEnds),
+		inventory: slices.Clone(r.inventory), tlsDetails: cloneReportRows(r.tlsDetails), tlsCrypto: cloneReportRows(r.tlsCrypto),
+		tlsValidity: slices.Clone(r.tlsValidity), tlsStrength: r.tlsStrength, tlsStrengthReason: r.tlsStrengthReason,
+		ticketMetadata: r.ticketMetadata, authentication: r.authentication,
+		passwordPrompted: r.passwordPrompted, promptDuration: r.promptDuration,
+	}
+	for i, event := range snapshot.inventory {
+		snapshot.inventory[i] = cloneInventoryEvent(event)
+	}
+	if cert := snapshot.authentication.ClientCertificate; cert != nil {
+		copy := *cert
+		snapshot.authentication.ClientCertificate = &copy
+	}
+	return snapshot
+}
+
+func cloneReportRows(rows []table.Row) []table.Row {
+	// TLS row cells are immutable scalars; both slice levels need independent ownership.
+	rows = slices.Clone(rows)
+	for i, row := range rows {
+		rows[i] = slices.Clone(row)
+	}
+	return rows
 }
 
 func (r *TestReport) summaryTable() reportTable {

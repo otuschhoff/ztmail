@@ -324,8 +324,14 @@ nil-error short write) is retained, no further writes are attempted, and
 operational error causes survive finalization. There is no background output
 worker to abandon on cancellation.
 
-Rendering and testmail preparation still hold the state mutex while reading
-report state; the measured snapshot-lock optimization remains Phase 4 work.
+Terminal finalization and testmail capture independently owned report state
+under the state mutex, then render outside it. Observers can update the live
+report while a captured report is being formatted; those later updates remain
+available locally but do not change the captured MIME/JSON representations.
+A separate per-report rendering mutex preserves same-report render
+serialization without blocking observations. Required-output errors that
+arrive during testmail rendering are checked again before returning usable
+message bytes; submission also checks output before the envelope.
 Operation deadlines cannot preempt arbitrary writers/signers, synchronous CPU
 work or arbitrary synchronous cleanup methods. Owned AD/racing cleanup gets
 its own detached five-second context and is awaited, not abandoned.

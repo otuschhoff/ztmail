@@ -28,36 +28,13 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	if err := r.OutputError(); err != nil {
 		return nil, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.outputErr != nil {
-		return nil, r.outputErr
-	}
-	if from == "" {
-		from = r.values["Canonical mail"]
-	}
-	sender, err := mail.ParseAddress(from)
+	r.renderMu.Lock()
+	defer r.renderMu.Unlock()
+	copyReport, sender, to, err := r.testMessageSnapshot(from, recipients)
 	if err != nil {
-		return nil, fmt.Errorf("testmail From: %w", err)
+		return nil, err
 	}
-	if len(recipients) == 0 {
-		return nil, errors.New("testmail requires a recipient")
-	}
-	to := make([]string, 0, len(recipients))
-	for _, recipient := range recipients {
-		address, err := mail.ParseAddress(recipient)
-		if err != nil {
-			return nil, fmt.Errorf("testmail To: %w", err)
-		}
-		to = append(to, address.String())
-	}
-	snapshotAt := time.Now()
-	copyReport := &TestReport{values: r.values, started: r.started, snapshotAt: snapshotAt, rows: r.rows, debug: r.debug, verbose: r.verbose,
-		traces: r.traces, traceEnds: r.traceEnds, inventory: r.inventory, tlsDetails: r.tlsDetails,
-		tlsCrypto: r.tlsCrypto, tlsValidity: r.tlsValidity, tlsStrength: r.tlsStrength,
-		tlsStrengthReason: r.tlsStrengthReason, ticketMetadata: r.ticketMetadata,
-		authentication:   r.authentication,
-		passwordPrompted: r.passwordPrompted, promptDuration: r.promptDuration}
+	snapshotAt := copyReport.snapshotAt
 	jsonData, err := copyReport.jsonSnapshot()
 	if err != nil {
 		return nil, err
@@ -67,13 +44,13 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	var alternatives bytes.Buffer
 	alternativeWriter := multipart.NewWriter(&alternatives)
 	subject := "ztmail diagnostic test"
-	if r.debug {
+	if copyReport.debug {
 		subject += " (debug)"
 	}
 	fmt.Fprintf(&message, "Date: %s\r\nMessage-ID: <%s@ztmail.invalid>\r\nFrom: %s\r\nTo: %s\r\n"+
 		"Subject: %s\r\nMIME-Version: 1.0\r\n"+
 		"Content-Type: multipart/mixed; boundary=%q\r\n\r\n",
-		snapshotAt.Format(time.RFC1123Z), rand.Text(), sender.String(), strings.Join(to, ", "), subject, multipartWriter.Boundary())
+		snapshotAt.Format(time.RFC1123Z), rand.Text(), sender, strings.Join(to, ", "), subject, multipartWriter.Boundary())
 	for _, format := range []reportFormat{reportPlain, reportHTML} {
 		contentType := "text/plain; charset=UTF-8"
 		if format == reportHTML {
@@ -132,5 +109,35 @@ func (r *TestReport) TestMessage(from string, recipients []string) ([]byte, erro
 	if err := multipartWriter.Close(); err != nil {
 		return nil, fmt.Errorf("finish testmail: %w", err)
 	}
+	if err := r.OutputError(); err != nil {
+		return nil, err
+	}
 	return message.Bytes(), nil
+}
+
+func (r *TestReport) testMessageSnapshot(from string, recipients []string) (*TestReport, string, []string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.outputErr != nil {
+		return nil, "", nil, r.outputErr
+	}
+	if from == "" {
+		from = r.values["Canonical mail"]
+	}
+	sender, err := mail.ParseAddress(from)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("testmail From: %w", err)
+	}
+	if len(recipients) == 0 {
+		return nil, "", nil, errors.New("testmail requires a recipient")
+	}
+	to := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		address, err := mail.ParseAddress(recipient)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("testmail To: %w", err)
+		}
+		to = append(to, address.String())
+	}
+	return r.snapshotLocked(time.Now()), sender.String(), to, nil
 }

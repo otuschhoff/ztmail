@@ -7,8 +7,11 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 type outputFailureWriter struct {
@@ -114,5 +117,56 @@ func TestSMTPWarningOutputFailure(t *testing.T) {
 				t.Fatalf("independent QUIT failure lost: %v", err)
 			}
 		})
+	}
+}
+
+func TestSMTPOutputFailureDuringTestmailRendering(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &snapshotRenderGate{entered: make(chan struct{}), resume: make(chan struct{})}
+	var workers sync.WaitGroup
+	t.Cleanup(func() {
+		gate.unblock()
+		listener.Close()
+		workers.Wait()
+	})
+	results := make(chan smtpResult, 1)
+	workers.Go(func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			results <- smtpResult{err: err}
+			return
+		}
+		results <- serveSMTP(conn, false, false)
+	})
+	cause := errors.New("output failed after snapshot capture")
+	writer := outputFailureWriter{match: "After snapshot capture", cause: cause}
+	report := NewTestReport(writer, true)
+	report.EnableDebug()
+	report.tlsDetails = []table.Row{{"Status", gate}}
+	backend := &fakeBackend{security: &fakeSecurity{offer: []byte{1, 0, 0, 0}}, address: netip.MustParseAddr("127.0.0.1")}
+	o := options{relay: "relay.example.test", hello: "host.example.test", port: listener.Addr().(*net.TCPAddr).Port,
+		from: "from@example.test", timeout: 5 * time.Second, tlsMode: "off", testMail: true, report: report}
+	delivered := make(chan error, 1)
+	workers.Go(func() {
+		delivered <- deliver(context.Background(), o, []string{"to@example.test"}, nil, backend, writer)
+	})
+	select {
+	case <-gate.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SMTP did not reach captured-state testmail rendering")
+	}
+	report.Line("WARN", "After snapshot capture", "required notification")
+	gate.unblock()
+	err = <-delivered
+	result := <-results
+	workers.Wait()
+	assertNoEmailCommands(t, result)
+	if !errors.Is(err, cause) || !errors.Is(err, ErrOutputFailed) ||
+		errors.Is(err, ErrAcceptedOutput) || errors.Is(err, ErrDeliveryUncertain) ||
+		strings.Count(err.Error(), cause.Error()) != 1 {
+		t.Fatalf("mid-render output failure lost or misclassified: %v", err)
 	}
 }

@@ -45,12 +45,17 @@ func (r *TestReport) Trace(_ context.Context, event observe.TraceEvent) {
 
 func (r *TestReport) Inventory(event discovery.InventoryEvent) {
 	// SDK callback slices belong to the invocation, not to the report.
-	event.Advertised = cloneInventoryEndpoints(event.Advertised)
-	event.Current.Candidates = cloneInventoryEndpoints(event.Current.Candidates)
-	event.Retired = cloneInventoryEndpoints(event.Retired)
+	event = cloneInventoryEvent(event)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.inventory = append(r.inventory, event)
+}
+
+func cloneInventoryEvent(event discovery.InventoryEvent) discovery.InventoryEvent {
+	event.Advertised = cloneInventoryEndpoints(event.Advertised)
+	event.Current.Candidates = cloneInventoryEndpoints(event.Current.Candidates)
+	event.Retired = cloneInventoryEndpoints(event.Retired)
+	return event
 }
 
 func cloneInventoryEndpoints(endpoints []discovery.Endpoint) []discovery.Endpoint {
