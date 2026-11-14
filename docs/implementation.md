@@ -97,6 +97,15 @@ automatic replay or DATA-uncertainty changes are introduced.
 JSON v2 and MIME reports freeze method-aware evidence before DATA, exclude
 private material and final acceptance, and use local-client validity provenance.
 
+Relay dialing uses only admitted numeric unicast endpoints, sequentially, with
+no extra connection workers. Nonfinal attempt contexts are capped at 750 ms or
+their smaller share of the remaining operation budget; the single/final
+candidate keeps the remaining deadline. Each attempt context ends before the
+next starts. Required TCP-result output failure stops further attempts, closes
+a rejected successful connection and retains independent dial/close causes.
+The connection policy changes only pre-authentication TCP admission: it never
+replays TLS, AUTH or DATA on another address after TCP success.
+
 ## Default GSSAPI CLI submission flow
 
 1. Validate options, including numeric DNS bootstrap endpoints before input or
@@ -353,3 +362,14 @@ message bytes; submission also checks output before the envelope.
 Operation deadlines cannot preempt arbitrary writers/signers, synchronous CPU
 work or arbitrary synchronous cleanup methods. Owned AD/racing cleanup gets
 its own detached five-second context and is awaited, not abandoned.
+
+Message/header/recipient sizes remain unrestricted. Caller admission must
+bound ingestion bytes before allocation and concurrent operations; a deadline
+does not provide a memory bound. See the
+[library admission guidance](library.md#caller-admission-and-resource-bounds).
+Offline fuzz seeds exercise body/input ownership, blind-header privacy,
+mailbox round trips, HTML escaping and JSON v2 shapes in ordinary tests;
+`make fuzz` runs separately bounded two-worker campaigns.
+Native host/config/console/TLS smoke tests are opt-in via `native_smoke`.
+Cross-compilation is not native execution, console availability checks do not
+read secrets or test interactive echo, and live AD/SSPI pilots remain separate.

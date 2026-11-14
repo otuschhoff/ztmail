@@ -8,9 +8,11 @@ AD SDK 0.8.3, Go 1.26.9
 **Method revision:** second review using `samber/cc-skills-golang`; production
 baseline unchanged
 
-**Disposition:** the original review changed no application code. Phases 0-4
+**Disposition:** the original review changed no application code. Phases 0-5
 are now complete; execution records below describe their approved
-changes and verification. Remaining phases are not authorized by completion.
+changes and verification. Phase 5 native Windows/macOS execution is explicitly
+pending under the user's approved local-only closeout; implemented CI is not
+native certification. Remaining phases are not authorized by completion.
 
 The executive assessment and finding evidence describe the review baseline,
 not an assertion that already resolved defects remain in current code.
@@ -1580,6 +1582,92 @@ decision for any new bounds.
 **Exit gate:** native versus cross-build evidence recorded honestly, no new
 unbounded connection workers, no SMTP replay, and explicit limit/cancellation
 errors. Document caller concurrency/admission guidance for service use.
+
+#### Phase 5 execution record (2026-11-14)
+
+**Input:** Phase 4 closeout `562f963`, application 0.3.1, AD SDK 0.8.3 and
+Go 1.26.9. The user authorized implementing the next phase, iterative
+re-evaluation and a detailed commit. Existing Phase 0 admission/deadline/relay
+decisions apply. No new input cap, dependency, public option/error type, schema,
+version, release, tag, push, SMTP pooling/replay or live AD pilot was authorized.
+Unrelated ignore/editor changes and the attached reference file remain untouched.
+
+**Native execution decision:** this host is Linux. The user explicitly selected
+"Implement native CI checks and document execution as pending; commit locally
+without pushing." P5-B therefore closes the implemented smoke infrastructure,
+not Windows/macOS execution, interactive-terminal certification, domain-joined
+SSPI or live KDC/LDAP/SMTP validation. Those results must be collected separately
+after authorization; cross-builds cannot substitute for them.
+
+| Task / finding | Implemented outcome | Verification and limitations |
+| --- | --- | --- |
+| P5-A / R12 | Private per-call dialer seam; nonfinal sequential TCP attempts capped at 750 ms or their smaller remaining-budget share; single/final attempt keeps the remaining operation budget | Controlled regression was RED at 30 s with two addresses/60 s; GREEN second start is 750 ms, below the approved 1 s target. Numeric endpoint order, short/absent deadlines, final budget, cancellation, ended attempt contexts and output-rejected connection closure are tested. No racing workers or post-TCP fallback |
+| P5-B / R08 | Opt-in `native_smoke` tests and separate Windows/macOS native CI for host/suffix, isolated atomic sender storage, headless console availability, native TLS-root/grace limitations and binary version | Linux native run and six-target cross-vet/build/test links passed. Windows/macOS actual execution is pending by approval. Tests do not read passwords or change echo/terminal modes, DNS or system trust. Live AD and interactive/domain-joined pilots remain separate |
+| P5-C / R09 | Preserved unrestricted message/header/recipient behavior; documented finite byte admission before allocation, overflow rejection instead of truncation, bounded queues/concurrency, retained observation/report costs and borrowed-owner/signer lifetime | Existing large message/folded-header/recipient fixtures pass. No implicit resource cap or throughput/RAM certification. Operation deadlines cannot preempt arbitrary blocking readers/writers/signers or synchronous CPU/cleanup; detached owned cleanup retains its five-second allowance |
+| P5-D / R08 | Four focused fuzz targets with ordinary seeds and separately bounded mutation campaigns | Reader/byte equivalence, unmodified/independently owned input, body bytes/dots, blind-header privacy, mailbox/bare round trips, domain HTML escaping and exact JSON v2 wire fields/table shapes/content are asserted. Invalid preparation returns no usable data |
+| P5-E / R15 | Non-mutating formatting gate and shuffled race tests in shared `make test`; captured seeds replay with `TEST_SHUFFLE`; serial two-worker `make fuzz` | Deliberately misformatted isolated tracked fixture fails without changing its hash; formatted fixture passes. Native workflow YAML, shell syntax, runner/selector and read-only permission configuration validated locally. Existing release/tag/historical-rebuild machinery unchanged; no linter/dependency/suppression wave |
+
+**Re-evaluation and corrections:** the sequential policy is the smallest
+sufficient change; no connection race was justified. Earlier-attempt contexts
+are canceled before another attempt begins, and a failed `DialContext` retains
+the standard dialer's ownership of unsuccessful sockets. A successful socket
+rejected by required TCP-result output is explicitly closed before return.
+Tests with real `net.Pipe` endpoints prove that closure, including a close-error
+wrapper. Re-evaluation found that an early output-return path could discard an
+independent dial/close cause; the implementation now joins output, current/prior
+TCP and rejected-connection cleanup errors. Cancellation stops candidate
+iteration and preserves the parent identity plus the original dial cause.
+Known accepted/uncertain DATA and no-replay classifications remain unchanged.
+
+The one-second target measures the **start** of a second admitted TCP attempt
+in the controlled fixture, not DNS, actual TLS/authentication completion or
+delivery. The cap bounds nonfinal dial work only; arbitrary report writers are
+still subject to the documented blocking exclusion. The final/single candidate
+may use its full remaining operation deadline; without a deadline it acquires
+no new implicit timeout.
+
+**Fuzz evidence:** Go 1.26.9, `GOMAXPROCS=2`, serial campaigns, two workers and
+`-fuzztime=20s` per target. No failing corpus input was found:
+
+| Target | Mutation executions |
+| --- | ---: |
+| `FuzzMessagePreparation` | 193,273 |
+| `FuzzEnvelopeAddressRoundTrip` | 138,866 |
+| `FuzzDomainFormatting` | 168,284 |
+| `FuzzReportJSONSchema` | 56,669 |
+
+These initial 557,092 executions are bounded sampling, not exhaustive safety proof.
+After strengthening independent literal wire-key/column assertions (rather than
+relying only on a shared typed encoder/decoder), the JSON target ran another
+20-second two-worker campaign: 30,068 more executions, no failures. Total
+mutation executions are 587,160; the full twice-shuffled race suite and
+Windows/Darwin mail-test links were repeated after that re-evaluation.
+Ordinary seeds also run in the full race suite; no network, AD account,
+production submission, external coverage service or privileged topology
+modification is part of a fuzz campaign.
+
+**Final verification:** the full fixed-seed shuffled race suite ran twice with
+`-shuffle=562963 -count=2`: 3,110 passing test/subtest result events, zero failures
+and six existing skip events (two each for the helper-only SIGINT/TLS tests and
+the real-CLI mTLS fixture requiring unavailable isolated DNS port 53). Weighted
+coverage is 3,144/3,462 statements, **90.8%**; coverage locates gaps, not a new
+blanket percentage gate. Native Linux headless smoke passed. CGO-free vet,
+package builds, CLI links and native-tagged command/mail test links passed for
+Linux, Windows and Darwin on both amd64/arm64; only the native Linux amd64
+binary was executed, with deterministic injected metadata/version checked.
+Formatting, whitespace and release-note checks passed. Raw JSON/coverage,
+fuzz distributions, native-smoke output and format RED evidence are retained
+outside the checkout; temporary linked binaries and the isolated format fixture
+are removed at closeout.
+
+**Completion decision:** approved P5-A/C/D/E and P5-B implementation gates are
+satisfied, with Windows/macOS actual execution and live/interactive pilots
+explicitly pending by the user's selected boundary. R12 and R15's selected
+quality gates are resolved. R09's input policy is resolved as intentionally
+unrestricted with caller admission guidance; no resource ceiling is claimed.
+R08's offline fuzz/native infrastructure is complete, not a declaration that
+unexecuted native/live combinations are certified. No further in-scope finding
+remains after re-evaluation. Phase 6 release/pilots require their own authorization.
 
 ### Phase 6: release and closeout
 

@@ -7,6 +7,12 @@ Versions use Semantic Versioning; dates are in UTC.
 
 ### Fixed
 
+- Start later admitted relay addresses promptly after a stalled TCP candidate:
+  cap nonfinal attempts at 750 ms or their smaller remaining-budget share,
+  retaining the final/single candidate's operation deadline. Keep attempts
+  sequential, preserve cancellation and independent TCP/output/close failures,
+  and close connections rejected by required-output failure without SMTP replay.
+
 - Preserve required quoting and escaping in supported SMTP mailbox local-parts
   across explicit/header recipients, sender rewriting, canonical AD mail,
   saved senders and native sendmail arguments. Normalize unnecessary quoting
@@ -41,6 +47,13 @@ Versions use Semantic Versioning; dates are in UTC.
   DNS settings.
 
 ### Changed
+
+- Add message/mailbox/HTML/schema fuzz seeds to ordinary tests and separate
+  bounded campaigns; enforce non-mutating formatting and shuffled race tests.
+  Add offline Windows/macOS native host/config/console/TLS smoke CI, with
+  native execution pending until authorized push and live pilots separate.
+- Document unrestricted input lengths and caller-side byte/concurrency
+  admission instead of introducing new message/header/recipient limits.
 
 - Reduce message-preparation copying and folded-header accumulation costs,
   preserving input ownership, body bytes, envelope rules and blind-recipient

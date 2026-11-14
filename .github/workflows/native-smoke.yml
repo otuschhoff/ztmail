@@ -1,0 +1,59 @@
+name: Native smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOPRIVATE: github.com/otuschhoff/*
+  GIT_TERMINAL_PROMPT: '0'
+  CGO_ENABLED: '0'
+  ZTMAIL_NATIVE_CONSOLE: absent
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Download private dependencies
+        env:
+          ADBIND_READ_TOKEN: ${{ secrets.ADBIND_READ_TOKEN }}
+        run: |
+          if [ -z "$ADBIND_READ_TOKEN" ]; then
+            echo "::error::Configure ADBIND_READ_TOKEN with read access to the private AD SDK repository."
+            exit 1
+          fi
+          trap 'git config --global --unset credential.https://github.com.helper' EXIT
+          git config --global credential.https://github.com.helper '!f() { printf "username=x-access-token\npassword=%s\n" "$ADBIND_READ_TOKEN"; }; f'
+          go mod download
+      - name: Exercise offline native adapters
+        run: go test -tags=native_smoke -shuffle=on -count=1 -timeout=3m -v -run='^TestNativeSmoke' ./cmd/ztmail ./internal/mail
+      - name: Vet and link native binary
+        run: |
+          go vet -tags=native_smoke ./...
+          suffix=
+          if [ "$RUNNER_OS" = Windows ]; then suffix=.exe; fi
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          sha=$(git rev-parse HEAD | cut -c1-7)
+          version=$(sed -n 's/^const semver = "\([^"]*\)"$/\1/p' cmd/ztmail/version.go)
+          go build -trimpath -ldflags "-X main.buildTime=$stamp -X main.commitSHA=$sha" -o "ztmail-smoke$suffix" ./cmd/ztmail
+          test "$("./ztmail-smoke$suffix" --version)" = "$version+$stamp.$sha"

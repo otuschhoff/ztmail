@@ -513,6 +513,22 @@ The tool is not a setuid program or a complete drop-in MTA replacement.
 
 ## Transport and failure behavior
 
+Relay TCP connections use SDK-resolved numeric unicast addresses sequentially.
+Nonfinal addresses receive at most 750 ms each (or a smaller share of the
+remaining operation deadline); the final/single address retains the remaining
+budget. Canceled attempts end before the next starts. There is no connection
+race, authentication fallback to another address after TCP success, or SMTP
+replay. Starting a second attempt within the controlled one-second target is
+not a guarantee of real-network TLS, authentication or delivery latency.
+
+Input/message/header/recipient lengths remain unrestricted. The CLI buffers
+the message; `--timeout` does not cap memory or forcibly stop a blocking input
+reader, writer or signer. Wrapper services must reject over-limit ingestion
+before preparing/submitting a message and bound concurrent operations.
+Never submit silently truncated input. See
+[caller admission and resource bounds](library.md#caller-admission-and-resource-bounds)
+for queues, borrowed owners, observation memory and no-retry outcome guidance.
+
 In default GSSAPI mode the relay must advertise **AUTH GSSAPI** after TLS. Mutual Kerberos
 authentication and the signed SASL security-layer negotiation are mandatory.
 The client selects the SASL **no security layer** option; TLS protects the

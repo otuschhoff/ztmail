@@ -263,6 +263,11 @@ limit: input and arbitrary blocking I/O/signers are not forcibly interrupted,
 and owned cleanup has a separate allowance. See
 [transport and failure behavior](docs/advanced-usage.md#transport-and-failure-behavior),
 including accepted-but-status-output-failed errors that must not be retried.
+Relay dialing caps nonfinal address attempts at 750 ms, shortened by the
+remaining operation budget; the final/single address keeps that budget.
+Message/header/recipient sizes remain unrestricted. Service users should apply
+[caller admission bounds](docs/library.md#caller-admission-and-resource-bounds)
+before allocation/submission, not rely on a timeout as a memory limit.
 
 STARTTLS is required by default and never silently downgraded. `--tls off`
 deliberately exposes the envelope and message in plaintext; use it only on a

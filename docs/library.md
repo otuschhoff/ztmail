@@ -184,3 +184,42 @@ cleanup must also finish; a context deadline cannot interrupt arbitrary Go
 methods. These allowances/exclusions mean `Timeout` is not a strict total
 wall-clock limit. Applications requiring one need context-aware, bounded I/O
 and signer/provider implementations plus explicit resource ownership.
+
+Relay connection attempts remain sequential and use only SDK-resolved numeric
+unicast addresses. Each nonfinal candidate gets at most 750 ms, shortened to
+its share of the remaining operation deadline. The single/final candidate
+keeps the remaining deadline budget. A canceled attempt finishes before another
+starts; there is no connection race or automatic fallback after TCP success.
+The one-second controlled failover target concerns starting the next TCP
+attempt, not TLS completion, SMTP authentication or DATA acceptance.
+
+## Caller admission and resource bounds
+
+ztmail deliberately imposes no new message-size, header-size or recipient-count
+cap. The CLI buffers complete input; `Send` copies/prepares caller bytes and can
+create additional message/report representations. A timeout does not bound
+allocation or preempt synchronous parsing/rendering.
+
+Service callers should:
+
+- Admit finite byte lengths before allocation. Bound ingestion at the source
+  (including decompression); if using a limited reader, read at most the chosen
+  limit plus one byte and **reject**, rather than submit, truncated overflow.
+  Include aggregate header bytes/folding and recipient counts in their policy.
+- Bound concurrent `Send`/`Test` calls with a context-aware semaphore or a
+  bounded queue. Do not spawn one waiting goroutine per unbounded request.
+  Account for message copies, report/MIME buffers, retained observation history,
+  certificate metadata, and SDK/network capacity, not just the input bytes.
+- Keep the borrowed AD owner alive until every admitted call and its awaited
+  cleanup ends; share only immutable/concurrent-safe signer implementations.
+  Measure the actual message sizes, authentication mode and concurrency before
+  selecting limits. LDAP fan-out is separate from SMTP operation concurrency.
+- Provide finite, responsive report writers and signer/provider calls. Arbitrary
+  blocking callbacks and cleanup methods can extend wall-clock latency; detached
+  owned LDAP cleanup has a separate five-second allowance.
+- Inspect `Accepted`, warnings and `ErrDeliveryUncertain` independently.
+  Backpressure/rejection belongs **before** submission. Never turn an accepted
+  or uncertain result into automatic replay.
+
+These are application admission decisions, not a certified throughput,
+peak-RAM bound, implicit queue, SMTP pool or new library configuration option.

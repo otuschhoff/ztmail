@@ -54,7 +54,56 @@ Makefile or inject `-X main.buildTime=... -X main.commitSHA=...` yourself.
 
 ## Validation
 
-`make test` runs release-note extraction tests, `go test -race ./...`, and `go vet ./...`.
+`make test` first fails on tracked Go files needing formatting without changing
+them, then runs release-note extraction tests, `go test -race -shuffle=on ./...`
+(including ordinary fuzz seeds), and `go vet ./...`. The shuffle seed is printed
+by the test runner; replay it with `make test TEST_SHUFFLE=<seed>`.
+`make fmt-check` runs only the non-mutating formatting gate.
+
+Run mutation campaigns separately from the ordinary CI suite:
+
+```sh
+GOMAXPROCS=2 make fuzz FUZZ_TIME=20s
+```
+
+This runs four targets serially, each for the specified duration with at most
+two fuzz workers: message/body/privacy/ownership, mailbox round trips, domain
+escaping, and JSON v2 table shapes. Preserve any failing corpus input as a
+regression fixture; do not dismiss it as an expected parse error. The default
+campaign duration is 15 seconds per target. Bounded campaigns are sampling,
+not proof of exhaustive input safety or a production capacity measurement.
+
+### Offline native smoke and live-pilot separation
+
+The separate `Native smoke` workflow runs on actual `windows-latest` and
+`macos-latest` hosts, with CGO disabled as in distribution builds. It checks
+native host/suffix outcomes, isolated configuration save/replace/read,
+explicit headless console-open failure, system-root availability, and the
+unsupported system/append expiry-grace combination (replace roots remain
+supported). It vets/links a native binary and checks its metadata version.
+It neither reads a password nor mutates terminal modes, host DNS or trust.
+It requires the same private SDK read token as the build workflow.
+
+To run the focused smoke tests on a native host:
+
+```sh
+go test -tags=native_smoke -shuffle=on -count=1 -timeout=3m -v \
+  -run='^TestNativeSmoke' ./cmd/ztmail ./internal/mail
+```
+
+Set `ZTMAIL_NATIVE_CONSOLE=absent` for an explicitly headless run, or `present`
+to require a controlling terminal/Windows console. Leave it unset to record
+availability without imposing topology. Even `present` opens/closes only:
+interactive echo restoration/cancellation and domain-joined Windows SSPI still
+require a separately authorized manual pilot. Use disposable accounts/test
+relays, test no-email authentication before an expressly approved submission,
+review reports for private topology, and never include passwords in logs.
+
+Linux execution and Windows/macOS cross-vet/link checks are not native platform
+certification. At Phase 5 closeout the new remote native workflow is implemented
+but **not executed**: the user approved recording it as pending and committing
+locally without push. Its success must be recorded after authorized CI execution;
+live AD/KDC/LDAP/SMTP pilots remain unperformed and separate from offline CI.
 
 For Windows-specific compile/vet checks from a non-Windows host:
 

@@ -461,6 +461,12 @@ func certificateLifetime(notAfter, now time.Time) string {
 }
 
 func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, error) {
+	return dialRelayWithDialer(ctx, o, backend, (&net.Dialer{}).DialContext)
+}
+
+const relayFallbackAttemptLimit = 750 * time.Millisecond
+
+func dialRelayWithDialer(ctx context.Context, o options, backend Resolver, dial func(context.Context, string, string) (net.Conn, error)) (net.Conn, error) {
 	if outputErr := CheckOutput(nil, o.report, false); outputErr != nil {
 		return nil, outputErr
 	}
@@ -484,6 +490,10 @@ func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, erro
 	tcpDone := o.report.Measure("SMTP TCP connection")
 	defer tcpDone()
 	for i, address := range addresses {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
 			err := errors.New("AD DNS relay lookup returned an invalid unicast IP")
 			o.report.Step("Relay address validation", err, "")
@@ -491,21 +501,44 @@ func dialRelay(ctx context.Context, o options, backend Resolver) (net.Conn, erro
 		}
 		work := ctx
 		cancel := func() {}
-		if deadline, ok := ctx.Deadline(); ok {
-			work, cancel = context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(addresses)-i))
+		limit := relayFallbackAttemptLimit
+		deadline, hasDeadline := ctx.Deadline()
+		if hasDeadline {
+			share := time.Until(deadline) / time.Duration(len(addresses)-i)
+			if i == len(addresses)-1 {
+				limit = share
+			} else {
+				limit = min(limit, share)
+			}
 		}
-		conn, err := (&net.Dialer{}).DialContext(work, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(o.port)))
+		// Only earlier candidates are capped; the last/single address keeps the remaining budget.
+		if hasDeadline || i < len(addresses)-1 {
+			work, cancel = context.WithTimeout(ctx, limit)
+		}
+		conn, err := dial(work, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(o.port)))
 		cancel()
 		if err == nil {
 			o.report.Step("SMTP TCP connection", nil, fmt.Sprintf("target=%q peer=%q", o.relay, conn.RemoteAddr().String()))
 		} else {
 			o.report.Step("SMTP TCP connection", err, "")
 		}
+		if outputErr := CheckOutput(nil, o.report, false); outputErr != nil {
+			var closeErr error
+			if conn != nil {
+				if err := conn.Close(); err != nil {
+					closeErr = fmt.Errorf("close rejected relay connection: %w", err)
+				}
+			}
+			return nil, errors.Join(outputErr, err, errors.Join(failures...), closeErr)
+		}
 		if err == nil {
 			return conn, nil
 		}
 		failures = append(failures, err)
-		if ctx.Err() != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if !errors.Is(err, ctxErr) {
+				failures = append(failures, ctxErr)
+			}
 			break
 		}
 	}

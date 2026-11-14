@@ -87,6 +87,8 @@ type Options struct {
 
 // Message contains a complete RFC 5322 message, not an SMTP DATA stream.
 // The caller must not modify Data or Recipients while Send is running.
+// No message/header/recipient cap is imposed; service callers must bound input
+// size before allocation and admit only a measured number of concurrent calls.
 type Message struct {
 	Recipients []string
 	Data       []byte
