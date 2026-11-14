@@ -80,10 +80,14 @@ not proof of exhaustive input safety or a production capacity measurement.
 The separate `Native smoke` workflow runs on actual `windows-latest` and
 `macos-latest` hosts, with CGO disabled as in distribution builds. It checks
 native host/suffix outcomes, isolated configuration save/replace/read,
-explicit headless console-open failure, system-root availability, and the
+platform-specific console outcomes, system-root availability, and the
 unsupported system/append expiry-grace combination (replace roots remain
 supported). It vets/links a native binary and checks its metadata version.
-It neither reads a password nor mutates terminal modes, host DNS or trust.
+The Windows runner has a console even though workflow steps are noninteractive;
+its job requires successful open/close and separately tests explicit failure in
+an isolated `CREATE_NO_WINDOW` child. macOS requires the observed absence of a
+controlling terminal. Tests never read a password or mutate parent console/
+terminal modes, host DNS or trust.
 It requires the same private SDK read token as the build workflow.
 
 To run the focused smoke tests on a native host:

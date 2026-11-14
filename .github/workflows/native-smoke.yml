@@ -13,15 +13,20 @@ env:
   GOPRIVATE: github.com/otuschhoff/*
   GIT_TERMINAL_PROMPT: '0'
   CGO_ENABLED: '0'
-  ZTMAIL_NATIVE_CONSOLE: absent
 
 jobs:
   smoke:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            console: present
+          - os: macos-latest
+            console: absent
     runs-on: ${{ matrix.os }}
+    env:
+      ZTMAIL_NATIVE_CONSOLE: ${{ matrix.console }}
     timeout-minutes: 15
     defaults:
       run:

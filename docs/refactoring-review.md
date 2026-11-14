@@ -1705,6 +1705,66 @@ twice-shuffled exact version/side-effect tests and curated
 six-target builds and both remote workflows must finish before closeout can be
 declared; older green GitHub builds at the pre-refactoring source do not qualify.
 
+**Native CI regression and remediation:** Build passed for candidate `bc36d1b`
+(run `43630913351`) and the macOS native job passed, but the Windows native
+job failed in run `43630913319`: the noninteractive runner successfully opened
+its native console, contradicting the workflow's assumed `absent` expectation.
+The application adapter was correct; no production password behavior changes.
+The workflow now requires Windows `present` and macOS `absent`, plus an awaited,
+30-second-bounded Windows child with `CREATE_NO_WINDOW` that independently
+requires an explicit console-open error. Both availability/error paths are
+tested without reading a secret, changing parent console state or weakening
+the native gate. Remote revalidation is required before completion.
+
+#### Consolidated finding dispositions
+
+The following ledger describes the selected remediation, not blanket
+production or platform certification. Baseline evidence above remains historical;
+phase execution records retain exact regression/measurement and commit details.
+
+| Finding | Final selected disposition | Evidence / retained boundary |
+| --- | --- | --- |
+| R01 | Resolved with evidence, Phase 1 `fd28841` | Quoted mailbox wire/round-trip behavior across explicit/header/canonical/saved/native paths; [mailbox fuzz invariants](../internal/mail/message_fuzz_test.go). Null envelopes and local aliases preserved |
+| R02 | Resolved with evidence, Phase 1 `fd28841` | Strict printable-ASCII field names; malformed/disguised blind headers reject locally. Folded Bcc/Resent privacy and binary-body preservation remain covered |
+| R03 | Resolved with evidence, Phase 1 `fd28841` | [SMTP cancellation regressions](../internal/mail/smtp_cancellation_test.go) preserve original I/O and applicable context causes at protocol stages; known acceptance and uncertain DATA stay distinct |
+| R04 | Resolved with evidence, Phase 2 `570d8bb` | Writer/short-write and warning failures across CLI/library/certificate/native paths; accepted-output failure does not become uncertain or trigger replay. [Credential barriers](../cmd/ztmail/kerberos_output_test.go) prevent downstream acquisition/fallback |
+| R05 | Resolved with evidence, Phase 2 `570d8bb` | EXTERNAL exchange attributed to authentication rather than TLS; [runtime attribution](../internal/mail/runtime_report_test.go) separates nested work and cleanup |
+| R06 | Resolved with evidence, Phase 2 `570d8bb` | [Owned DC history](../internal/mail/debug_report_history_test.go) retains changed/retired address observations without aliasing callback slices |
+| R07 | Resolved with evidence, Phase 3 through `733d420` | Per-command dependencies, raw/per-operation state and preparation/submission boundaries; invalid numeric DNS rejects before input/discovery/credentials, with local-only sender behavior preserved |
+| R08 | Offline boundaries/fuzz resolved; native CI verification in progress; live/interactive pilots accepted as unperformed | Command ownership/side-effect tests, [message/mailbox fuzz targets](../internal/mail/message_fuzz_test.go), [format/schema fuzz targets](../internal/mail/report_table_fuzz_test.go), [native smoke workflow](../.github/workflows/native-smoke.yml). Do not treat ordinary injection, no-console tests or cross-builds as joined-host/interactive/live AD certification |
+| R09 | Measured optimization resolved, Phase 4; unrestricted resource policy accepted/documented, Phase 5 | 10 MiB public preparation time 25.364 -> 7.003 ms and bytes -60.40%; folded-header accumulation linear. No implicit message/header/recipient cap; [caller admission](library.md#caller-admission-and-resource-bounds) remains required |
+| R10 | Correctness resolved, Phase 2; measured snapshot/resource work resolved, Phase 4 | [Owned snapshots and observer progress](../internal/mail/report_snapshot_test.go), reentrant writer/error identity and mid-render output barriers. Mean observer wait -99.94%; small snapshot Finish cost +7.01% is retained and below the approved gate |
+| R11 | Measured optimization resolved, Phase 4 | Sweep/reference agreement, lazy render-local domain formatting and unchanged schema/output. Ten paired runtime doubling samples stay below 3x (maxima 2.185/2.096); no claim of arbitrary workload linear wall-clock latency |
+| R12 | Resolved with exact controlled latency/ownership evidence, Phase 5 `30ea103` | [Relay regressions](../internal/mail/smtp_dial_test.go): 30 s -> 750 ms second-attempt start, under the 1 s target; total/final deadlines, context/socket closure, output/dial/close causes and no connection racing/replay |
+| R13 | Measured immutable-CA reuse resolved, Phase 4; further caching not justified | `e79d824` complete repeated loopback mTLS/EXTERNAL operations: about 50.45% allocation reduction for 32 roots/1 KiB. [Ownership and operation-local verification](../internal/mail/tls_policy_test.go) retained; one-root signer/client-certificate caching is not justified |
+| R14 | Resolved contract wording and cancellation evidence, Phase 2 | Network/operation deadline, separate awaited cancellation-detached five-second LDAP cleanup, synchronous CPU/reader/writer/signer/cleanup exclusions. No strict total-call wall-clock promise |
+| R15 | Selected quality gates resolved, Phase 5 | Shared non-mutating [format check](../.github/scripts/check-format.sh), shuffled race/vet/seed tests and reproducible seed replay. No unapproved linter/style/suppression wave, coverage threshold/service or dependency tidiness rewrite |
+| R16 | Resolved with evidence, Phase 1 `fd28841` | [Typed-nil and valid custom signer regressions](../internal/mail/tls_credentials_validation_test.go); no panic or unnecessary restriction on valid providers |
+| R17 | Resolved with evidence, Phase 1 `fd28841` | Strict CA-bundle malformed-entry rejection and valid LF/CRLF/whitespace behavior; [CA PEM regressions](../internal/mail/tls_credentials_validation_test.go) |
+
+**Deferred/accepted boundaries, not silently claimed fixes:**
+
+- Actual interactive password echo/signal/cancellation and domain-joined
+  Windows SSPI require authorized manual/native pilots. Live corporate
+  DNS/KDC/LDAP/SMTP and end-user delivery were not exercised; no pilot or
+  production-readiness claim is authorized by this phase.
+- Windows/macOS system/append expiry grace remains explicitly unsupported;
+  replace mode supports the scoped exception. Normal trust/hostname/path/time
+  verification and authentication evidence remain operation-local.
+  Native smoke verifies capability boundaries, not every production chain.
+- Input/observation history remains uncapped. Service consumers must choose
+  finite ingestion/admission/concurrency bounds and responsive providers.
+  No arbitrary concurrency, peak-RAM or throughput ceiling is certified.
+- System trust requests retain the standard library's loading/cache behavior.
+  Additional signer/root/credential caches, pooling, new shutdown policy,
+  address races and automatic SMTP replay are not introduced.
+- Optional linters, coverage uploads/percentage gates, module-tidiness rewriting,
+  new dependency versions and distribution signing/notarization were not
+  selected. Their absence is not a claim of an unmeasured defect being fixed.
+- Publication is deliberately deferred: source 0.3.2 is prepared; immutable
+  published `v0.3.1` remains the rollback reference. [Rollback guidance](build.md#rollback-without-message-replay)
+  preserves no-retry decisions and warns that older defects return.
+
 ## Reusable task prompt
 
 > Execute task `<phase-task>` from this review only. Revalidate its source
